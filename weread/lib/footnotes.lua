@@ -145,6 +145,10 @@ local function looks_like_ref(attrs, href, inner)
     local file, anchor = split_href(href)
     if not anchor then return false end
     local lower_anchor = anchor:lower()
+    -- Defensive guard (NOT dead code): exclude thought/underline anchors from
+    -- footnote conversion. Older books downloaded with the (since-removed)
+    -- underlines/thoughts feature still carry #wrthought-xxx / #thought_xxx
+    -- links; without this guard they could be misread as footnote refs.
     if lower_anchor:find("wrthought-", 1, true) == 1
         or lower_anchor:find("thought_", 1, true) == 1
         or lower_anchor:find("wrfn-", 1, true) == 1

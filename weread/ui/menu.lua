@@ -2,7 +2,6 @@
 local BD = require("ui/bidi")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
-local Device = require("device")
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
@@ -47,8 +46,6 @@ function M:addToMainMenu(menu_items)
 end
 
 function M:getMainMenuItems()
-    local is_touch = Device:isTouchDevice()
-
     -- High-frequency items first for key-navigation efficiency
     local items = {
         {

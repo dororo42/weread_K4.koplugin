@@ -536,14 +536,6 @@ function Client:get_book_info(book_id)
     return self:gateway("/book/info", { bookId = book_id })
 end
 
-function Client:get_book_reviews(book_id, review_list_type, count)
-    return self:gateway("/review/list", {
-        bookId = book_id,
-        reviewListType = review_list_type or 1,
-        count = count or 20,
-    })
-end
-
 function Client:get_progress(book_id)
     return self:gateway("/book/getprogress", { bookId = book_id })
 end
@@ -659,97 +651,9 @@ function Client:report_read(payload, referer)
     })
 end
 
-function Client:get_chapter_underlines(book_id, chapter_uid)
-    if not book_id or tostring(book_id) == "" then
-        return false, nil, "empty book_id"
-    end
-    if not chapter_uid then
-        return false, nil, "empty chapter_uid"
-    end
-
-    local ok, result = pcall(function()
-        return self:gateway("/book/underlines", {
-            bookId = tostring(book_id),
-            chapterUid = chapter_uid,
-        })
-    end)
-    if not ok then
-        return false, nil, tostring(result)
-    end
-    if type(result) ~= "table" then
-        return false, nil, "underlines: gateway returned non-table"
-    end
-    return true, result
-end
-
-function Client:build_chapter_review_batches(ranges)
-    local BATCH_SIZE = 5
-    local batches = {}
-    for batch_start = 1, #(ranges or {}), BATCH_SIZE do
-        local batch = {}
-        for index = batch_start, math.min(batch_start + BATCH_SIZE - 1, #ranges) do
-            batch[#batch + 1] = {
-                range = ranges[index],
-                maxIdx = 0,
-                count = 30,
-                synckey = 0,
-            }
-        end
-        batches[#batches + 1] = batch
-    end
-    return batches
-end
-
-function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
-    if not book_id or tostring(book_id) == "" then
-        return false, nil, "empty book_id"
-    end
-    if not chapter_uid then
-        return false, nil, "empty chapter_uid"
-    end
-    if type(batch) ~= "table" or #batch == 0 then
-        return true, { reviews = {} }
-    end
-
-    local ok, result = pcall(function()
-        return self:gateway("/book/readreviews", {
-            bookId = tostring(book_id),
-            chapterUid = chapter_uid,
-            reviews = batch,
-        })
-    end)
-    if not ok then
-        return false, nil, tostring(result)
-    end
-    if type(result) ~= "table" or type(result.reviews) ~= "table" then
-        return false, nil, "readreviews: gateway returned invalid data"
-    end
-    return true, result
-end
-
-function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
-    if type(ranges) ~= "table" or #ranges == 0 then
-        return true, { reviews = {} }
-    end
-
-    local all_reviews = {}
-    local batches = self:build_chapter_review_batches(ranges)
-    local socket_ok, socket = pcall(require, "socket")
-
-    for batch_index, batch in ipairs(batches) do
-        local ok, result = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
-        if ok and type(result) == "table" and type(result.reviews) == "table" then
-            for _, review in ipairs(result.reviews) do
-                all_reviews[#all_reviews + 1] = review
-            end
-        end
-
-        if batch_index < #batches and socket_ok and socket.sleep then
-            socket.sleep(0.3)
-        end
-    end
-
-    return true, { reviews = all_reviews }
-end
+-- K4 fork: the chapter underlines/reviews fetchers (get_chapter_underlines,
+-- get_chapter_reviews, get_chapter_reviews_batch, build_chapter_review_batches)
+-- were removed together with the underlines/thoughts feature. get_mp_content
+-- above is intentionally kept: it serves public-account article rendering.
 
 return Client

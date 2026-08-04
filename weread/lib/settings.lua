@@ -31,15 +31,11 @@ local defaults = {
     cache = {
         download_book_images = true,
         download_mp_images = false,
-        download_underlines_and_thoughts = false,
         auto_prefetch_next_chapter = false,
         show_prefetch_notifications = true,
-        show_annotations = true,
-        -- When true, taps in the left/right edge zones never open thought popups
-        -- (and native #wrthought link follow is suppressed there too).
-        ignore_edge_thought_taps = true,
-        -- Fraction of screen width on each side treated as the page-turn edge zone.
-        edge_tap_ratio = 0.20,
+        -- K4 fork: underlines/thoughts feature removed; the corresponding
+        -- config keys (download_underlines_and_thoughts, show_annotations,
+        -- ignore_edge_thought_taps, edge_tap_ratio) are no longer used.
         max_size_mb = 1024,
     },
     read_report = {
@@ -107,10 +103,6 @@ function Settings:new()
         cache.download_mp_images = false
         cache_changed = true
     end
-    if cache.download_underlines_and_thoughts == nil then
-        cache.download_underlines_and_thoughts = false
-        cache_changed = true
-    end
     if cache.auto_prefetch_next_chapter == nil then
         cache.auto_prefetch_next_chapter = false
         cache_changed = true
@@ -119,17 +111,18 @@ function Settings:new()
         cache.show_prefetch_notifications = true
         cache_changed = true
     end
-    if cache.show_annotations == nil then
-        cache.show_annotations = true
-        cache_changed = true
-    end
-    if cache.ignore_edge_thought_taps == nil then
-        cache.ignore_edge_thought_taps = true
-        cache_changed = true
-    end
-    if cache.edge_tap_ratio == nil then
-        cache.edge_tap_ratio = 0.20
-        cache_changed = true
+    -- K4 fork: drop legacy underlines/thoughts cache keys from old configs so
+    -- they do not linger forever. Safe: no code reads them anymore.
+    for _, legacy_key in ipairs({
+        "download_underlines_and_thoughts",
+        "show_annotations",
+        "ignore_edge_thought_taps",
+        "edge_tap_ratio",
+    }) do
+        if cache[legacy_key] ~= nil then
+            cache[legacy_key] = nil
+            cache_changed = true
+        end
     end
     if cache.download_images ~= nil then
         cache.download_images = nil

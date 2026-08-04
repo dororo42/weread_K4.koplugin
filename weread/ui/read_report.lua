@@ -115,10 +115,17 @@ function M:getReadReportMenuItems()
                     .. "\n" .. T(_("Reported: %1 times, last: %2"), tostring(count), last)
                 local backlog = report_status.backlog_seconds
                 if backlog and backlog > 30 then
-                    -- Unsent accumulated (e.g. offline) reading time still being
-                    -- drained to the server in small per-report increments.
-                    msg = msg .. "\n" .. T(_("Pending (offline): %1 min"),
-                        tostring(math.floor(backlog / 60 + 0.5)))
+                    -- Distinguish "actively draining" (online + running) from
+                    -- "merely accumulated" (offline). The former means small
+                    -- per-report increments are being sent right now; the latter
+                    -- means the time is piling up and will drain once online.
+                    local draining = report_status.running and state ~= "offline"
+                    local backlog_min = tostring(math.floor(backlog / 60 + 0.5))
+                    if draining then
+                        msg = msg .. "\n" .. T(_("Draining offline backlog: %1 min"), backlog_min)
+                    else
+                        msg = msg .. "\n" .. T(_("Pending (offline): %1 min"), backlog_min)
+                    end
                 end
                 if err ~= "" then
                     msg = msg .. "\n" .. T(_("Last error: %1"), err)

@@ -1,6 +1,4 @@
 local I18n = require("weread.lib.i18n")
-local logger = require("weread.lib.logger")
-local time = require("ui/time")
 local T = require("ffi/util").template
 
 local PluginUtil = {
@@ -39,12 +37,6 @@ function PluginUtil.file_exists(path)
     end
     file:close()
     return true
-end
-
-function PluginUtil.thought_perf(stage, started, ...)
-    local elapsed = tonumber(time.now() - started) / 1000
-    logger.dbg("thought_perf", "stage=", stage,
-        "ms=", string.format("%.1f", elapsed), ...)
 end
 
 return PluginUtil
