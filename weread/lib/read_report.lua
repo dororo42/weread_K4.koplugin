@@ -32,7 +32,12 @@ local WAITING_LIMIT = 12
 -- one. MAX_SINGLE_REPORT_SECONDS mirrors the web heartbeat; BACKLOG_TICK_SECONDS
 -- is the throttled pace used while catching up on accumulated offline time.
 local MAX_SINGLE_REPORT_SECONDS = 30
-local BACKLOG_TICK_SECONDS = 4
+-- Backlog drain pace. Lower = faster catch-up but more radio wake-ups (battery);
+-- raised from 4s to 10s to reduce battery drain on the K4 after reconnect, at
+-- the cost of slower (but lossless — the watermark keeps the unreported time)
+-- catch-up. Reading time is never lost; it is simply reported in more, smaller
+-- increments over a longer window.
+local BACKLOG_TICK_SECONDS = 10
 
 -- Context fields that the subprocess sends back for the parent to persist.
 -- Mirrors the scalar reading-state fields stored by BookStore; the chapter

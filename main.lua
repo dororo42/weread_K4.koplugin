@@ -147,6 +147,13 @@ function WeReadPlugin:init()
         self.read_report:maybe_start("plugin_start")
     end
     self._reader_session_gen = 0
+    -- K4: wrap hotkeys.koplugin's ScreenKB+Down so it opens the WeRead quick
+    -- menu while a WeRead book is open (book map is kept for other books).
+    -- Deferred one UI tick: self.ui.hotkeys only exists after ReaderUI has
+    -- registered every plugin child.
+    UIManager:scheduleIn(0, function()
+        self:initHotkeyOverride()
+    end)
     logger.info("initialized:", "version=", self.version)
 end
 

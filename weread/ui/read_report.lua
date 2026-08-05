@@ -74,66 +74,72 @@ function M:getReadReportMenuItems()
             text = _("Report status"),
             keep_menu_open = true,
             callback = self:safeCallback(_("Report status"), function()
-                local cur = self.settings:get("read_report")
-                local report_status = self.read_report:status()
-                -- Real-time connectivity check: the stored state may be stale
-                -- (updated only during scheduled ticks). If the device went
-                -- offline between ticks, override to "offline".
-                if report_status.running and not self:isNetworkConnected() then
-                    self.read_report.state = "offline"
-                    report_status = self.read_report:status()
-                end
-                local target
-                if cur.mode == "auto" then
-                    local auto_title = report_status.target_book_title
-                    target = auto_title and T(_("Auto: %1"), auto_title) or _("Auto-associate")
-                else
-                    target = cur.book_title ~= "" and cur.book_title or _("Not configured")
-                end
-                local state = report_status.state
-                local status
-                if state == "offline" then
-                    status = _("Offline")
-                elseif state == "suspended" then
-                    status = _("Suspended")
-                elseif state == "waiting_for_progress" then
-                    status = _("Waiting for progress")
-                elseif state == "error" then
-                    status = _("Error")
-                elseif state == "waiting" then
-                    status = _("Waiting")
-                elseif report_status.running then
-                    status = _("Running")
-                else
-                    status = _("Stopped")
-                end
-                local count = report_status.count
-                local last = report_status.last_time
-                    and os.date("%H:%M:%S", report_status.last_time) or "--"
-                local err = report_status.last_error or ""
-                local msg = T(_("Report book: %1\nStatus: %2"), target, status)
-                    .. "\n" .. T(_("Reported: %1 times, last: %2"), tostring(count), last)
-                local backlog = report_status.backlog_seconds
-                if backlog and backlog > 30 then
-                    -- Distinguish "actively draining" (online + running) from
-                    -- "merely accumulated" (offline). The former means small
-                    -- per-report increments are being sent right now; the latter
-                    -- means the time is piling up and will drain once online.
-                    local draining = report_status.running and state ~= "offline"
-                    local backlog_min = tostring(math.floor(backlog / 60 + 0.5))
-                    if draining then
-                        msg = msg .. "\n" .. T(_("Draining offline backlog: %1 min"), backlog_min)
-                    else
-                        msg = msg .. "\n" .. T(_("Pending (offline): %1 min"), backlog_min)
-                    end
-                end
-                if err ~= "" then
-                    msg = msg .. "\n" .. T(_("Last error: %1"), err)
-                end
-                self:showInfo(msg)
+                self:showReportStatus()
             end),
         },
     }
+end
+
+-- Build and show the reading-time report status message. Shared by the
+-- "Report status" menu item and the quick-menu "Report status" button.
+function M:showReportStatus()
+    local cur = self.settings:get("read_report")
+    local report_status = self.read_report:status()
+    -- Real-time connectivity check: the stored state may be stale
+    -- (updated only during scheduled ticks). If the device went
+    -- offline between ticks, override to "offline".
+    if report_status.running and not self:isNetworkConnected() then
+        self.read_report.state = "offline"
+        report_status = self.read_report:status()
+    end
+    local target
+    if cur.mode == "auto" then
+        local auto_title = report_status.target_book_title
+        target = auto_title and T(_("Auto: %1"), auto_title) or _("Auto-associate")
+    else
+        target = cur.book_title ~= "" and cur.book_title or _("Not configured")
+    end
+    local state = report_status.state
+    local status
+    if state == "offline" then
+        status = _("Offline")
+    elseif state == "suspended" then
+        status = _("Suspended")
+    elseif state == "waiting_for_progress" then
+        status = _("Waiting for progress")
+    elseif state == "error" then
+        status = _("Error")
+    elseif state == "waiting" then
+        status = _("Waiting")
+    elseif report_status.running then
+        status = _("Running")
+    else
+        status = _("Stopped")
+    end
+    local count = report_status.count
+    local last = report_status.last_time
+        and os.date("%H:%M:%S", report_status.last_time) or "--"
+    local err = report_status.last_error or ""
+    local msg = T(_("Report book: %1\nStatus: %2"), target, status)
+        .. "\n" .. T(_("Reported: %1 times, last: %2"), tostring(count), last)
+    local backlog = report_status.backlog_seconds
+    if backlog and backlog > 30 then
+        -- Distinguish "actively draining" (online + running) from
+        -- "merely accumulated" (offline). The former means small
+        -- per-report increments are being sent right now; the latter
+        -- means the time is piling up and will drain once online.
+        local draining = report_status.running and state ~= "offline"
+        local backlog_min = tostring(math.floor(backlog / 60 + 0.5))
+        if draining then
+            msg = msg .. "\n" .. T(_("Draining offline backlog: %1 min"), backlog_min)
+        else
+            msg = msg .. "\n" .. T(_("Pending (offline): %1 min"), backlog_min)
+        end
+    end
+    if err ~= "" then
+        msg = msg .. "\n" .. T(_("Last error: %1"), err)
+    end
+    self:showInfo(msg)
 end
 
 function M:getReportTargetMenuItems()

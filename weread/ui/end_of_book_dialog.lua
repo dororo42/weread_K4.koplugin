@@ -17,14 +17,17 @@ end
 local M = {}
 
 -- Show the quick menu dialog. The title already carries the WeRead brand,
--- so the buttons use plain labels (书架 / 搜索 / 目录 / 下一章).
---   opts.show_chapter_nav : boolean — show the chapter-list/next-chapter row
+-- so the buttons use plain labels (书架 / 微信读书已缓存 / 书籍详情 / 章节目录 /
+-- 阅读统计 / 搜索 / 立即同步进度 / 上报状态 / 关闭书籍).
+--   opts.show_chapter_nav : boolean — show the "chapter list" button
 --                           (true only for single-chapter files, not full books)
---   opts.show_next_chapter : boolean — show the "next chapter" button
+--   opts.show_cached      : boolean — show the "WeRead cached" button
 --   opts.show_sync_progress : boolean — show the full-width progress sync row
---   callbacks             : { on_bookshelf, on_search, on_chapter_list, on_next,
+--   opts.show_report_status : boolean — replace the final-row "Cancel" button
+--                           with "Report status" (Back already cancels)
+--   callbacks             : { on_bookshelf, on_cached, on_search, on_chapter_list,
 --                             on_book_details, on_read_stats, on_sync_progress,
---                             on_close_book }
+--                             on_report_status, on_close_book }
 -- Returns the dialog widget instance.
 function M.show(opts, callbacks)
     opts = opts or {}
@@ -44,42 +47,44 @@ function M.show(opts, callbacks)
 
     local buttons = {}
 
-    -- Row 1: chapter list / next chapter. These stay visible in the global quick
-    -- menu; the controller reports when the current document lacks WeRead
-    -- chapter context.
-    if opts.show_chapter_nav then
-        local nav_row = {
-            {
-                text = _("Chapter list"),
-                callback = function() dismiss_then(callbacks.on_chapter_list) end,
-            },
-        }
-        if opts.show_next_chapter then
-            table.insert(nav_row, {
-                text = _("Next chapter"),
-                callback = function() dismiss_then(callbacks.on_next) end,
-            })
-        end
-        table.insert(buttons, nav_row)
+    -- Row 1: bookshelf / WeRead cached. Both are always available: the cached
+    -- list is a local, offline view (no login or network needed).
+    local top_row = {
+        {
+            text = _("Bookshelf"),
+            callback = function() dismiss_then(callbacks.on_bookshelf) end,
+        },
+    }
+    if opts.show_cached then
+        table.insert(top_row, {
+            text = _("WeRead cached"),
+            callback = function() dismiss_then(callbacks.on_cached) end,
+        })
     end
+    table.insert(buttons, top_row)
 
-    -- Row 2: book details / reading statistics
-    table.insert(buttons, {
+    -- Row 2: book details / chapter list. The chapter list stays visible in the
+    -- global quick menu; the controller reports when the current document lacks
+    -- WeRead chapter context.
+    local details_row = {
         {
             text = _("Book details"),
             callback = function() dismiss_then(callbacks.on_book_details) end,
         },
+    }
+    if opts.show_chapter_nav then
+        table.insert(details_row, {
+            text = _("Chapter list"),
+            callback = function() dismiss_then(callbacks.on_chapter_list) end,
+        })
+    end
+    table.insert(buttons, details_row)
+
+    -- Row 3: reading statistics / search
+    table.insert(buttons, {
         {
             text = _("Reading statistics"),
             callback = function() dismiss_then(callbacks.on_read_stats) end,
-        },
-    })
-
-    -- Row 3: bookshelf / search
-    table.insert(buttons, {
-        {
-            text = _("Bookshelf"),
-            callback = function() dismiss_then(callbacks.on_bookshelf) end,
         },
         {
             text = _("Search"),
@@ -97,17 +102,27 @@ function M.show(opts, callbacks)
         })
     end
 
-    -- Final row: cancel / close book
-    table.insert(buttons, {
-        {
+    -- Final row: report status / close book.
+    -- "Cancel" is dropped: the Back key already dismisses the dialog. When the
+    -- caller opts in (show_report_status), the slot is reused for "Report
+    -- status" so the quick menu gives one-tap access to the read-report state.
+    local final_row = {}
+    if opts.show_report_status then
+        table.insert(final_row, {
+            text = _("Report status"),
+            callback = function() dismiss_then(callbacks.on_report_status) end,
+        })
+    else
+        table.insert(final_row, {
             text = _("Cancel"),
             callback = function() UIManager:close(dialog) end,
-        },
-        {
-            text = _("Close book"),
-            callback = function() dismiss_then(callbacks.on_close_book) end,
-        },
+        })
+    end
+    table.insert(final_row, {
+        text = _("Close book"),
+        callback = function() dismiss_then(callbacks.on_close_book) end,
     })
+    table.insert(buttons, final_row)
 
     dialog = ButtonDialog:new{
         title = _("WeRead · Quick menu"),

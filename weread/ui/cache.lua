@@ -385,8 +385,33 @@ function M:shelfToolbarItems(with_filters, refresh)
     return items
 end
 
-function M:showCacheManagement()
+-- Recursively sum the size and file count of a directory (book/article cache).
+function M:dirStats(path)
     local lfs = require("libs/libkoreader-lfs")
+    local size = 0
+    local file_count = 0
+    local ok, iter, dir_obj = pcall(lfs.dir, path)
+    if not ok then
+        return size, file_count
+    end
+    for entry in iter, dir_obj do
+        if entry ~= "." and entry ~= ".." then
+            local child = path .. "/" .. entry
+            local attr = lfs.attributes(child)
+            if attr and attr.mode == "file" then
+                size = size + (attr.size or 0)
+                file_count = file_count + 1
+            elseif attr and attr.mode == "directory" then
+                local child_size, child_count = M:dirStats(child)
+                size = size + child_size
+                file_count = file_count + child_count
+            end
+        end
+    end
+    return size, file_count
+end
+
+function M:showCacheManagement()
     local books = self.settings:get("books", {})
     local items = {}
     local entries = {}
@@ -394,36 +419,12 @@ function M:showCacheManagement()
     local total_size = 0
     local mp_total_size = 0
 
-    local function directory_stats(path)
-        local size = 0
-        local file_count = 0
-        local ok, iter, dir_obj = pcall(lfs.dir, path)
-        if not ok then
-            return size, file_count
-        end
-        for entry in iter, dir_obj do
-            if entry ~= "." and entry ~= ".." then
-                local child = path .. "/" .. entry
-                local attr = lfs.attributes(child)
-                if attr and attr.mode == "file" then
-                    size = size + (attr.size or 0)
-                    file_count = file_count + 1
-                elseif attr and attr.mode == "directory" then
-                    local child_size, child_count = directory_stats(child)
-                    size = size + child_size
-                    file_count = file_count + child_count
-                end
-            end
-        end
-        return size, file_count
-    end
-
     local function add_cache_entry(book_id, title, book_dir)
         if seen_dirs[book_dir] then
             return
         end
         seen_dirs[book_dir] = true
-        local size, file_count = directory_stats(book_dir)
+        local size, file_count = self:dirStats(book_dir)
         if file_count == 0 then
             return
         end
@@ -678,6 +679,94 @@ function M:clearAllCache()
     self.settings:set("books", {})
     self.settings:flush()
     self:refreshShelfCacheIndicators()
+end
+
+-- Resolve the first available cached file for a book: full-book EPUB, then a
+-- single-chapter file, then the first mapped chapter.
+function M:resolveCachedPath(book)
+    if type(book) ~= "table" then
+        return nil
+    end
+    for _i, key in ipairs({ "cached_full_book", "cached_file" }) do
+        local path = book[key]
+        if type(path) == "string" and path ~= "" and file_exists(path) then
+            return path
+        end
+    end
+    for _uid, path in pairs(book.cached_chapters or {}) do
+        if type(path) == "string" and file_exists(path) then
+            return path
+        end
+    end
+    return nil
+end
+
+-- "WeRead cached": list locally cached books and public-account articles as an
+-- offline view of what is on the device (based on the local books table — no
+-- login or network needed, unlike the bookshelf). Each entry shows its size
+-- and opens the cached content on select; a shortcut to the full cache
+-- management page is offered at the top.
+function M:showCachedBooks()
+    local books = self.settings:get("books", {})
+    local entries = {}
+    local total_size = 0
+    for book_id, book in pairs(books) do
+        if self:bookRecordHasDownload(book) then
+            local book_dir = Content.book_resolved_dir(self.settings, book_id, book)
+            local size = self:dirStats(book_dir)
+            total_size = total_size + size
+            table.insert(entries, {
+                book_id = book_id,
+                title = book.title or book_id,
+                size = size,
+                is_mp = WeRead.is_mp_book(book_id),
+                path = self:resolveCachedPath(book),
+            })
+        end
+    end
+
+    table.sort(entries, function(a, b)
+        if a.is_mp ~= b.is_mp then
+            return a.is_mp
+        end
+        return tostring(a.title):lower() < tostring(b.title):lower()
+    end)
+
+    local total_str = total_size < 1024 * 1024
+        and string.format("%.0f KB", total_size / 1024)
+        or string.format("%.1f MB", total_size / 1024 / 1024)
+
+    local items = {
+        {
+            text = _("Cache management"),
+            mandatory = "→",
+            callback = self:safeCallback(_("Cache management"), function()
+                self:showCacheManagement()
+            end),
+            separator = true,
+        },
+    }
+    for _i, entry in ipairs(entries) do
+        local size_str = entry.size < 1024 * 1024
+            and string.format("%.0f KB", entry.size / 1024)
+            or string.format("%.1f MB", entry.size / 1024 / 1024)
+        table.insert(items, {
+            text = entry.title,
+            post_text = size_str,
+            mandatory = entry.is_mp and _("Public Account") or "",
+            callback = self:safeCallback(entry.title, function()
+                if entry.path then
+                    self:openFile(entry.path)
+                else
+                    self:showTransientInfo(_("No cached file."), 1)
+                end
+            end),
+        })
+    end
+
+    self:showList(_("WeRead cached"), items,
+        _("No cached WeRead content"),
+        { subtitle = T(_("Total cache: %1"), total_str) })
 end
 
 return M

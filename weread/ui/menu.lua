@@ -109,7 +109,7 @@ function M:getMainMenuItems()
             text = T(_("About (v%1)"), self.version),
             callback = function()
                 UIManager:show(InfoMessage:new{
-                    text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/finlater/weread.koplugin"), self.version),
+                    text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nThis branch (K4 non-touch adaptation) is derived from official v0.6.0 and developed independently:\nhttps://github.com/dororo42/weread_K4.koplugin\n\nUpstream project (AGPL-3.0):\nhttps://github.com/finlater/weread.koplugin"), self.version),
                 })
             end,
         },
