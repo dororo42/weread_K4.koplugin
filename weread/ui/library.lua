@@ -670,7 +670,7 @@ function M:showChapterList(book)
                     mandatory = cached and _("Cached")
                         or T(_("%1 words"), tostring(chapter.wordCount or 0)),
                     callback = self:safeCallback(chapter.title or _("Chapter"), function()
-                        self:openChapter(book, chapter)
+                        self:jumpToChapter(book, chapter)
                     end),
                 }
             end
@@ -794,6 +794,29 @@ function M:openChapter(book, chapter)
     else
         self:downloadChapterAndRead(book, chapter)
     end
+end
+
+-- Jump to a chapter (chapter-list "jump" semantics): open the cached file if
+-- present, otherwise download it and open automatically when done — no
+-- confirmation dialog, unlike openChapter's download-and-read flow.
+function M:jumpToChapter(book, chapter)
+    local chapter_uid = chapter.chapterUid or chapter.chapterId
+    local cached = book.cached_chapters and book.cached_chapters[tostring(chapter_uid)]
+    if cached and file_exists(cached) then
+        self:openFile(cached)
+        return true
+    end
+    if self.downloader:promotePrefetch(book, chapter) then
+        -- Already being prefetched: promote to a visible dialog; it will open
+        -- automatically on completion.
+        return true
+    end
+    self.downloader:start(book, { chapter }, "chapter", {
+        single_chapter = true,
+        open_on_complete = true,
+        offer_read = false,
+    })
+    return true
 end
 
 -- Open a chapter selected by cloud-progress resolution. Unlike ordinary
