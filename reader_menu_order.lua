@@ -1,14 +1,14 @@
 -- reader_menu_order.lua
 -- Custom menu order configuration for KOReader.
--- Places weread at the top of the tools menu for quick access on Kindle 4.
+-- Places weread_K4 at the top of the tools menu for quick access on Kindle 4.
 -- Hides touch-only and irrelevant plugins on non-touch devices.
 
 local Device = require("device")
 
 local order = {
-    -- tools: weread first, then frequently used tools
+    -- tools: weread_K4 first, then frequently used tools
     tools = {
-        "weread",
+        "weread_K4",
         "----------------------------",
         "read_timer",
         "calibre",

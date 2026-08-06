@@ -787,6 +787,11 @@ function M:openChapter(book, chapter)
     local cached = book.cached_chapters and book.cached_chapters[tostring(chapter_uid)]
     if cached and file_exists(cached) then
         self:openFile(cached)
+    elseif self:getFullBookCachePath(book) then
+        -- Whole-book cache: this chapter lives inside the combined EPUB, so it
+        -- is already downloaded — open the full book instead of re-downloading
+        -- the chapter as a separate file.
+        self:openFile(self:getFullBookCachePath(book))
     elseif self.downloader:promotePrefetch(book, chapter) then
         -- The downloader promotes the background task to a visible progress
         -- dialog and opens the chapter as soon as the same task completes.
@@ -804,6 +809,13 @@ function M:jumpToChapter(book, chapter)
     local cached = book.cached_chapters and book.cached_chapters[tostring(chapter_uid)]
     if cached and file_exists(cached) then
         self:openFile(cached)
+        return true
+    end
+    -- Whole-book cache: the chapter is already inside the combined EPUB, so
+    -- open it rather than re-downloading the chapter as a new file.
+    local full_book = self:getFullBookCachePath(book)
+    if full_book then
+        self:openFile(full_book)
         return true
     end
     if self.downloader:promotePrefetch(book, chapter) then

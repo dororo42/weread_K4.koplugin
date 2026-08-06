@@ -17,11 +17,11 @@ local Settings = require("weread.lib.settings")
 local _ = PluginUtil.tr
 
 local WeReadPlugin = WidgetContainer:extend{
-    name = "weread",
+    name = "weread_K4",
     is_doc_only = false,
     -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
     -- self.version is what the in-plugin "About" dialog displays).
-    version = "0.6.0-k4-v1.6",
+    version = "0.6.0-k4-v2.0",
 }
 
 function WeReadPlugin:init()
