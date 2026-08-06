@@ -22,7 +22,7 @@
 
 1. 将 `weread.koplugin` 文件夹复制到 KOReader 的 `plugins` 目录：
    ```
-   koreader/plugins/weread.koplugin/
+   koreader/plugins/weread_K4.koplugin/
    ```
 2. 重启 KOReader，在菜单中找到 `工具 → 微信读书`。
 
