@@ -11,6 +11,10 @@ local BUSY_RETRY_SECONDS = 2
 local BUSY_RETRY_LIMIT = 10
 local SAME_THRESHOLD_PERCENT = 2
 local SOURCE_CONFLICT_THRESHOLD_PERCENT = 2
+-- Coalescing window for settings:flush() from _persist. Short enough that a
+-- crash loses at most one interval of progress state; long enough to avoid a
+-- flash write per progress update.
+local FLUSH_INTERVAL_SECONDS = 30
 
 local function log(level, ...)
     if type(logger[level]) == "function" then
@@ -74,12 +78,42 @@ function ProgressSync:new(options)
         generation = 0,
         dirty = false,
         verified = false,
+        -- Coalesced settings flush: _persist marks dirty and schedules a
+        -- single flush; critical points (close, suspend, manual sync) force
+        -- it immediately. Avoids one weread.lua write per progress update.
+        _flush_pending = false,
+        _flush_scheduled = false,
     }
     return setmetatable(object, self)
 end
 
 function ProgressSync:_config()
     return self.settings:get("sync", {})
+end
+
+-- Merge progress updates into memory immediately (BookStore writes the per-book
+-- JSON right away so readers see fresh data), but defer the LuaSettings flush
+-- and coalesce multiple updates into one disk write.
+function ProgressSync:_schedule_flush()
+    self._flush_pending = true
+    if self._flush_scheduled then return end
+    self._flush_scheduled = true
+    self.scheduler:scheduleIn(FLUSH_INTERVAL_SECONDS, function()
+        self._flush_scheduled = false
+        self:_flush_now()
+    end)
+end
+
+function ProgressSync:_flush_now()
+    if not self._flush_pending then return end
+    self._flush_pending = false
+    local ok, err = pcall(function()
+        self.settings:flush()
+    end)
+    if not ok then
+        log("warn", "progress sync settings flush failed:", tostring(err))
+        self._flush_pending = true -- retry on next flush
+    end
 end
 
 function ProgressSync:_persist(book_id, patch)
@@ -96,7 +130,7 @@ function ProgressSync:_persist(book_id, patch)
     end
     books[book_id] = book
     self.settings:set("books", books)
-    self.settings:flush()
+    self:_schedule_flush()
     return true
 end
 
@@ -144,8 +178,9 @@ function ProgressSync:capture_local()
     end
     book_id = tostring(book_id)
     local document = self.get_document()
+    if not document then return nil, "document_unavailable" end
     local path = document_path(document)
-    if not document or not path then return nil, "document_unavailable" end
+    if not path then return nil, "document_unavailable" end
     local cached = self.document_context
     local book
     local chapters
@@ -670,6 +705,9 @@ function ProgressSync:on_close_document()
     self.local_position = nil
     self.remote_position = nil
     self.document_context = nil
+    -- Persist any pending progress state (e.g. an offline upload backlog)
+    -- before the reader tears down.
+    self:_flush_now()
 end
 
 function ProgressSync:on_suspend()
@@ -683,6 +721,7 @@ function ProgressSync:on_suspend()
         and self:_config().upload_on_close == true then
         self:_upload_snapshot(position, "suspend", false)
     end
+    self:_flush_now()
 end
 
 function ProgressSync:on_resume()
@@ -696,6 +735,7 @@ function ProgressSync:on_resume()
 end
 
 function ProgressSync:sync_now()
+    self:_flush_now()
     return self:_pull({ manual = true })
 end
 

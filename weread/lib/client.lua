@@ -10,7 +10,11 @@ if not ok_json then
     ok_json, json = pcall(require, "rapidjson")
 end
 
-local DEFAULT_TIMEOUT_SECONDS = 15
+-- Default HTTP timeout for synchronous LuaSocket requests. These run on the
+-- UI thread (except read-report jobs, which fork a subprocess), so a long
+-- timeout means a long UI freeze on the K4 under weak network. 10s keeps
+-- weak-network tolerance while capping the worst-case freeze.
+local DEFAULT_TIMEOUT_SECONDS = 10
 local Client = {}
 Client.__index = Client
 

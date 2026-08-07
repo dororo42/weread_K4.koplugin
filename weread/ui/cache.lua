@@ -36,8 +36,8 @@ function M:validateDownloadDir(path)
         return false, _("Invalid path.")
     end
     if not lfs.attributes(path, "mode") then
-        os.execute("mkdir -p " .. string.format("%q", path))
-        if not lfs.attributes(path, "mode") then
+        local ok_dir = PluginUtil.mkdirs(path)
+        if not ok_dir and not lfs.attributes(path, "mode") then
             return false, _("Directory does not exist and could not be created.")
         end
     end
@@ -171,8 +171,10 @@ function M:moveBookDir(src, dst)
     end
     local parent = dst:match("^(.*)/[^/]+$")
     if parent then
-        os.execute("mkdir -p " .. string.format("%q", parent))
+        PluginUtil.mkdirs(parent)
     end
+    -- mv (not os.rename) so the move works across filesystems when the user
+    -- picks a new download directory on a different partition.
     local status = os.execute("mv -f " .. string.format("%q", src) .. " " .. string.format("%q", dst))
     if status == true or status == 0 then
         return true
@@ -643,10 +645,38 @@ function M:confirmClearBookCache(book_id, title, on_cleared)
     })
 end
 
+-- Refuse to delete anything that does not sit under the configured cache
+-- root (defense in depth: book_resolved_dir always falls back to a
+-- sanitized path under cache_dir, but a corrupted setting must never be
+-- able to turn `rm -rf` into a filesystem-destroying command).
+function M:isSafeCachePath(path)
+    if type(path) ~= "string" or path == "" then
+        return false
+    end
+    if path == "/" or path:match("^/+$") then
+        return false
+    end
+    local root = self.settings and self.settings.cache_dir
+    if type(root) ~= "string" or root == "" then
+        return false
+    end
+    local normalized = path:gsub("/+$", "")
+    local root_normalized = root:gsub("/+$", "")
+    if normalized == root_normalized then
+        return false -- never delete the cache root itself
+    end
+    return normalized:sub(1, #root_normalized + 1) == root_normalized .. "/"
+end
+
 function M:clearBookCache(book_id)
     local books = self.settings:get("books", {})
     local cache_dir = Content.book_resolved_dir(self.settings, book_id, books[book_id])
-    os.execute("rm -rf " .. string.format("%q", cache_dir))
+    if self:isSafeCachePath(cache_dir) then
+        os.execute("rm -rf " .. string.format("%q", cache_dir))
+    else
+        logger.warn("refusing to delete unsafe cache path:",
+            tostring(cache_dir))
+    end
     if books[book_id] then
         books[book_id] = nil
         self.settings:set("books", books)
@@ -662,7 +692,13 @@ function M:clearAllMPCache()
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
-            os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
+            local target = Content.book_resolved_dir(self.settings, book_id, book)
+            if self:isSafeCachePath(target) then
+                os.execute("rm -rf " .. string.format("%q", target))
+            else
+                logger.warn("refusing to delete unsafe cache path:",
+                    tostring(target))
+            end
             books[book_id] = nil
         end
     end
@@ -674,7 +710,13 @@ end
 function M:clearAllCache()
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
-        os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
+        local target = Content.book_resolved_dir(self.settings, book_id, book)
+        if self:isSafeCachePath(target) then
+            os.execute("rm -rf " .. string.format("%q", target))
+        else
+            logger.warn("refusing to delete unsafe cache path:",
+                tostring(target))
+        end
     end
     self.settings:set("books", {})
     self.settings:flush()

@@ -39,8 +39,11 @@ local defaults = {
         max_size_mb = 1024,
     },
     read_report = {
-        enabled = false,
-        mode = "manual",
+        -- v0.6.0-k4-v2.x: enabled and auto-associate are the defaults for
+        -- fresh installs (existing saved configs are untouched — LuaSettings
+        -- returns the stored table, not these defaults).
+        enabled = true,
+        mode = "auto",
         book_id = "",
         book_title = "",
         interval_seconds = 30,
@@ -173,8 +176,14 @@ function Settings:get(key, default)
     end
     local indexes = self.store:readSetting("books", {})
     local books = {}
-    for book_id, index in pairs(indexes or {}) do
-        books[book_id] = BookStore.load(self, book_id, index)
+    -- Guard against a corrupted books table: pairs() raises on non-table
+    -- values, and this path runs during document close via detect_book.
+    if type(indexes) == "table" then
+        for book_id, index in pairs(indexes) do
+            if type(index) == "table" then
+                books[book_id] = BookStore.load(self, book_id, index)
+            end
+        end
     end
     return books
 end

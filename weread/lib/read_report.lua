@@ -383,14 +383,24 @@ function ReadReport:start(reason)
     self.state = "waiting"
     self.stop_reason = nil
     self.last_skip = nil
-    -- Start the accumulation clock at session start. watermark tracks how much
-    -- reading time the server has already accepted; while the device is offline
-    -- the tick leaves it intact, so once back online the backlog is drained as
-    -- a series of small reports (the server discards oversized single reports).
-    -- last_time keeps meaning "last successful report at" for the status UI.
+    -- Start the accumulation clock. watermark tracks how much reading time the
+    -- server has already accepted; while the device is offline the tick leaves
+    -- it intact, so once back online the backlog is drained as a series of
+    -- small reports (the server discards oversized single reports).
+    -- Restore the persisted watermark (offline time accumulated in earlier
+    -- sessions / before a stop or suspend) instead of resetting it: resetting
+    -- would silently drop unsent offline reading time. last_time keeps meaning
+    -- "last successful report at" for the status UI.
     self.last_time = nil
-    self.watermark = self.now()
-    self.started_at = self.now()
+    local config = self:_config()
+    local persisted = tonumber(config.watermark)
+    local now = self.now()
+    if persisted and persisted > 0 and persisted <= now then
+        self.watermark = persisted
+    else
+        self.watermark = now
+    end
+    self.started_at = now
     self.waiting_count = 0
 
     local task
@@ -426,6 +436,10 @@ function ReadReport:stop(reason)
     self.state = reason == "suspend" and "suspended"
         or "stopped"
     self.stop_reason = reason
+    -- Keep the unsent backlog across stops (document close, suspend, target
+    -- change): without this the next start() would reset the watermark and the
+    -- offline reading time accumulated so far would be lost.
+    self:_persist_watermark()
     if had_task then
         log("info", "reading time report stopped:",
             "reason=", reason,
@@ -484,9 +498,13 @@ function ReadReport:_tick(generation, task)
         if delay > threshold then
             log("info", "read report tick delayed beyond threshold, likely suspend:",
                 "delay=", delay, "threshold=", threshold)
-            -- Restart the accumulation clock from wake-up time: sleep duration
-            -- is not reading time, but reading after waking still counts.
-            self.watermark = self.now()
+            -- Drop only the sleep window (the delayed tick gap), keeping the
+            -- backlog accumulated before the suspend: resetting the watermark
+            -- to now would silently discard offline reading time too.
+            local now = self.now()
+            self.watermark = math.min(now,
+                (self.watermark or now) + math.max(0, delay))
+            self:_persist_watermark()
         end
     end
     self.next_tick_expected = nil
@@ -788,6 +806,26 @@ function ReadReport:_apply_job_outcome(job, outcome)
     return self:_apply_outcome(outcome)
 end
 
+-- Persist the current watermark so offline-accumulated reading time survives
+-- document close / KOReader restart / suspend. Without this, start() resets
+-- the watermark to now and the unsent backlog is silently dropped — the root
+-- cause of "offline reading time never gets reported".
+function ReadReport:_persist_watermark()
+    if not self.watermark then return end
+    local ok, config = pcall(function()
+        return self.settings:get("read_report")
+    end)
+    if not ok or type(config) ~= "table" then return end
+    config.watermark = self.watermark
+    local ok_set, err = pcall(function()
+        self.settings:set("read_report", config)
+        self.settings:flush()
+    end)
+    if not ok_set then
+        log("warn", "persist read report watermark failed:", tostring(err))
+    end
+end
+
 function ReadReport:_apply_outcome(outcome)
     if type(outcome) ~= "table" then
         self:_set_error("report job returned no result", "job", "read report job failed:")
@@ -801,6 +839,7 @@ function ReadReport:_apply_outcome(outcome)
         -- remaining (now - watermark) backlog is drained by the next ticks.
         if self.watermark and outcome.reported_seconds then
             self.watermark = self.watermark + outcome.reported_seconds
+            self:_persist_watermark()
         end
         self:_record_success({ synckey = outcome.has_synckey and true or nil })
         return true

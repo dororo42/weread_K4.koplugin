@@ -3,6 +3,8 @@ if not ok_json then
     ok_json, json = pcall(require, "rapidjson")
 end
 
+local PluginUtil = require("weread.lib.plugin_util")
+
 local BookStore = {}
 
 local reading_fields = {
@@ -123,7 +125,13 @@ end
 
 function BookStore.load(settings, book_id, index)
     local book = {}
-    merge(book, index)
+    -- A corrupted setting entry (e.g. a non-table book record left by an
+    -- interrupted write) must never crash the reader: merge() iterates with
+    -- pairs(), which raises on a non-table, and this path runs during
+    -- document close via detect_book -> settings:get("books").
+    if type(index) == "table" then
+        merge(book, index)
+    end
     local dir = resolved_dir(settings, book_id, index)
     merge(book, read_json(dir .. "/metadata.json"))
     merge(book, read_json(dir .. "/reading_state.json"))
@@ -136,7 +144,7 @@ end
 function BookStore.save(settings, book_id, book)
     book = type(book) == "table" and book or {}
     local dir = resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
+    PluginUtil.mkdirs(dir)
 
     local metadata = { book_id = book.book_id or book.bookId or tostring(book_id) }
     local reading_state = {}

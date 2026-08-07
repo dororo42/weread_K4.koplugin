@@ -3,6 +3,7 @@ local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
 local bit = require("bit")
 local logger = require("weread.lib.logger")
+local PluginUtil = require("weread.lib.plugin_util")
 
 local Content = {}
 
@@ -96,7 +97,7 @@ function Content.save_catalog_cache(client, settings, book, chapters)
         return false, "missing book id"
     end
     local dir = path:match("^(.*)/[^/]+$")
-    os.execute("mkdir -p " .. string.format("%q", dir))
+    PluginUtil.mkdirs(dir)
     local ok, encoded = pcall(function()
         return client:json_encode({
             version = 1,
@@ -543,7 +544,7 @@ end
 function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local book_id = book.book_id or book.bookId
     local dir = Content.book_resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
+    PluginUtil.mkdirs(dir)
     book.cache_dir = dir
     local book_title = book.title or "WeRead"
     local path = dir .. "/" .. filename_safe(book_title .. " - " .. (chapter.title or tostring(chapter.chapterUid or "chapter"))) .. ".epub"
@@ -615,7 +616,7 @@ end
 function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix, assets, css, cover_data)
     local book_id = book.book_id or book.bookId
     local dir = Content.book_resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
+    PluginUtil.mkdirs(dir)
     book.cache_dir = dir
     local book_title = book.title or "WeRead"
     local path = dir .. "/" .. filename_safe(book_title .. " - " .. (suffix or "book")) .. ".epub"
@@ -1390,7 +1391,7 @@ function Content.save_mp_article_html(settings, book, article, body_html)
     -- Pin the real directory on the record so later lookups, moves and cleanup
     -- can find these files after the download directory changes.
     book.cache_dir = dir
-    os.execute("mkdir -p " .. string.format("%q", dir))
+    PluginUtil.mkdirs(dir)
     local title = article.title or "Article"
     local path = Content.mp_article_path(settings, book, article)
     body_html = strip_mp_reader_font_styles(body_html)
