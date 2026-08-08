@@ -8,7 +8,9 @@ if not ok_ffiutil then
     ffiutil = nil
 end
 
-local DEFAULT_INTERVAL_SECONDS = 30
+local DEFAULT_INTERVAL_SECONDS = 45
+-- K4 tuning: 45s default interval reduces fork/network frequency on weak
+-- hardware while preserving data integrity (watermark guarantees no loss).
 local MIN_INTERVAL_SECONDS = 10
 local CONTEXT_TTL_SECONDS = 15 * 60
 local RENEWAL_COOLDOWN_SECONDS = 10 * 60
@@ -37,7 +39,9 @@ local MAX_SINGLE_REPORT_SECONDS = 30
 -- the cost of slower (but lossless — the watermark keeps the unreported time)
 -- catch-up. Reading time is never lost; it is simply reported in more, smaller
 -- increments over a longer window.
-local BACKLOG_TICK_SECONDS = 10
+local BACKLOG_TICK_SECONDS = 15
+-- K4 tuning: raised from 10s to 15s to further reduce radio wake-ups on the
+-- K4's weak WiFi, at the cost of slower (but lossless) catch-up.
 
 -- Context fields that the subprocess sends back for the parent to persist.
 -- Mirrors the scalar reading-state fields stored by BookStore; the chapter
@@ -236,7 +240,10 @@ end
 function ReadReport:_next_report_seconds()
     local base = self.watermark or self.started_at or self.now()
     local backlog = math.max(0, self.now() - base)
-    return math.min(MAX_SINGLE_REPORT_SECONDS, math.max(self:_interval(), backlog))
+    if backlog > 0 then
+        return math.min(MAX_SINGLE_REPORT_SECONDS, backlog)
+    end
+    return self:_interval()
 end
 
 -- Tick cadence: normally one report per interval; while a backlog of unsent
@@ -396,7 +403,11 @@ function ReadReport:start(reason)
     local persisted = tonumber(config.watermark)
     local now = self.now()
     if persisted and persisted > 0 and persisted <= now then
-        self.watermark = persisted
+        -- Clamp the restored watermark: only keep backlog within a reasonable
+        -- window (2x interval) to avoid reporting days of offline time as
+        -- reading time (H-4 fix).
+        local max_backlog = self:_interval() * 2
+        self.watermark = math.max(persisted, now - max_backlog)
     else
         self.watermark = now
     end
@@ -430,7 +441,23 @@ function ReadReport:stop(reason)
         self.task = nil
     end
     if self.job then
-        self:_abandon_job(self.job)
+        -- Try to collect any already-completed result before abandoning (H-7 fix)
+        local runner = self.subprocess
+        if runner and self.job.read_fd then
+            local readable = runner.read_size(self.job.read_fd)
+            if readable and readable > 0 then
+                local payload = runner.read_all(self.job.read_fd)
+                self.job.read_fd = nil
+                local outcome = self:_decode_outcome(payload)
+                if outcome then
+                    self:_apply_job_outcome(self.job, outcome)
+                    self.job = nil
+                end
+            end
+        end
+        if self.job then
+            self:_abandon_job(self.job)
+        end
     end
     self.next_tick_expected = nil
     self.state = reason == "suspend" and "suspended"
@@ -440,6 +467,11 @@ function ReadReport:stop(reason)
     -- change): without this the next start() would reset the watermark and the
     -- offline reading time accumulated so far would be lost.
     self:_persist_watermark()
+    -- Force flush on stop to ensure watermark is persisted (M-L9 fix)
+    if self._watermark_flush_pending then
+        self._watermark_flush_pending = false
+        pcall(function() self.settings:flush() end)
+    end
     if had_task then
         log("info", "reading time report stopped:",
             "reason=", reason,
@@ -455,11 +487,23 @@ end
 
 function ReadReport:on_suspend()
     self.suspended = true
+    self.suspended_at = self.now()
     self:stop("suspend")
 end
 
 function ReadReport:on_resume()
     self.suspended = false
+    -- Advance watermark past the sleep duration so suspend time is not
+    -- reported as reading time (H-4 fix).
+    if self.suspended_at and self.watermark then
+        local sleep_duration = self.now() - self.suspended_at
+        local threshold = self:_interval() * 2
+        if sleep_duration > threshold then
+            self.watermark = math.min(self.now(), self.watermark + sleep_duration)
+            self:_persist_watermark()
+        end
+    end
+    self.suspended_at = nil
     return self:maybe_start("resume")
 end
 
@@ -724,6 +768,8 @@ function ReadReport:_abandon_job(job)
         self.scheduler:unschedule(job.poll)
     end
     runner.terminate(job.pid)
+    local collect_attempts = 0
+    local MAX_COLLECT_ATTEMPTS = 30  -- 30 * 2s = 60s upper bound (M-L6 fix)
     local collect
     collect = function()
         if runner.is_done(job.pid) then
@@ -731,6 +777,13 @@ function ReadReport:_abandon_job(job)
                 runner.read_all(job.read_fd)
                 job.read_fd = nil
             end
+            return
+        end
+        collect_attempts = collect_attempts + 1
+        if collect_attempts > MAX_COLLECT_ATTEMPTS then
+            log("warn", "zombie collection gave up after",
+                tostring(MAX_COLLECT_ATTEMPTS * JOB_COLLECT_INTERVAL_SECONDS) .. "s",
+                "pid=", tostring(job.pid))
             return
         end
         if job.read_fd and (runner.read_size(job.read_fd) or 0) ~= 0 then
@@ -745,10 +798,15 @@ end
 
 function ReadReport:_collect_pid(pid)
     local runner = self.subprocess
+    local collect_attempts = 0
+    local MAX_COLLECT_ATTEMPTS = 30  -- 30 * 2s = 60s upper bound (M-L6 fix)
     local collect
     collect = function()
         if not runner.is_done(pid) then
-            self.scheduler:scheduleIn(JOB_COLLECT_INTERVAL_SECONDS, collect)
+            collect_attempts = collect_attempts + 1
+            if collect_attempts <= MAX_COLLECT_ATTEMPTS then
+                self.scheduler:scheduleIn(JOB_COLLECT_INTERVAL_SECONDS, collect)
+            end
         end
     end
     self.scheduler:scheduleIn(1, collect)
@@ -819,10 +877,23 @@ function ReadReport:_persist_watermark()
     config.watermark = self.watermark
     local ok_set, err = pcall(function()
         self.settings:set("read_report", config)
-        self.settings:flush()
     end)
     if not ok_set then
         log("warn", "persist read report watermark failed:", tostring(err))
+        return
+    end
+    -- Coalesce flush: mark dirty and schedule a single deferred flush
+    -- instead of writing on every tick (M-L9 fix).
+    self._watermark_flush_pending = true
+    if not self._watermark_flush_scheduled then
+        self._watermark_flush_scheduled = true
+        self.scheduler:scheduleIn(30, function()
+            self._watermark_flush_scheduled = false
+            if self._watermark_flush_pending then
+                self._watermark_flush_pending = false
+                pcall(function() self.settings:flush() end)
+            end
+        end)
     end
 end
 

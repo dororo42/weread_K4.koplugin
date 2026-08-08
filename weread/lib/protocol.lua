@@ -4,6 +4,9 @@ local Crypto = require("weread.lib.crypto")
 local WeRead = {}
 
 WeRead.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0"
+-- WARNING: This is a protocol-compatibility constant from the WeRead web reader.
+-- If the server rejects sg signatures, this value may need to be updated from a
+-- fresh capture of the web reader's JavaScript. Do NOT change unless verified.
 WeRead.DEFAULT_READER_TOKEN = "3c5c8717f3daf09iop3423zafeqoi"
 WeRead.SKILL_VERSION = "1.0.5"
 

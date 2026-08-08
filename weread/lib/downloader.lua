@@ -320,6 +320,11 @@ function Downloader:start(book, chapters, suffix, options)
         if options.prefetch then
             if active.prefetch then
                 self:cancelPrefetch("replaced")
+                -- Don't overwrite a queued manual download with a new prefetch (M-L4 fix)
+                if self._pending_start and not self._pending_start.options.prefetch then
+                    self.show_transient(_("Another download is already in progress."), 1)
+                    return false
+                end
                 self._pending_start = {
                     book = book,
                     chapters = chapters,
@@ -345,6 +350,16 @@ function Downloader:start(book, chapters, suffix, options)
     end
 
     local total = #chapters
+    if total == 0 then
+        if type(options.on_complete) == "function" then
+            pcall(options.on_complete, false, "no_chapters")
+        end
+        if not options.prefetch then
+            self.show_info(_("No chapters to download."))
+        end
+        return false
+    end
+
     local dl = {
         book = book,
         chapters = chapters,
@@ -420,10 +435,24 @@ function Downloader:start(book, chapters, suffix, options)
 
         self:_beginStandby()
         dl.standby_guard = true
-        notifyStart()
-
-        if not dl.prefetch then self:_ensureProgressDialog(dl) end
-
+        local init_ok, init_err = xpcall(function()
+            notifyStart()
+            if not dl.prefetch then self:_ensureProgressDialog(dl) end
+        end, debug.traceback)
+        if not init_ok then
+            self:_releaseStandby(dl)
+            if dl.progress_dialog then
+                dl.progress_dialog:close()
+                dl.progress_dialog = nil
+            end
+            logger.err("download initialization failed:", log_error(init_err))
+            self:_notifyCompletion(dl, false, init_err)
+            self:_finishJob(dl)
+            if not dl.prefetch then
+                self.show_info(T(_("Download failed:\n%1"), display_error(init_err)))
+            end
+            return
+        end
         self:_scheduleGuarded(dl, function() self:_step(dl) end)
     end
     local started = task_runner(function()
@@ -783,7 +812,11 @@ function Downloader:_step(dl)
         if dl.open_on_complete then
             self:_notifyCompletion(dl, true, path)
             self:_finishJob(dl)
-            self.open_file(path)
+            local open_ok, open_err = pcall(self.open_file, path)
+            if not open_ok then
+                logger.warn("open_file failed after successful download:",
+                    log_error(open_err))
+            end
             return
         end
         self:_notifyCompletion(dl, true, path)

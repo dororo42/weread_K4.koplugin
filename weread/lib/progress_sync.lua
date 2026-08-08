@@ -331,6 +331,7 @@ function ProgressSync:_apply_remote(remote, context, options)
             fraction = target.fraction,
             remote = copy(remote),
             notify = options.manual == true,
+            created_at = self.now(),  -- M-L3 fix: for expiry check
         }
         self.state = "switching_chapter"
         local open_ok, opened, open_error = pcall(
@@ -355,7 +356,9 @@ function ProgressSync:_apply_remote(remote, context, options)
     if options.manual then
         self.notify("remote_applied", { position = remote })
     end
+    local apply_generation = self.generation
     self.scheduler:scheduleIn(0.15, function()
+        if apply_generation ~= self.generation then return end
         local position = self:capture_local()
         if position then
             self.local_position = position
@@ -370,8 +373,18 @@ end
 
 function ProgressSync:_upload_snapshot(position, reason, show_result)
     if type(position) ~= "table" then return false end
+    local upload_generation = self.generation
     local book_id = tostring(position.book_id or self.current_book_id or "")
-    if book_id == "" or self.uploading then return false end
+    local upload_book_id = book_id
+    if book_id == "" then return false end
+    if self.uploading then
+        -- Another upload is in flight; persist for later retry (M-L2 fix)
+        self:_persist(book_id, {
+            pending_upload_position = position,
+            pending_upload_reason = reason or "upload_busy",
+        })
+        return false
+    end
     self:_persist(book_id, {
         pending_upload_position = position,
         pending_upload_reason = reason or "unspecified",
@@ -401,6 +414,11 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
         end
         self.uploading = false
         if ok and accepted then
+            if upload_generation ~= self.generation
+                or tostring(self.detect_book() or "") ~= upload_book_id then
+                self.uploading = false
+                return
+            end
             self.state = "verified"
             self.dirty = false
             self.last_uploaded_position = copy(position)
@@ -423,6 +441,11 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
         end
         local error_message = ok and type(outcome) == "table"
             and outcome.error or outcome
+        if upload_generation ~= self.generation
+            or tostring(self.detect_book() or "") ~= upload_book_id then
+            self.uploading = false
+            return
+        end
         self.state = "error"
         self:_persist(book_id, {
             last_sync_error = tostring(error_message or "upload_failed"),
@@ -461,6 +484,9 @@ end
 function ProgressSync:_resolve(local_position, remote, context, options)
     options = options or {}
     self.local_position = copy(local_position)
+    -- Invalidate any previous unresolved choice (M-L1 fix)
+    self._choice_generation = (self._choice_generation or 0) + 1
+    local current_choice_gen = self._choice_generation
     self.remote_position = copy(remote)
     local comparison = PositionMapper.compare(
         local_position,
@@ -489,6 +515,7 @@ function ProgressSync:_resolve(local_position, remote, context, options)
         local function choice_is_current()
             return choice_generation == self.generation
                 and tostring(self.detect_book() or "") == context.book_id
+                and current_choice_gen == self._choice_generation
         end
         self.on_choice({
             book_title = context.book.title or context.book_id,
@@ -555,14 +582,22 @@ function ProgressSync:_pull(options)
     self.pulling = true
     self.state = "pulling"
     local started = self.run_online("progress_pull", function()
+        self.pulling = false
         local remote, pull_error = self:_fetch_remote(
             context.book_id,
             context.chapters
         )
-        self.pulling = false
         if generation ~= self.generation
             or tostring(self.detect_book() or "") ~= context.book_id then
             return
+        end
+        -- Re-capture local position if user turned pages during the pull (H-6 fix)
+        local current_position = self:capture_local()
+        if current_position and local_position
+            and not PositionMapper.same_position(current_position, local_position) then
+            -- Local position changed during pull; use the fresh one
+            local_position = current_position
+            self.local_position = copy(current_position)
         end
         if not remote then
             self.state = "error"
@@ -593,6 +628,12 @@ end
 
 function ProgressSync:_apply_pending_jump(book_id)
     local pending = self.pending_jump
+    -- Expire stale pending jumps (M-L3 fix)
+    if pending and pending.created_at
+        and (self.now() - pending.created_at) > 5 * 60 then  -- 5 minutes
+        self:cancel_pending_jump("expired")
+        return false
+    end
     if not pending or tostring(pending.book_id) ~= tostring(book_id) then
         return false
     end
@@ -619,7 +660,9 @@ function ProgressSync:_apply_pending_jump(book_id)
     if pending.notify then
         self.notify("remote_applied", { position = pending.remote })
     end
+    local apply_generation = self.generation
     self.scheduler:scheduleIn(0.15, function()
+        if apply_generation ~= self.generation then return end
         local position = self:capture_local()
         if position then
             self.local_position = position
@@ -640,6 +683,9 @@ end
 
 function ProgressSync:on_reader_ready()
     self.generation = self.generation + 1
+    -- Reset stale pulling/uploading flags from crashed pulls (H-5 fix)
+    self.pulling = false
+    self.uploading = false
     local generation = self.generation
     self.current_book_id = nil
     self.local_position = nil
@@ -659,6 +705,16 @@ function ProgressSync:on_reader_ready()
         book_id = tostring(book_id)
         self.current_book_id = book_id
         if self:_apply_pending_jump(book_id) then return end
+
+        -- Check for pending offline upload backlog
+        local book = self.get_book(book_id)
+        if book and book.pending_upload_position then
+            local pending = book.pending_upload_position
+            -- Only retry if we're now online
+            if self.is_online() then
+                self:_upload_snapshot(pending, "offline_backlog", false)
+            end
+        end
 
         local local_position, reason = self:capture_local()
         if not local_position then
@@ -730,6 +786,12 @@ function ProgressSync:on_resume()
     if slept >= RESUME_RECHECK_SECONDS
         and self:_config().pull_on_open == true then
         self:_clear_verified("resume_recheck")
+        if self.current_book_id then
+            local book = self.get_book(self.current_book_id)
+            if book and book.pending_upload_position and self.is_online() then
+                self:_upload_snapshot(book.pending_upload_position, "resume_backlog", false)
+            end
+        end
         self:_pull({ manual = false })
     end
 end

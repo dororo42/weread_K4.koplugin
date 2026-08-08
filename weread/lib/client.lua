@@ -12,9 +12,10 @@ end
 
 -- Default HTTP timeout for synchronous LuaSocket requests. These run on the
 -- UI thread (except read-report jobs, which fork a subprocess), so a long
--- timeout means a long UI freeze on the K4 under weak network. 10s keeps
--- weak-network tolerance while capping the worst-case freeze.
-local DEFAULT_TIMEOUT_SECONDS = 10
+-- timeout means a long UI freeze on the K4 under weak network. 8s keeps
+-- weak-network tolerance while capping the worst-case freeze (K4 tuning:
+-- reduced from 10s; weak-network recovery relies on retry, not long waits).
+local DEFAULT_TIMEOUT_SECONDS = 8
 local Client = {}
 Client.__index = Client
 
@@ -101,6 +102,7 @@ end
 local function log_response(label, context, text)
     context = context or {}
     text = text or ""
+    local truncated_text = #text > 500 and text:sub(1, 500) .. "..." or text
     logger.err(
         label,
         "method=", tostring(context.method or "unknown"),
@@ -109,7 +111,7 @@ local function log_response(label, context, text)
         "status=", tostring(context.code or "unknown"),
         "content_type=", tostring(header_value(context.headers, "content-type") or "unknown"),
         "body_bytes=", tostring(#text),
-        "response_body=", text
+        "response_body=", truncated_text
     )
 end
 
@@ -139,8 +141,8 @@ local function merge_req_opts(default_opts, user_opts)
 end
 
 local function is_weread_url(url)
-    local authority = tostring(url or ""):match("^https?://([^/]+)")
-    if not authority then
+    local scheme, authority = tostring(url or ""):match("^(https?)://([^/]+)")
+    if not scheme or scheme ~= "https" then
         return false
     end
     local host = authority:lower():gsub(":%d+$", "")
@@ -153,6 +155,12 @@ local function absolute_url(base_url, location)
     end
     if location:match("^https?://") then
         return location
+    end
+    if location:sub(1, 2) == "//" then
+        local scheme = tostring(base_url or ""):match("^(https?)://")
+        if scheme then
+            return scheme .. ":" .. location
+        end
     end
     local scheme, host = tostring(base_url or ""):match("^(https?)://([^/]+)")
     if not scheme then
@@ -176,7 +184,9 @@ end
 local function clear_cross_origin_headers(headers)
     for key in pairs(headers or {}) do
         local name = tostring(key):lower()
-        if name == "authorization" or name == "cookie" or name == "origin" then
+        if name == "authorization" or name == "cookie" or name == "origin"
+            or name == "x-wr-ticket" or name == "x-wrpa-0"
+            or name:sub(1, 5) == "x-wr-" then
             headers[key] = nil
         end
     end

@@ -3,7 +3,9 @@ local Cookie = {}
 function Cookie.to_header(cookies)
     local parts = {}
     for key, value in pairs(cookies or {}) do
-        table.insert(parts, key .. "=" .. value)
+        -- Strip control characters from value to prevent CRLF header injection (L-1 fix)
+        local safe_value = tostring(value or ""):gsub("[%c]", "")
+        table.insert(parts, tostring(key) .. "=" .. safe_value)
     end
     table.sort(parts)
     return table.concat(parts, "; ")
@@ -41,7 +43,12 @@ function Cookie.merge_set_cookie(cookies, set_cookie)
             if value == "" then
                 cookies[name] = nil
             else
-                cookies[name] = value
+                -- Enforce cookie count and value size limits (L-6 fix)
+                local count = 0
+                for _ in pairs(cookies) do count = count + 1 end
+                if count < 32 and #value <= 4096 then
+                    cookies[name] = value
+                end
             end
         end
     end

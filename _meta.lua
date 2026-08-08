@@ -6,5 +6,5 @@
 return {
     fullname = "WeRead",
     description = "Read WeRead books in KOReader, cache chapters, and sync reading progress.",
-    version = "0.6.0-k4-v2.0",
+    version = "0.6.0-k4-v2.5",
 }

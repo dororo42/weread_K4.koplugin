@@ -17,6 +17,62 @@ local file_exists = PluginUtil.file_exists
 
 local M = {}
 
+-- Recursively delete a directory tree without using shell commands.
+local function rmdir_recursive(path)
+    local lfs = require("libs/libkoreader-lfs")
+    local ok, iter, dir_obj = pcall(lfs.dir, path)
+    if not ok then return false end
+    for entry in iter, dir_obj do
+        if entry ~= "." and entry ~= ".." then
+            local child = path .. "/" .. entry
+            local attr = lfs.attributes(child)
+            if attr and attr.mode == "directory" then
+                rmdir_recursive(child)
+            else
+                os.remove(child)
+            end
+        end
+    end
+    return lfs.rmdir(path)
+end
+
+-- Move a directory across filesystems without shell commands.
+local function move_dir(src, dst)
+    local ok_rename, err_rename = pcall(os.rename, src, dst)
+    if ok_rename then return true end
+    -- os.rename fails across filesystems; fall back to copy+delete
+    local lfs = require("libs/libkoreader-lfs")
+    -- Try using lfs for a recursive copy if available, otherwise
+    -- fall back to a simple approach: create dst, move contents, remove src
+    PluginUtil.mkdirs(dst)
+    local ok, iter, dir_obj = pcall(lfs.dir, src)
+    if not ok then return false, err_rename end
+    for entry in iter, dir_obj do
+        if entry ~= "." and entry ~= ".." then
+            local child_src = src .. "/" .. entry
+            local child_dst = dst .. "/" .. entry
+            local attr = lfs.attributes(child_src)
+            if attr and attr.mode == "directory" then
+                move_dir(child_src, child_dst)
+            else
+                local fin = io.open(child_src, "rb")
+                if fin then
+                    local data = fin:read("*a")
+                    fin:close()
+                    local fout = io.open(child_dst, "wb")
+                    if fout then
+                        fout:write(data)
+                        fout:close()
+                    end
+                end
+                os.remove(child_src)
+            end
+        end
+    end
+    lfs.rmdir(src)
+    return true
+end
+
 function M:setMPImageDownload(enabled)
     local cache = self.settings:get("cache")
     cache.download_mp_images = enabled == true
@@ -173,13 +229,9 @@ function M:moveBookDir(src, dst)
     if parent then
         PluginUtil.mkdirs(parent)
     end
-    -- mv (not os.rename) so the move works across filesystems when the user
-    -- picks a new download directory on a different partition.
-    local status = os.execute("mv -f " .. string.format("%q", src) .. " " .. string.format("%q", dst))
-    if status == true or status == 0 then
-        return true
-    end
-    return false, "move_failed"
+    -- os.rename handles same-filesystem moves; move_dir falls back to a
+    -- copy+delete when the target is on a different partition.
+    return move_dir(src, dst)
 end
 
 -- Rewrite a stored absolute file path to sit under the new book directory,
@@ -672,7 +724,7 @@ function M:clearBookCache(book_id)
     local books = self.settings:get("books", {})
     local cache_dir = Content.book_resolved_dir(self.settings, book_id, books[book_id])
     if self:isSafeCachePath(cache_dir) then
-        os.execute("rm -rf " .. string.format("%q", cache_dir))
+        rmdir_recursive(cache_dir)
     else
         logger.warn("refusing to delete unsafe cache path:",
             tostring(cache_dir))
@@ -694,7 +746,7 @@ function M:clearAllMPCache()
         if WeRead.is_mp_book(book_id) then
             local target = Content.book_resolved_dir(self.settings, book_id, book)
             if self:isSafeCachePath(target) then
-                os.execute("rm -rf " .. string.format("%q", target))
+                rmdir_recursive(target)
             else
                 logger.warn("refusing to delete unsafe cache path:",
                     tostring(target))
@@ -712,7 +764,7 @@ function M:clearAllCache()
     for book_id, book in pairs(books) do
         local target = Content.book_resolved_dir(self.settings, book_id, book)
         if self:isSafeCachePath(target) then
-            os.execute("rm -rf " .. string.format("%q", target))
+            rmdir_recursive(target)
         else
             logger.warn("refusing to delete unsafe cache path:",
                 tostring(target))

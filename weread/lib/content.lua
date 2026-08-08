@@ -235,12 +235,22 @@ local function unique_asset_name(used, name, ext)
 end
 
 local function write_file(path, data)
-    local file, err = io.open(path, "wb")
+    local tmp_path = path .. ".tmp"
+    local file, err = io.open(tmp_path, "wb")
     if not file then
         error(err)
     end
-    file:write(data)
+    local write_ok, write_err = file:write(data)
     file:close()
+    if not write_ok then
+        os.remove(tmp_path)
+        error(write_err or "write failed")
+    end
+    local rename_ok, rename_err = os.rename(tmp_path, path)
+    if not rename_ok then
+        os.remove(tmp_path)
+        error(rename_err or "rename failed")
+    end
 end
 
 local function write_epub(path, entries)
@@ -325,6 +335,16 @@ local function checked_body(response_text)
     return body
 end
 
+local b64_decode_table
+local function init_b64_decode_table()
+    if b64_decode_table then return end
+    b64_decode_table = {}
+    for i = 0, 63 do
+        local char = b64chars:sub(i + 1, i + 1)
+        b64_decode_table[char] = i
+    end
+end
+
 local function base64_decode(data)
     data = data:gsub("-", "+"):gsub("_", "/")
     local pad = #data % 4
@@ -332,28 +352,36 @@ local function base64_decode(data)
         data = data .. string.rep("=", 4 - pad)
     end
     data = data:gsub("[^" .. b64chars .. "=]", "")
-    return (data:gsub(".", function(char)
-        if char == "=" then
-            return ""
-        end
-        local bits = ""
-        local index = b64chars:find(char, 1, true) - 1
-        for bit = 6, 1, -1 do
-            bits = bits .. (index % 2 ^ bit - index % 2 ^ (bit - 1) > 0 and "1" or "0")
-        end
-        return bits
-    end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(bits)
-        if #bits ~= 8 then
-            return ""
-        end
-        local byte = 0
-        for i = 1, 8 do
-            if bits:sub(i, i) == "1" then
-                byte = byte + 2 ^ (8 - i)
+    init_b64_decode_table()
+    local result = {}
+    local i = 1
+    local len = #data
+    while i <= len - 3 do
+        local a = b64_decode_table[data:sub(i, i)]
+        local b = b64_decode_table[data:sub(i + 1, i + 1)]
+        local c = data:sub(i + 2, i + 2)
+        local d = data:sub(i + 3, i + 3)
+        if a and b then
+            local n = bit.bor(bit.lshift(a, 2), bit.rshift(b, 4))
+            result[#result + 1] = string.char(n)
+            if c ~= "=" then
+                c = b64_decode_table[c]
+                if c then
+                    n = bit.bor(bit.lshift(bit.band(b, 0x0f), 4), bit.rshift(c, 2))
+                    result[#result + 1] = string.char(n)
+                    if d ~= "=" then
+                        d = b64_decode_table[d]
+                        if d then
+                            n = bit.bor(bit.lshift(bit.band(c, 0x03), 6), d)
+                            result[#result + 1] = string.char(n)
+                        end
+                    end
+                end
             end
         end
-        return string.char(byte)
-    end))
+        i = i + 4
+    end
+    return table.concat(result)
 end
 
 local function swap_positions(encoded)
@@ -869,13 +897,25 @@ function Content.ensure_reader_state(client, book)
     if not book.psvts then
         error("reader.psvts not found")
     end
+    -- Record freshness timestamp so refresh_reader_state's TTL check (H-9)
+    -- works on the download path too (read_report sets it separately).
+    book.read_context_updated_at = os.time()
     return state
 end
 
+-- TTL for reader state freshness: skip refresh if recently updated (H-9 fix).
+local READER_STATE_TTL_SECONDS = 15 * 60
+
 --- Refresh psvts before downloading a chapter (matches per-chapter reader page fetch).
 function Content.refresh_reader_state(client, book, chapter)
-    book.psvts = nil
     local book_id = book.book_id or book.bookId
+    -- Check TTL: skip refresh if state is still fresh
+    local age = os.time() - (tonumber(book.read_context_updated_at) or 0)
+    if tostring(book.psvts or "") ~= ""
+        and age < READER_STATE_TTL_SECONDS then
+        return
+    end
+    book.psvts = nil
     if chapter and chapter.chapterUid then
         book.reader_url = WeRead.reader_url(book_id, chapter.chapterUid)
     else
@@ -987,65 +1027,6 @@ function Content.fetch_chapter_css(client, settings, book, chapter)
     return nil
 end
 
-
-local function apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
-    -- K4 fork: underlines/thoughts feature removed; pass the chapter through unchanged.
-    return xhtml, css
-end
-
-function Content.fetch_chapter_epub(client, settings, book, chapter)
-    local book_id = book.book_id or book.bookId
-    local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
-    local css = Content.fetch_chapter_css(client, settings, book, chapter)
-    xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
-    local assets = {}
-    local cache = settings:get("cache", {})
-    if cache.download_book_images then
-        local used_names = {}
-        local src_map
-        assets, src_map = Content.download_chapter_assets(client, book, chapter, used_names)
-        xhtml = Content.rewrite_image_sources(xhtml, src_map)
-        local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, used_names)
-        xhtml = inline_xhtml
-        for _, a in ipairs(inline_assets) do
-            table.insert(assets, a)
-        end
-    end
-    local path = Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
-    book.cached_chapters = book.cached_chapters or {}
-    book.cached_chapters[tostring(chapter.chapterUid)] = path
-    book.cached_file = path
-    book.chapter_uid = chapter.chapterUid
-    book.chapter_idx = chapter.chapterIdx
-    book.reader_url = book.reader_url or WeRead.reader_url(book_id)
-    return path, chapter
-end
-
-function Content.fetch_single_chapter_content(client, settings, book, chapter, state)
-    state = state or {}
-    local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
-    if not state.css then
-        state.css = Content.fetch_chapter_css(client, settings, book, chapter)
-    end
-    xhtml, state.css = apply_chapter_annotations(client, settings, book, chapter, xhtml, state.css)
-    local chapter_assets = {}
-    local cache = settings:get("cache", {})
-    if cache.download_book_images then
-        state.used_asset_names = state.used_asset_names or {}
-        local tar_assets, src_map = Content.download_chapter_assets(client, book, chapter, state.used_asset_names)
-        for _, asset in ipairs(tar_assets) do
-            table.insert(chapter_assets, asset)
-        end
-        xhtml = Content.rewrite_image_sources(xhtml, src_map)
-        local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, state.used_asset_names)
-        xhtml = inline_xhtml
-        for _, a in ipairs(inline_assets) do
-            table.insert(chapter_assets, a)
-        end
-    end
-    return xhtml, chapter_assets
-end
-
 -- K4 fork: underlines/thoughts removed; the downloader path is the sole caller
 -- of fetch_single_chapter_source (annotation batching no longer applies).
 function Content.fetch_single_chapter_source(client, settings, book, chapter, state)
@@ -1093,7 +1074,6 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
         if not css then
             css = Content.fetch_chapter_css(client, settings, book, chapter)
         end
-        xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
         if cache.download_book_images then
             if options.progress then
                 options.progress(chapter_index, #chapters, chapter, "images")
@@ -1124,20 +1104,6 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
     book.cached_file = path
     book.reader_url = book.reader_url or WeRead.reader_url(book.book_id or book.bookId)
     return path, selected
-end
-
-function Content.fetch_first_chapter(client, settings, book)
-    Content.ensure_reader_state(client, book)
-    local chapters = book.chapters or Content.load_catalog_cache(client, settings, book)
-    if not chapters then
-        chapters = Content.fetch_catalog(client, book)
-        Content.save_catalog_cache(client, settings, book, chapters)
-    end
-    local chapter = Content.first_readable_chapter(chapters)
-    if not chapter then
-        error("No readable chapter found")
-    end
-    return Content.fetch_chapter_epub(client, settings, book, chapter)
 end
 
 function Content.parse_mp_articles(data)

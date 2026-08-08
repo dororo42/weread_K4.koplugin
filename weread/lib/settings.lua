@@ -21,12 +21,10 @@ local defaults = {
         login_time = 0,
     },
     books = {},
-    downloads = {},
     sync = {
         pull_on_open = false,
         upload_on_close = false,
         ask_on_conflict = true,
-        upload_interval_minutes = 0,
     },
     cache = {
         download_book_images = true,
@@ -48,9 +46,6 @@ local defaults = {
         book_title = "",
         interval_seconds = 30,
         report_on_open = true,
-    },
-    advanced = {
-        developer_logs = false,
     },
     shelf = {
         sort_order = "time_desc",
@@ -164,6 +159,10 @@ function Settings:new()
     if legacy_changed then
         obj.store:flush()
     end
+    -- H-8 fix: in-memory cache for the books table so get("books") does not
+    -- do an O(N) disk read/merge on every call.
+    obj._books_cache = nil
+    obj._books_cache_dirty = true
     return setmetatable(obj, self)
 end
 
@@ -173,6 +172,11 @@ function Settings:get(key, default)
     end
     if key ~= "books" then
         return self.store:readSetting(key, deepcopy(default))
+    end
+    -- Return cached books table if available (H-8 fix: avoid O(N) disk reads
+    -- on every get("books") call).
+    if self._books_cache and not self._books_cache_dirty then
+        return self._books_cache
     end
     local indexes = self.store:readSetting("books", {})
     local books = {}
@@ -185,6 +189,8 @@ function Settings:get(key, default)
             end
         end
     end
+    self._books_cache = books
+    self._books_cache_dirty = false
     return books
 end
 
@@ -199,6 +205,9 @@ function Settings:set(key, value)
             indexes[book_id] = index_or_err
         end
         value = indexes
+        -- Invalidate cache (H-8 fix): next get("books") rebuilds from disk.
+        self._books_cache = nil
+        self._books_cache_dirty = true
     end
     self.store:saveSetting(key, value)
 end
@@ -316,6 +325,24 @@ function Settings:import_manual_login()
     local ok_load, chunk = pcall(loadfile, path)
     if not ok_load or type(chunk) ~= "function" then
         return false, "invalid_format"
+    end
+    -- Sandbox: restrict the environment so the loaded file cannot access
+    -- os, io, require, ffi, etc. (M-S1 fix).
+    local sandbox_env = {
+        table = table,
+        string = string,
+        tonumber = tonumber,
+        tostring = tostring,
+        pairs = pairs,
+        ipairs = ipairs,
+        type = type,
+        next = next,
+        select = select,
+    }
+    -- LuaJIT/Lua 5.1: use setfenv; Lua 5.2+: use load with env (but loadfile
+    -- already loaded, so setfenv is the compatible path).
+    if setfenv then
+        setfenv(chunk, sandbox_env)
     end
     local ok_run, data = pcall(chunk)
     if not ok_run or type(data) ~= "table" then

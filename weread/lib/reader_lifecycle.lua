@@ -12,6 +12,25 @@ local log_error = PluginUtil.log_error
 
 local M = {}
 
+-- Wrap a KOReader event handler so a Lua error can never propagate into
+-- KOReader's core event loop. KOReader's event propagation
+-- (WidgetContainer:propagateEvent) is NOT pcall-protected: an exception
+-- inside onCloseDocument aborts the teardown (document stays open, reader
+-- stays on screen). Guarding every on* entry point keeps the plugin
+-- failure-isolated: log the traceback and return nil so the chain runs.
+local function guarded(label, fn)
+    return function(self, ...)
+        local args = { ... }
+        local ok, err = xpcall(function()
+            return fn(self, unpack(args))
+        end, debug.traceback)
+        if not ok then
+            logger.err("event handler failed:", label, log_error(err))
+            return nil
+        end
+    end
+end
+
 function M:onShowWeRead()
     self:showAccountStatus()
 end
@@ -96,11 +115,11 @@ function M:onReaderReady()
     end
 end
 
-function M:onPageUpdate()
+M.onPageUpdate = guarded("onPageUpdate", function(self)
     self.progress_sync:on_page_update()
-end
+end)
 
-function M:onCloseDocument()
+M.onCloseDocument = guarded("onCloseDocument", function(self)
     -- Capture the immutable local position while the document is still alive.
     -- The network upload is scheduled; stopping ReadReport below also frees any
     -- in-flight report slot before that scheduled upload begins.
@@ -115,7 +134,7 @@ function M:onCloseDocument()
     end
 
     self.read_report:on_close_document()
-end
+end)
 
 function M:showPrefetchNotice(text, timeout)
     if self.settings:get("cache").show_prefetch_notifications == false then
@@ -229,15 +248,15 @@ function M:stopReadReport(reason)
     self.read_report:stop(reason or "explicit_stop")
 end
 
-function M:onSuspend()
+M.onSuspend = guarded("onSuspend", function(self)
     self.progress_sync:on_suspend()
     self.read_report:on_suspend()
-end
+end)
 
-function M:onResume()
+M.onResume = guarded("onResume", function(self)
     self.progress_sync:on_resume()
     self.read_report:on_resume()
-end
+end)
 
 function M:detectWeReadBook()
     if not self.ui.document then
