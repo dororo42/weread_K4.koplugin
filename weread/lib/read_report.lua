@@ -8,9 +8,9 @@ if not ok_ffiutil then
     ffiutil = nil
 end
 
-local DEFAULT_INTERVAL_SECONDS = 45
--- K4 tuning: 45s default interval reduces fork/network frequency on weak
--- hardware while preserving data integrity (watermark guarantees no loss).
+local DEFAULT_INTERVAL_SECONDS = 30
+-- K4 tuning: 30s default interval (was 45) tightens the tick window for more
+-- uniform pacing now that subprocess fork is disabled (inline uploads).
 local MIN_INTERVAL_SECONDS = 10
 local CONTEXT_TTL_SECONDS = 15 * 60
 local RENEWAL_COOLDOWN_SECONDS = 10 * 60
@@ -18,11 +18,13 @@ local JOB_POLL_INITIAL_SECONDS = 0.25
 local JOB_POLL_MAX_SECONDS = 2
 local JOB_TIMEOUT_SECONDS = 180
 local JOB_COLLECT_INTERVAL_SECONDS = 2
--- When a scheduled tick fires this much later than expected, the device was
--- likely suspended without KOReader detecting it (onSuspend never fired).
--- In that case the accumulated "reading time" is actually sleep time and must
--- not be reported. 2× interval gives normal scheduler jitter room.
-local SUSPEND_DETECTION_MULTIPLIER = 2
+-- Sleep windows longer than this are excluded from reading time. 30s is a
+-- deliberate compromise: normal scheduler jitter on the K4 (GC/e-ink refresh/
+-- wifi reconnect can delay ticks 10-30s) must NOT be misread as sleep, which
+-- would drop real reading time (unrecoverable under-report). 30s leaves that
+-- jitter headroom, while any real sleep (cover-close / auto-suspend) is far
+-- above 30s, so short cover-closes are still excluded.
+local SUSPEND_EXCLUDE_THRESHOLD_SECONDS = 30
 -- After this many consecutive ticks spent waiting for progress verification,
 -- stop blocking the report and send with a nil position instead. Prevents an
 -- unverified progress state from silently disabling offline time reporting.
@@ -207,7 +209,7 @@ function ReadReport:new(options)
         is_online = options.is_online or function() return true end,
         now = options.now or os.time,
         session_id = tostring({}) .. ":" .. tostring((options.now or os.time)()),
-        subprocess = options.subprocess or make_subprocess_runner(),
+        subprocess = nil,  -- K4：禁用子进程 fork（fork 导致 UI 卡顿 0.5-3s），全部上传走 inline（见 K4_v2.5_P0待改项_子进程fork卡顿.md）
         state = "stopped",
         generation = 0,
         count = 0,
@@ -499,8 +501,7 @@ function ReadReport:on_resume()
     -- reported as reading time (H-4 fix).
     if self.suspended_at and self.watermark then
         local sleep_duration = self.now() - self.suspended_at
-        local threshold = self:_interval() * 2
-        if sleep_duration > threshold then
+        if sleep_duration > SUSPEND_EXCLUDE_THRESHOLD_SECONDS then
             self.watermark = math.min(self.now(), self.watermark + sleep_duration)
             self:_persist_watermark()
         end
@@ -540,10 +541,9 @@ function ReadReport:_tick(generation, task)
     -- last_time so the accumulated sleep duration is not reported as reading.
     if self.next_tick_expected then
         local delay = self.now() - self.next_tick_expected
-        local threshold = self:_interval() * SUSPEND_DETECTION_MULTIPLIER
-        if delay > threshold then
+        if delay > SUSPEND_EXCLUDE_THRESHOLD_SECONDS then
             log("info", "read report tick delayed beyond threshold, likely suspend:",
-                "delay=", delay, "threshold=", threshold)
+                "delay=", delay, "threshold=", SUSPEND_EXCLUDE_THRESHOLD_SECONDS)
             -- Drop only the sleep window (the delayed tick gap), keeping the
             -- backlog accumulated before the suspend: resetting the watermark
             -- to now would silently discard offline reading time too.
