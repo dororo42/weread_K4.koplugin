@@ -100,10 +100,18 @@ local function write_json(path, value)
     local file, err = io.open(tmp_path, "wb")
     if not file then return false, err end
     local write_ok, write_err = file:write(content)
-    file:close()
+    -- H-3 fix: check close() return value. write() may succeed while the data
+    -- sits in the buffer; close() is where the actual flush (and disk-full /
+    -- IO errors) can fail. Without this check a truncated tmp file would be
+    -- renamed over the real file, corrupting the book metadata store.
+    local close_ok, close_err = file:close()
     if not write_ok then
         os.remove(tmp_path)
         return false, write_err
+    end
+    if not close_ok then
+        os.remove(tmp_path)
+        return false, close_err or "close failed"
     end
     local rename_ok, rename_err = os.rename(tmp_path, path)
     if not rename_ok then

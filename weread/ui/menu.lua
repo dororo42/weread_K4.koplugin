@@ -222,7 +222,11 @@ function M:getSettingsMenuItems()
                         checked_func = function()
                             return self.settings:get("cache").download_book_images
                         end,
-                        callback = self:safeCallback(_("Book images"), function()
+                        -- M-4 fix: refresh the checkbox state immediately after
+                        -- toggling. Without this the K4 user must back out and
+                        -- re-enter the menu to see the new checkmark.
+                        check_callback_updates_menu = true,
+                        callback = self:safeCallback(_("Book images"), function(touchmenu_instance)
                             local cache = self.settings:get("cache")
                             cache.download_book_images = not cache.download_book_images
                             self.settings:set("cache", cache)
@@ -232,6 +236,9 @@ function M:getSettingsMenuItems()
                                 "target=book",
                                 "enabled=", tostring(cache.download_book_images)
                             )
+                            if touchmenu_instance then
+                                touchmenu_instance:updateItems()
+                            end
                         end),
                     },
                     {

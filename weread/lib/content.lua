@@ -241,10 +241,16 @@ local function write_file(path, data)
         error(err)
     end
     local write_ok, write_err = file:write(data)
-    file:close()
+    -- H-3 fix: check close() return value so a failed flush (disk full / IO
+    -- error) is caught before the tmp file is renamed over the real file.
+    local close_ok, close_err = file:close()
     if not write_ok then
         os.remove(tmp_path)
         error(write_err or "write failed")
+    end
+    if not close_ok then
+        os.remove(tmp_path)
+        error(close_err or "close failed")
     end
     local rename_ok, rename_err = os.rename(tmp_path, path)
     if not rename_ok then

@@ -170,6 +170,11 @@ function M:showShelfPage()
         return items
     end
     menu = self:showList(_("WeRead Bookshelf"), buildItems(), _("Your WeRead shelf is empty."))
+    -- M-6 fix: close any existing shelf menu before replacing the reference,
+    -- so repeated entry does not leave orphan widgets on the UIManager stack.
+    if self.shelf_menu and self.shelf_menu ~= menu then
+        UIManager:close(self.shelf_menu)
+    end
     self.shelf_menu = menu
     self._shelf_refresh = refresh
 end
@@ -988,6 +993,14 @@ function M:searchWithUI(keyword)
         if not ok then
             logger.err("search failed:", log_error(result))
             self:showInfo(T(_("Search failed:\n%1"), display_error(result)))
+            return
+        end
+        -- M-5 fix: guard against result being nil or non-table. The pcall
+        -- above only catches thrown errors; if the client returns nil without
+        -- throwing, indexing result.results below would crash outside pcall.
+        if type(result) ~= "table" then
+            logger.err("search returned non-table result:", tostring(result))
+            self:showInfo(_("Search returned no valid result."))
             return
         end
         local items = {}

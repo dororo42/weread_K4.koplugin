@@ -55,17 +55,31 @@ local function move_dir(src, dst)
             if attr and attr.mode == "directory" then
                 move_dir(child_src, child_dst)
             else
+                -- H-2 fix: only remove the source after the destination is
+                -- verified on disk. Previously os.remove ran unconditionally,
+                -- so a failed read/write (nil handle, disk full) would lose
+                -- the cached book file permanently.
                 local fin = io.open(child_src, "rb")
                 if fin then
                     local data = fin:read("*a")
+                    local src_size = #data
                     fin:close()
                     local fout = io.open(child_dst, "wb")
                     if fout then
-                        fout:write(data)
-                        fout:close()
+                        local write_ok = fout:write(data)
+                        local close_ok = fout:close()
+                        if write_ok and close_ok then
+                            local dst_attr = lfs.attributes(child_dst)
+                            if dst_attr and (src_size == 0 or (dst_attr.size or 0) == src_size) then
+                                os.remove(child_src)
+                            else
+                                os.remove(child_dst)
+                            end
+                        else
+                            os.remove(child_dst)
+                        end
                     end
                 end
-                os.remove(child_src)
             end
         end
     end
@@ -558,6 +572,14 @@ function M:showCacheManagement()
         })
     end
 
+    -- M-6 fix: close any existing cache menu before creating a new one.
+    -- Without this, repeated entry into cache management leaves the old
+    -- menu widget on the UIManager stack as an unreachable orphan that
+    -- wastes K4 memory and can intercept key events.
+    if self.cache_menu then
+        UIManager:close(self.cache_menu)
+        self.cache_menu = nil
+    end
     self.cache_menu = self:showList(_("Cache management"), items, _("No cached items"))
 end
 
@@ -717,9 +739,15 @@ function M:isSafeCachePath(path)
     if normalized == root_normalized then
         return false -- never delete the cache root itself
     end
-    -- Normalize .. segments: reject paths that escape the cache root
-    -- (P3 defense: a corrupted setting could contain .. in the path).
-    local simplified = normalized:gsub("/%.%./", "/")
+    -- M-11 fix: normalize .. segments repeatedly. A single gsub pass leaves
+    -- nested ../../ sequences (e.g. /a/../../b) unresolved, which could let
+    -- a corrupted setting escape the cache root. Loop until no ../ remains.
+    -- (P3 defense: book_resolved_dir already sanitizes, but this is the
+    -- last gate before rmdir_recursive.)
+    local simplified = normalized
+    while simplified:find("/%.%./") do
+        simplified = simplified:gsub("/%.%./", "/")
+    end
     if simplified:sub(1, #root_normalized + 1) ~= root_normalized .. "/" then
         return false
     end

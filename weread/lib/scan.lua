@@ -36,6 +36,12 @@ end
 function Scan.scan_root(opts)
     local fs, books, allowed = opts.fs, opts.books, opts.allowed
     local added, updated = 0, 0
+    -- M-9 fix: pcall(fs.dir, opts.root) evaluates fs.dir BEFORE pcall is
+    -- invoked, so if opts.fs is nil the "attempt to index a nil value"
+    -- error escapes pcall and crashes. Validate fs first.
+    if type(fs) ~= "table" or type(fs.dir) ~= "function" then
+        return 0, 0
+    end
     local ok, iter, dir_obj = pcall(fs.dir, opts.root)
     if not ok then
         return 0, 0

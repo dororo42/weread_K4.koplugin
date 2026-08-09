@@ -240,6 +240,12 @@ function M:showReadReportBookPicker()
             end
             return items
         end
+        -- M-6 fix: close any existing picker menu before creating a new one
+        -- to avoid orphan widgets on the UIManager stack.
+        if self._picker_menu then
+            UIManager:close(self._picker_menu)
+            self._picker_menu = nil
+        end
         self._picker_menu = Menu:new{
             title = _("Select a book to report reading time"),
             item_table = buildItems(),

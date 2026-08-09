@@ -16,12 +16,17 @@ function Migrations.run(settings, client)
                 local ok, saved = pcall(Content.save_catalog_cache,
                     client, settings, book, book.chapters)
                 if ok and saved then
+                    -- H-1 fix: only clear in-memory chapters after the catalog
+                    -- cache is confirmed on disk. On IO failure keep the
+                    -- original data so the next run can retry.
+                    book.chapters = nil
                     migrated = migrated + 1
                 else
                     failed = failed + 1
                 end
+            else
+                book.chapters = nil
             end
-            book.chapters = nil
         end
     end
     if not found and not settings:has_legacy_book_records() then
