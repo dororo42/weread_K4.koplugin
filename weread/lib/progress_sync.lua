@@ -50,7 +50,7 @@ function ProgressSync:new(options)
     assert(type(options.get_chapters) == "function", "get_chapters callback is required")
     assert(type(options.get_file_context) == "function", "get_file_context callback is required")
     assert(type(options.run_online) == "function", "run_online callback is required")
-    assert(type(options.upload_position) == "function", "upload_position callback is required")
+    assert(type(options.read_report) ~= "nil", "read_report is required")
     assert(type(options.goto_fraction) == "function", "goto_fraction callback is required")
     assert(type(options.open_chapter) == "function", "open_chapter callback is required")
 
@@ -58,6 +58,7 @@ function ProgressSync:new(options)
         settings = options.settings,
         client = options.client,
         scheduler = options.scheduler,
+        read_report = options.read_report,
         get_document = options.get_document,
         get_footer = options.get_footer,
         detect_book = options.detect_book,
@@ -65,7 +66,6 @@ function ProgressSync:new(options)
         get_chapters = options.get_chapters,
         get_file_context = options.get_file_context,
         run_online = options.run_online,
-        upload_position = options.upload_position,
         goto_fraction = options.goto_fraction,
         open_chapter = options.open_chapter,
         is_online = options.is_online or function() return true end,
@@ -400,62 +400,96 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
     local attempt
     attempt = function()
         attempts = attempts + 1
-        local ok, accepted, outcome = pcall(
-            self.upload_position,
-            book_id,
-            copy(position),
-            0
-        )
-        if ok and not accepted and type(outcome) == "table"
-            and outcome.error_kind == "busy"
-            and attempts < BUSY_RETRY_LIMIT then
-            self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
-            return
-        end
-        self.uploading = false
-        if ok and accepted then
-            if upload_generation ~= self.generation
-                or tostring(self.detect_book() or "") ~= upload_book_id then
-                self.uploading = false
-                return
-            end
-            self.state = "verified"
-            self.dirty = false
-            self.last_uploaded_position = copy(position)
-            self:_persist(book_id, {
-                last_local_position = position,
-                last_uploaded_position = position,
-                last_upload_at = self.now(),
-                pending_upload_position = false,
-                pending_upload_reason = false,
-                last_sync_error = false,
-            })
-            log("info", "upload accepted:",
-                "book=", book_id,
-                "percent=", tostring(position.percent),
-                "reason=", tostring(reason))
-            if show_result then
-                self.notify("upload_success", { position = position })
-            end
-            return
-        end
-        local error_message = ok and type(outcome) == "table"
-            and outcome.error or outcome
+        -- Pre-check before retrying: generation/book/online may have changed
+        -- during the busy wait interval (P2-B fix).
         if upload_generation ~= self.generation
             or tostring(self.detect_book() or "") ~= upload_book_id then
             self.uploading = false
             return
         end
-        self.state = "error"
-        self:_persist(book_id, {
-            last_sync_error = tostring(error_message or "upload_failed"),
-        })
-        log("warn", "upload failed:", tostring(error_message))
-        if show_result then
-            self.notify("upload_failed", {
-                error = tostring(error_message or "upload_failed"),
-            })
+        if not self.is_online() then
+            self.uploading = false
+            self.state = "offline"
+            return
         end
+        -- Async upload: spawn subprocess, get result via on_complete callback
+        -- (scheme B fix: UI not blocked, result correctly delivered).
+        local spawned, result = pcall(
+            self.read_report.upload_position_async,
+            self.read_report,
+            book_id,
+            copy(position),
+            0,
+            function(accepted, outcome)
+                -- on_complete callback (runs in parent after subprocess finishes)
+                if upload_generation ~= self.generation
+                    or tostring(self.detect_book() or "") ~= upload_book_id then
+                    self.uploading = false
+                    return
+                end
+                self.uploading = false
+                if accepted then
+                    self.state = "verified"
+                    self.dirty = false
+                    self.last_uploaded_position = copy(position)
+                    self:_persist(book_id, {
+                        last_local_position = position,
+                        last_uploaded_position = position,
+                        last_upload_at = self.now(),
+                        pending_upload_position = false,
+                        pending_upload_reason = false,
+                        last_sync_error = false,
+                    })
+                    log("info", "upload accepted:",
+                        "book=", book_id,
+                        "percent=", tostring(position.percent),
+                        "reason=", tostring(reason))
+                    if show_result then
+                        self.notify("upload_success", { position = position })
+                    end
+                else
+                    local error_message = type(outcome) == "table"
+                        and outcome.error or tostring(outcome)
+                    self.state = "error"
+                    self:_persist(book_id, {
+                        last_sync_error = tostring(error_message or "upload_failed"),
+                    })
+                    log("warn", "upload failed:", tostring(error_message))
+                    if show_result then
+                        self.notify("upload_failed", {
+                            error = tostring(error_message or "upload_failed"),
+                        })
+                    end
+                end
+            end
+        )
+        if not spawned then
+            -- pcall caught an error from upload_position_async
+            self.uploading = false
+            self.state = "error"
+            self:_persist(book_id, {
+                last_sync_error = tostring(result or "upload_failed"),
+            })
+            log("warn", "upload async call failed:", tostring(result))
+            if show_result then
+                self.notify("upload_failed", {
+                    error = tostring(result or "upload_failed"),
+                })
+            end
+            return
+        end
+        -- Check result: "async" means spawned (wait for callback),
+        -- "busy" means tick job in progress (retry), otherwise inline completed
+        if result == "async" then
+            return  -- on_complete will handle the result
+        end
+        if type(result) == "table" and result.error_kind == "busy"
+            and attempts < BUSY_RETRY_LIMIT then
+            self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
+            return
+        end
+        -- Inline fallback: upload_position_async already called on_complete
+        self.uploading = false
     end
     local started = self.run_online("progress_upload", attempt)
     if not started then

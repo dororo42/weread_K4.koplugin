@@ -84,6 +84,7 @@ function WeReadPlugin:init()
         settings = self.settings,
         client = self.client,
         scheduler = UIManager,
+        read_report = self.read_report,
         get_document = function()
             return self.ui and self.ui.document
         end,
@@ -104,10 +105,6 @@ function WeReadPlugin:init()
         end,
         run_online = function(_kind, callback)
             return self:runOnlineTask(_("Sync progress"), callback)
-        end,
-        upload_position = function(book_id, position, elapsed_seconds)
-            return self.read_report:upload_position(
-                book_id, position, elapsed_seconds)
         end,
         goto_fraction = function(fraction)
             local percent = math.floor(
@@ -139,12 +136,18 @@ function WeReadPlugin:init()
     }
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
-    local read_report = self.settings:get("read_report")
-    if read_report.enabled
+    -- Guard config access during init: corrupted settings (power loss during
+    -- write) can leave a non-table value, which would crash the entire plugin
+    -- load. Fall back to defaults and log a warning (P2-A fix).
+    local rr_ok, read_report = pcall(function() return self.settings:get("read_report") end)
+    if rr_ok and type(read_report) == "table" and read_report.enabled
         and read_report.mode == "manual"
         and read_report.book_id ~= ""
         and read_report.report_on_open == false then
         self.read_report:maybe_start("plugin_start")
+    end
+    if not rr_ok or type(read_report) ~= "table" then
+        logger.warn("read_report config corrupted, using defaults")
     end
     self._reader_session_gen = 0
     -- K4: wrap hotkeys.koplugin's ScreenKB+Down so it opens the WeRead quick

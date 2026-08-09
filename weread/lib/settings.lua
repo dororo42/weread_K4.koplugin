@@ -171,7 +171,14 @@ function Settings:get(key, default)
         default = defaults[key]
     end
     if key ~= "books" then
-        return self.store:readSetting(key, deepcopy(default))
+        local value = self.store:readSetting(key, deepcopy(default))
+        -- Type guard for known table keys: corrupted config (power loss during
+        -- write) can leave a scalar instead of a table, which would crash the
+        -- plugin on init. Fall back to defaults (P2-A fix).
+        if defaults[key] ~= nil and type(defaults[key]) == "table" and type(value) ~= "table" then
+            return deepcopy(defaults[key])
+        end
+        return value
     end
     -- Return cached books table if available (H-8 fix: avoid O(N) disk reads
     -- on every get("books") call).

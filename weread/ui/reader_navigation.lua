@@ -36,8 +36,17 @@ function M:initHotkeyOverride()
     if not orig then return end
     self._hotkeys_patched = true
     hotkeys.onHotkeyAction = function(hotkeys_self, hotkey)
-        if hotkey == "modifier_plus_down" and self:detectWeReadBook() then
-            return self:onShowWeReadQuickMenu()
+        if hotkey == "modifier_plus_down" then
+            local ok, result = xpcall(function()
+                return self:detectWeReadBook()
+            end, debug.traceback)
+            if ok and result then
+                return self:onShowWeReadQuickMenu()
+            end
+            if not ok then
+                local logger = require("weread.lib.logger")
+                logger.err("hotkey detectWeReadBook failed:", tostring(result))
+            end
         end
         return orig(hotkeys_self, hotkey)
     end
@@ -47,7 +56,15 @@ end
 -- menu is a global WeRead entry point; actions that need a current WeRead book
 -- explain why they are unavailable when invoked from another document.
 function M:onShowWeReadQuickMenu()
-    return self:showEndOfBookDialog(self:detectWeReadBook())
+    local ok, err = xpcall(function()
+        return self:showEndOfBookDialog(self:detectWeReadBook())
+    end, debug.traceback)
+    if not ok then
+        local logger = require("weread.lib.logger")
+        logger.err("quick menu failed:", tostring(err))
+        return nil
+    end
+    return true
 end
 
 -- Dispatcher entry point for a gesture that opens the WeRead bookshelf from

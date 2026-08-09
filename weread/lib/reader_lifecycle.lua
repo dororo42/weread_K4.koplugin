@@ -31,9 +31,9 @@ local function guarded(label, fn)
     end
 end
 
-function M:onShowWeRead()
+M.onShowWeRead = guarded("onShowWeRead", function(self)
     self:showAccountStatus()
-end
+end)
 
 function M:onWeReadSyncProgress()
     local book_id = self:detectWeReadBook()

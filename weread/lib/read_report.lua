@@ -243,7 +243,7 @@ function ReadReport:_next_report_seconds()
     if backlog > 0 then
         return math.min(MAX_SINGLE_REPORT_SECONDS, backlog)
     end
-    return self:_interval()
+    return math.min(MAX_SINGLE_REPORT_SECONDS, self:_interval())
 end
 
 -- Tick cadence: normally one report per interval; while a backlog of unsent
@@ -403,11 +403,13 @@ function ReadReport:start(reason)
     local persisted = tonumber(config.watermark)
     local now = self.now()
     if persisted and persisted > 0 and persisted <= now then
-        -- Clamp the restored watermark: only keep backlog within a reasonable
-        -- window (2x interval) to avoid reporting days of offline time as
-        -- reading time (H-4 fix).
-        local max_backlog = self:_interval() * 2
-        self.watermark = math.max(persisted, now - max_backlog)
+        -- Restore the persisted watermark as-is. The sleep-time exclusion is
+        -- already handled by on_resume (which advances watermark past sleep
+        -- duration) and the tick suspend detector. Clamping the backlog here
+        -- would silently discard offline reading time — the exact opposite
+        -- of the watermark's purpose. Clock-skew (persisted > now) is caught
+        -- by the else branch above.
+        self.watermark = persisted
     else
         self.watermark = now
     end
@@ -682,7 +684,7 @@ end
 -- Subprocess job management (parent side)
 -- ------------------------------------------------------------------
 
-function ReadReport:_start_job(book_id, allow_renewal, generation, task, position, elapsed_seconds)
+function ReadReport:_start_job(book_id, allow_renewal, generation, task, position, elapsed_seconds, on_complete)
     local runner = self.subprocess
     if not runner then
         return false, "no subprocess support"
@@ -714,6 +716,7 @@ function ReadReport:_start_job(book_id, allow_renewal, generation, task, positio
     job.poll = function()
         self:_poll_job(job, generation, task)
     end
+    job.on_complete = on_complete
     self.job = job
     self.scheduler:scheduleIn(job.poll_interval, job.poll)
     return true
@@ -861,7 +864,16 @@ function ReadReport:_apply_job_outcome(job, outcome)
             end
         end
     end
-    return self:_apply_outcome(outcome)
+    local result = self:_apply_outcome(outcome)
+    -- Notify the async caller (e.g. progress_sync upload_position_async) if registered
+    if type(job.on_complete) == "function" then
+        local accepted = type(outcome) == "table" and outcome.accepted == true
+        local ok_cb, cb_err = pcall(job.on_complete, accepted, outcome)
+        if not ok_cb then
+            log("warn", "upload on_complete callback failed:", tostring(cb_err))
+        end
+    end
+    return result
 end
 
 -- Persist the current watermark so offline-accumulated reading time survives
@@ -1294,10 +1306,26 @@ function ReadReport:_send(book_id, book, position, elapsed_seconds)
     return self.client:report_read(payload, book.reader_url or WeRead.reader_url(book_id))
 end
 
-function ReadReport:upload_position(book_id, position, elapsed_seconds)
+-- Async upload: spawns subprocess, calls on_complete(accepted, outcome) when done.
+-- Returns (true, "async") if spawned, (false, outcome) if inline fallback.
+function ReadReport:upload_position_async(book_id, position, elapsed_seconds, on_complete)
     if self.job then
         return false, { error = "read_report_busy", error_kind = "busy" }
     end
+    local runner = self.subprocess
+    if runner and self:_can_spawn() then
+        local upload_book_id = tostring(book_id)
+        local allow_renewal = self:_renewal_allowed()
+        local elapsed = elapsed_seconds or 0
+        local spawned, spawn_err = self:_start_job(upload_book_id, allow_renewal,
+            self.generation, nil, position, elapsed, on_complete)
+        if spawned then
+            return true, "async"
+        end
+        log("warn", "upload_position_async spawn failed, running inline:",
+            tostring(spawn_err))
+    end
+    -- Inline fallback: run synchronously and call on_complete
     local outcome = self:_run_pipeline(tostring(book_id), {
         allow_renewal = self:_renewal_allowed(),
         position = position,
@@ -1307,14 +1335,17 @@ function ReadReport:upload_position(book_id, position, elapsed_seconds)
         self.last_renew_attempt = self.now()
     end
     if type(outcome.book) == "table" then
-        local ok, err = pcall(function()
-            self:_persist_context(tostring(book_id), outcome.book)
-        end)
-        if not ok then
-            log("warn", "persist progress upload context failed:", tostring(err))
-        end
+        pcall(function() self:_persist_context(tostring(book_id), outcome.book) end)
+    end
+    if type(on_complete) == "function" then
+        pcall(on_complete, outcome.accepted == true, outcome)
     end
     return outcome.accepted == true, outcome
+end
+
+-- Check whether subprocess spawning is available (P1-B helper).
+function ReadReport:_can_spawn()
+    return self.subprocess ~= nil and type(self.subprocess.run) == "function"
 end
 
 return ReadReport

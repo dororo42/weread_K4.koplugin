@@ -717,7 +717,13 @@ function M:isSafeCachePath(path)
     if normalized == root_normalized then
         return false -- never delete the cache root itself
     end
-    return normalized:sub(1, #root_normalized + 1) == root_normalized .. "/"
+    -- Normalize .. segments: reject paths that escape the cache root
+    -- (P3 defense: a corrupted setting could contain .. in the path).
+    local simplified = normalized:gsub("/%.%./", "/")
+    if simplified:sub(1, #root_normalized + 1) ~= root_normalized .. "/" then
+        return false
+    end
+    return true
 end
 
 function M:clearBookCache(book_id)

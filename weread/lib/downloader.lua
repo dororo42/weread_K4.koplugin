@@ -610,7 +610,12 @@ function Downloader:_startFootnotes(dl)
 end
 
 function Downloader:_finishChapter(dl)
-    if dl.cancelled or not dl.current then return end
+    if dl.cancelled or not dl.current then
+        if dl.cancelled and dl.standby_guard then
+            self:_releaseStandby(dl)
+        end
+        return
+    end
     local chapter = dl.current.chapter
     local cache = self.settings:get("cache")
     local stage_text
