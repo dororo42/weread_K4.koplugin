@@ -8,7 +8,7 @@
 
 本分支 fork 自 [finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)（AGPL-3.0），K4 非触摸适配分支独立维护于 [dororo42/weread_K4.koplugin](https://github.com/dororo42/weread_K4.koplugin)。
 - 基线：官方 **v0.6.0**（含个人 K4 适配补丁）
-- 上游最新：**v1.0.0**（本分支**不跟随**，见「与主线 v1.0.0 的差别」）
+- 上游最新：**v1.1.0**（本分支**不跟随**，见「与主线 v1.0.0 的差别」）
 
 ## 本分支定位
 
@@ -130,7 +130,6 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ### v3.0（2026-08）
 
 =======
->>>>>>> 3d427906d734c7e1682a06930b173516dfd5f828
 集中修复数据安全 bug、资源泄漏与若干健壮性问题。
 
 **数据安全（高优先级）：**
