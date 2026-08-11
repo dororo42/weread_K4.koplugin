@@ -25,6 +25,16 @@ local JOB_COLLECT_INTERVAL_SECONDS = 2
 -- jitter headroom, while any real sleep (cover-close / auto-suspend) is far
 -- above 30s, so short cover-closes are still excluded.
 local SUSPEND_EXCLUDE_THRESHOLD_SECONDS = 30
+-- Cross-session backlog carry-over (pending_backlog_seconds): instead of
+-- restoring a raw watermark across sessions (which forced an impossible
+-- choice between "drop real offline reading time" and "report sleep/away
+-- time as reading time"), stop() snapshots the unsent reading-time backlog
+-- accumulated up to last_active_at, and start() re-attaches it before now.
+-- Effect: offline reading time is preserved across close/reopen regardless
+-- of the gap, while the close→reopen gap itself is never counted as reading
+-- time (it sits after last_active_at, outside the snapshot window).
+-- last_active_at is still maintained per-book for the snapshot computation
+-- and for on_resume's watermark advancement.
 -- After this many consecutive ticks spent waiting for progress verification,
 -- stop blocking the report and send with a nil position instead. Prevents an
 -- unverified progress state from silently disabling offline time reporting.
@@ -221,6 +231,22 @@ function ReadReport:new(options)
         -- advances it in MAX_SINGLE_REPORT_SECONDS steps; time between the
         -- watermark and now is the unsent backlog (offline accumulation).
         watermark = nil,
+        -- Per-book watermark bookkeeping (S-2/S-3 fix): watermark and
+        -- last_active_at are persisted per-book (in read_report.watermarks
+        -- keyed by book_id) so switching books doesn't inherit the old book's
+        -- backlog.
+        last_active_at = nil,
+        watermark_book_id = nil,
+        -- Cross-session pending backlog (pending_backlog fix): when stop()
+        -- runs, the unsent reading time accumulated up to last_active_at
+        -- (i.e. max(0, last_active_at - watermark)) is snapshotted into
+        -- pending_backlog_seconds and persisted per-book. On the next
+        -- start() for the same book, the watermark is initialized to
+        -- (now - pending_backlog_seconds), re-attaching the offline
+        -- reading time in front of now so it can be drained by ticks.
+        -- The close→reopen gap (after last_active_at) is never included.
+        -- Cleared once ticks drain the backlog to zero.
+        pending_backlog_seconds = nil,
     }
     return setmetatable(object, self)
 end
@@ -396,24 +422,47 @@ function ReadReport:start(reason)
     -- server has already accepted; while the device is offline the tick leaves
     -- it intact, so once back online the backlog is drained as a series of
     -- small reports (the server discards oversized single reports).
-    -- Restore the persisted watermark (offline time accumulated in earlier
-    -- sessions / before a stop or suspend) instead of resetting it: resetting
-    -- would silently drop unsent offline reading time. last_time keeps meaning
-    -- "last successful report at" for the status UI.
+    -- Cross-session carry-over (pending_backlog fix): stop() snapshots the
+    -- unsent reading time up to last_active_at into pending_backlog_seconds
+    -- (per-book). start() re-attaches it by setting
+    --   watermark = now - pending_backlog_seconds
+    -- which puts the preserved offline reading time in front of now so ticks
+    -- can drain it, while the close→reopen gap (after last_active_at) is
+    -- never counted. last_time keeps meaning "last successful report at"
+    -- for the status UI.
     self.last_time = nil
     local config = self:_config()
-    local persisted = tonumber(config.watermark)
     local now = self.now()
-    if persisted and persisted > 0 and persisted <= now then
-        -- Restore the persisted watermark as-is. The sleep-time exclusion is
-        -- already handled by on_resume (which advances watermark past sleep
-        -- duration) and the tick suspend detector. Clamping the backlog here
-        -- would silently discard offline reading time — the exact opposite
-        -- of the watermark's purpose. Clock-skew (persisted > now) is caught
-        -- by the else branch above.
-        self.watermark = persisted
+    -- Per-book pending backlog carry-over (S-2/S-3/pending_backlog fix):
+    -- watermarks[book_id] holds { watermark, last_active, pending_backlog }.
+    -- On start() we only consume pending_backlog: it is the offline reading
+    -- time accumulated up to last_active_at at the previous stop(). The
+    -- watermark is rebuilt as (now - pending_backlog), which represents
+    -- "server-accepted time is pending_backlog seconds behind now". The
+    -- previous raw watermark value is intentionally NOT restored — restoring
+    -- it would re-introduce the close→reopen gap as reading time.
+    local watermarks = type(config.watermarks) == "table" and config.watermarks or {}
+    local entry = watermarks[tostring(book_id)]
+    local pending = entry and tonumber(entry.pending_backlog)
+    if pending and pending > 0 then
+        -- Re-attach the preserved offline reading time in front of now.
+        -- Cap at a sane upper bound (24h) to reject corrupted/absurd values
+        -- from a flipped clock or a malformed config; anything beyond that
+        -- is almost certainly not real reading time.
+        local capped = math.min(pending, 24 * 3600)
+        self.watermark = now - capped
+        self.pending_backlog_seconds = capped
     else
+        -- No pending backlog: start fresh at now.
         self.watermark = now
+        self.pending_backlog_seconds = nil
+    end
+    self.last_active_at = now
+    self.watermark_book_id = book_id
+    -- Migration: clean up the legacy global watermark field.
+    if config.watermark ~= nil then
+        config.watermark = nil
+        pcall(function() self.settings:set("read_report", config) end)
     end
     self.started_at = now
     self.waiting_count = 0
@@ -467,9 +516,11 @@ function ReadReport:stop(reason)
     self.state = reason == "suspend" and "suspended"
         or "stopped"
     self.stop_reason = reason
-    -- Keep the unsent backlog across stops (document close, suspend, target
-    -- change): without this the next start() would reset the watermark and the
-    -- offline reading time accumulated so far would be lost.
+    -- Persist the watermark and snapshot the unsent reading time accumulated
+    -- up to last_active_at into pending_backlog_seconds (pending_backlog fix).
+    -- On the next start() for this book, pending_backlog is re-attached in
+    -- front of now, preserving offline reading time across close/reopen
+    -- regardless of the gap, while the gap itself is never counted.
     self:_persist_watermark()
     -- Force flush on stop to ensure watermark is persisted (M-L9 fix)
     if self._watermark_flush_pending then
@@ -498,11 +549,21 @@ end
 function ReadReport:on_resume()
     self.suspended = false
     -- Advance watermark past the sleep duration so suspend time is not
-    -- reported as reading time (H-4 fix).
+    -- reported as reading time (H-4 fix). Advancing watermark here shrinks
+    -- the (last_active_at - watermark) gap, which _persist_watermark()
+    -- reflects in pending_backlog — so suspend time is also excluded from
+    -- the cross-session snapshot (pending_backlog fix).
     if self.suspended_at and self.watermark then
         local sleep_duration = self.now() - self.suspended_at
         if sleep_duration > SUSPEND_EXCLUDE_THRESHOLD_SECONDS then
             self.watermark = math.min(self.now(), self.watermark + sleep_duration)
+            -- Refresh last_active_at to now: the resume itself is the most
+            -- recent reading activity boundary. _persist_watermark() uses
+            -- last_active_at to compute pending_backlog = max(0,
+            -- last_active_at - watermark); keeping it fresh ensures the
+            -- snapshot covers exactly the pre-suspend reading time, not
+            -- the sleep window.
+            self.last_active_at = self.now()
             self:_persist_watermark()
         end
     end
@@ -536,6 +597,12 @@ function ReadReport:_schedule_next(generation, task, delay)
 end
 
 function ReadReport:_tick(generation, task)
+    -- Refresh last_active_at on every tick (pending_backlog fix): as long as
+    -- the report task is running (document open), the user is considered
+    -- active. This timestamp bounds the pending_backlog snapshot at stop()
+    -- to exactly the reading time accumulated so far, excluding any gap
+    -- after the last tick.
+    self.last_active_at = self.now()
     -- Detect undetected suspend: if the tick fired much later than expected,
     -- the device was likely sleeping without onSuspend firing. Reset
     -- last_time so the accumulated sleep duration is not reported as reading.
@@ -876,17 +943,46 @@ function ReadReport:_apply_job_outcome(job, outcome)
     return result
 end
 
--- Persist the current watermark so offline-accumulated reading time survives
+-- Persist the current per-book watermark and snapshot the unsent reading
+-- time into pending_backlog so offline-accumulated reading time survives
 -- document close / KOReader restart / suspend. Without this, start() resets
--- the watermark to now and the unsent backlog is silently dropped — the root
--- cause of "offline reading time never gets reported".
+-- the watermark to now and the unsent backlog is silently dropped — the
+-- root cause of "offline reading time never gets reported".
+-- Watermarks are stored per-book in config.watermarks[book_id] (S-2 fix),
+-- so switching books doesn't inherit the old book's backlog.
+-- pending_backlog (pending_backlog fix) = max(0, last_active_at - watermark):
+--   the unsent reading time accumulated up to the last reading activity.
+--   On the next start() it is re-attached as (now - pending_backlog), so
+--   the close→reopen gap is never counted while real offline reading time
+--   is preserved regardless of how long the gap was.
 function ReadReport:_persist_watermark()
     if not self.watermark then return end
+    -- Use current_book_id if available, fall back to watermark_book_id
+    -- (set in start()) so on_resume() can persist watermark advancement
+    -- even after on_close_document() cleared current_book_id (S-4 fix).
+    local book_id = tostring(self.current_book_id or self.watermark_book_id or "")
+    if book_id == "" then return end
     local ok, config = pcall(function()
         return self.settings:get("read_report")
     end)
     if not ok or type(config) ~= "table" then return end
-    config.watermark = self.watermark
+    local watermarks = type(config.watermarks) == "table" and config.watermarks or {}
+    -- Snapshot the unsent reading time accumulated up to last_active_at.
+    -- This is the value start() will re-attach in front of now. Using
+    -- last_active_at (not now) is what excludes the close→reopen gap.
+    local last_active = self.last_active_at or self.now()
+    local pending = math.max(0, last_active - self.watermark)
+    -- Keep self.pending_backlog_seconds in sync with the persisted value so
+    -- _apply_outcome can clear it once the backlog is drained.
+    self.pending_backlog_seconds = pending > 0 and pending or nil
+    watermarks[book_id] = {
+        watermark = self.watermark,
+        last_active = last_active,
+        pending_backlog = self.pending_backlog_seconds,
+    }
+    config.watermarks = watermarks
+    -- Migration: clean up legacy global watermark field.
+    config.watermark = nil
     local ok_set, err = pcall(function()
         self.settings:set("read_report", config)
     end)
@@ -920,6 +1016,10 @@ function ReadReport:_apply_outcome(outcome)
     if outcome.accepted then
         -- Advance the watermark by the amount the server just accepted. The
         -- remaining (now - watermark) backlog is drained by the next ticks.
+        -- _persist_watermark() recomputes pending_backlog = max(0,
+        -- last_active_at - watermark); once the backlog is fully drained
+        -- (watermark catches up to last_active_at), pending_backlog is
+        -- cleared automatically (pending_backlog fix).
         if self.watermark and outcome.reported_seconds then
             self.watermark = self.watermark + outcome.reported_seconds
             self:_persist_watermark()
