@@ -114,10 +114,19 @@ function Content.save_catalog_cache(client, settings, book, chapters)
         return false, err
     end
     local write_ok, write_err = file:write(encoded)
-    file:close()
+    -- H-3 fix (aligned with book_store.lua): check close() return value.
+    -- write() may succeed while data sits in the buffer; close() is where
+    -- the actual flush (and disk-full / IO errors) can fail. Without this
+    -- check a truncated tmp file would be renamed over the real catalog
+    -- cache, corrupting the chapter list.
+    local close_ok, close_err = file:close()
     if not write_ok then
         os.remove(tmp_path)
         return false, write_err
+    end
+    if not close_ok then
+        os.remove(tmp_path)
+        return false, close_err or "close failed"
     end
     local rename_ok, rename_err = os.rename(tmp_path, path)
     if not rename_ok then
@@ -1064,53 +1073,11 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
     return xhtml, chapter_assets
 end
 
-function Content.fetch_chapters_epub(client, settings, book, chapters, options)
-    options = options or {}
-    local selected = {}
-    local bodies = {}
-    local assets = {}
-    local used_asset_names = {}
-    local cache = settings:get("cache", {})
-    local css
-    for chapter_index, chapter in ipairs(chapters or {}) do
-        if options.progress then
-            options.progress(chapter_index, #chapters, chapter, "text")
-        end
-        local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
-        if not css then
-            css = Content.fetch_chapter_css(client, settings, book, chapter)
-        end
-        if cache.download_book_images then
-            if options.progress then
-                options.progress(chapter_index, #chapters, chapter, "images")
-            end
-            local chapter_assets, src_map = Content.download_chapter_assets(client, book, chapter, used_asset_names)
-            for _, asset in ipairs(chapter_assets) do
-                table.insert(assets, asset)
-            end
-            xhtml = Content.rewrite_image_sources(xhtml, src_map)
-            local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, used_asset_names)
-            xhtml = inline_xhtml
-            for _, a in ipairs(inline_assets) do
-                table.insert(assets, a)
-            end
-        end
-        local uid = tostring(chapter.chapterUid or chapter_index)
-        table.insert(selected, chapter)
-        bodies[uid] = xhtml
-    end
-    if #selected == 0 then
-        error("No readable chapter found")
-    end
-    local path = Content.save_book_epub(settings, book, selected, bodies, options.suffix or "book", assets, css)
-    book.cached_chapters = book.cached_chapters or {}
-    for chapter_index, chapter in ipairs(selected) do
-        book.cached_chapters[tostring(chapter.chapterUid or chapter_index)] = path
-    end
-    book.cached_file = path
-    book.reader_url = book.reader_url or WeRead.reader_url(book.book_id or book.bookId)
-    return path, selected
-end
+-- K4 fork note: the former Content.fetch_chapters_epub (a synchronous
+-- whole-book fetch loop predating the async Downloader state machine) was
+-- removed as dead code — no caller remained. The Downloader drives chapter
+-- fetching via fetch_single_chapter_source + finalize_single_chapter_content
+-- and aggregates via save_book_epub / save_chapter_epub.
 
 function Content.parse_mp_articles(data)
     local articles = {}

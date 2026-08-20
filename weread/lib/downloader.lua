@@ -494,11 +494,25 @@ end
 function Downloader:_failChapter(dl, err)
     local chapter = dl.chapters[dl.index]
     local uid = tostring(chapter and chapter.chapterUid or dl.index)
+    -- Retry each failed chapter once before giving up on it: transient
+    -- network hiccups (weak K4 WiFi, CDN resets) are common and a single
+    -- retry recovers most of them without hammering the server.
+    dl.chapter_retries = dl.chapter_retries or {}
+    if not dl.chapter_retries[uid] then
+        dl.chapter_retries[uid] = true
+        logger.warn("chapter download failed, retrying once:",
+            "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
+            "chapter_uid=", uid, "error=", log_error(err))
+        dl.current = nil
+        -- Keep dl.index unchanged so _step re-downloads this chapter.
+        self:_scheduleGuarded(dl, function() self:_step(dl) end)
+        return
+    end
     table.insert(dl.failed, uid)
     if dl.footnote_scans then
         dl.footnote_scans[uid] = nil
     end
-    logger.warn("chapter download failed:",
+    logger.warn("chapter download failed after retry, skipping:",
         "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
         "chapter_uid=", uid, "error=", log_error(err))
     dl.current = nil
