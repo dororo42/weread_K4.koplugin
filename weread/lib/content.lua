@@ -597,7 +597,13 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local asset_entries = {}
     for asset_index, asset in ipairs(assets or {}) do
         table.insert(manifest_assets, [[<item id="asset_]] .. tostring(asset_index) .. [[" href="]] .. xml_escape(asset.href) .. [[" media-type="]] .. xml_escape(asset.media_type) .. [["/>]])
-        table.insert(asset_entries, { name = "OEBPS/" .. asset.href, data = asset.data })
+        -- v4.0: assets may be spooled to disk ({href, media_type, file}) so
+        -- peak memory stays at one chapter's assets instead of the whole book.
+        local asset_data = asset.data
+        if asset_data == nil and asset.file then
+            asset_data = Content.read_file(asset.file) or ""
+        end
+        table.insert(asset_entries, { name = "OEBPS/" .. asset.href, data = asset_data })
     end
     local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -656,7 +662,135 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     return path
 end
 
-function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix, assets, css, cover_data)
+-- 沿革：v4.0 起删除 Content.save_book_epub（全内存整本聚合，无任何调用方）。
+-- 其"整本书正文+资产全部驻留内存拼表"的模式与 v4.0 的 K4 256MB 内存目标
+-- 相悖；下载器统一走 save_book_epub_streamed（整本，磁盘流式）与
+-- save_chapter_epub（单章/分章）。write_epub 仍被 save_chapter_epub 使用。
+
+-- ============ v4.0: disk-backed download spooling ============
+-- Chapters are written to <cache_dir>/.dl/ as they finish instead of being
+-- held in RAM (方案4: memory optimization for 100+ chapter books on K4's
+-- 256MB), and a progress.json tracks completion so interrupted downloads can
+-- be resumed (方案5: breakpoint resume).
+
+function Content.read_file(path)
+    if type(path) ~= "string" or path == "" then
+        return nil
+    end
+    local file = io.open(path, "rb")
+    if not file then
+        return nil
+    end
+    local data = file:read("*a")
+    file:close()
+    return data
+end
+
+-- Public atomic writer (the internal write_file does tmp+rename+close check).
+function Content.write_file(path, data)
+    write_file(path, data)
+end
+
+function Content.spool_dir(settings, book)
+    local book_id = book.book_id or book.bookId
+    return Content.book_resolved_dir(settings, book_id, book) .. "/.dl"
+end
+
+function Content.spool_body_path(settings, book, uid)
+    return Content.spool_dir(settings, book) .. "/chapters/" .. basename_safe(uid) .. ".xhtml"
+end
+
+function Content.spool_assets_meta_path(settings, book, uid)
+    return Content.spool_dir(settings, book) .. "/assets/" .. basename_safe(uid) .. ".json"
+end
+
+-- Progress file is per download mode so a paused whole-book download and a
+-- paused separate-chapter download never clobber each other.
+function Content.spool_progress_path(settings, book, mode)
+    local name = mode == "separate" and "progress-separate.json" or "progress.json"
+    return Content.spool_dir(settings, book) .. "/" .. name
+end
+
+-- Write one finalized chapter (XHTML + asset binaries) into the spool.
+-- Returns body_path, assets_meta (list of {href, media_type, file}).
+function Content.spool_chapter(settings, book, uid, xhtml, assets)
+    local spool = Content.spool_dir(settings, book)
+    PluginUtil.mkdirs(spool .. "/chapters")
+    local safe_uid = basename_safe(uid)
+    local body_path = spool .. "/chapters/" .. safe_uid .. ".xhtml"
+    Content.write_file(body_path, xhtml)
+    local assets_meta = {}
+    if assets and #assets > 0 then
+        local assets_dir = spool .. "/assets/" .. safe_uid
+        PluginUtil.mkdirs(assets_dir)
+        for asset_index, asset in ipairs(assets) do
+            local asset_file = tostring(asset_index)
+            Content.write_file(assets_dir .. "/" .. asset_file, asset.data)
+            table.insert(assets_meta, {
+                href = asset.href,
+                media_type = asset.media_type,
+                file = "assets/" .. safe_uid .. "/" .. asset_file,
+            })
+        end
+    end
+    return body_path, assets_meta
+end
+
+-- Recursively delete the spool directory (no shell commands).
+function Content.clear_spool(settings, book)
+    local spool = Content.spool_dir(settings, book)
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not ok_lfs or not lfs then
+        return
+    end
+    local function rmdir(path)
+        local ok, iter, dir_obj = pcall(lfs.dir, path)
+        if not ok then return end
+        for entry in iter, dir_obj do
+            if entry ~= "." and entry ~= ".." then
+                local child = path .. "/" .. entry
+                local attr = lfs.attributes(child)
+                if attr and attr.mode == "directory" then
+                    rmdir(child)
+                else
+                    os.remove(child)
+                end
+            end
+        end
+        lfs.rmdir(path)
+    end
+    if lfs.attributes(spool, "mode") == "directory" then
+        rmdir(spool)
+    end
+end
+
+-- Remove one chapter's spool files (body + assets + asset metadata) but keep
+-- progress.json, so a single-chapter job never wipes a paused whole-book
+-- download's resume state.
+function Content.remove_spool_chapter(settings, book, uid)
+    local spool = Content.spool_dir(settings, book)
+    local safe_uid = basename_safe(uid)
+    os.remove(spool .. "/chapters/" .. safe_uid .. ".xhtml")
+    os.remove(Content.spool_assets_meta_path(settings, book, uid))
+    local assets_dir = spool .. "/assets/" .. safe_uid
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok_lfs and lfs and lfs.attributes(assets_dir, "mode") == "directory" then
+        local ok, iter, dir_obj = pcall(lfs.dir, assets_dir)
+        if ok then
+            for entry in iter, dir_obj do
+                if entry ~= "." and entry ~= ".." then
+                    os.remove(assets_dir .. "/" .. entry)
+                end
+            end
+            lfs.rmdir(assets_dir)
+        end
+    end
+end
+
+-- Streamed whole-book EPUB assembly: reads each chapter body and each asset
+-- from disk on demand, so peak memory stays at one chapter + one asset
+-- instead of the whole book (v4.0 memory fix for K4's 256MB).
+function Content.save_book_epub_streamed(settings, book, chapters, body_paths, assets_by_uid, suffix, css, cover_data)
     local book_id = book.book_id or book.bookId
     local dir = Content.book_resolved_dir(settings, book_id, book)
     PluginUtil.mkdirs(dir)
@@ -670,20 +804,16 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
         [[<item id="style" href="style.css" media-type="text/css"/>]],
     }
     local spine_items = {}
-    local entries = {
-        { name = "mimetype", data = "application/epub+zip" },
-        { name = "META-INF/container.xml", data = [[<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>]] },
-    }
-
     local cover_meta = ""
+    local cover_img_href
+    local cover_xhtml
     if cover_data and #cover_data > 0 then
         local ext, mime = media_type_for(cover_data)
-        local cover_img_href = "images/cover" .. ext
-        table.insert(entries, { name = "OEBPS/" .. cover_img_href, data = cover_data })
+        cover_img_href = "images/cover" .. ext
         table.insert(manifest_items, [[<item id="cover-image" href="]] .. xml_escape(cover_img_href) .. [[" media-type="]] .. xml_escape(mime) .. [[" properties="cover-image"/>]])
         table.insert(manifest_items, [[<item id="cover" href="text/cover.xhtml" media-type="application/xhtml+xml"/>]])
         table.insert(spine_items, [[<itemref idref="cover"/>]])
-        local cover_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
+        cover_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
 <head><title>Cover</title>
@@ -691,36 +821,29 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 </head>
 <body><img src="../]] .. xml_escape(cover_img_href) .. [[" alt="Cover"/></body>
 </html>]]
-        table.insert(entries, { name = "OEBPS/text/cover.xhtml", data = cover_xhtml })
         cover_meta = '\n<meta name="cover" content="cover-image"/>'
     end
-
-    for asset_index, asset in ipairs(assets or {}) do
-        table.insert(manifest_items, [[<item id="asset_]] .. tostring(asset_index) .. [[" href="]] .. xml_escape(asset.href) .. [[" media-type="]] .. xml_escape(asset.media_type) .. [["/>]])
-        table.insert(entries, { name = "OEBPS/" .. asset.href, data = asset.data })
+    -- Collect asset metadata across chapters (no data loaded yet).
+    local asset_list = {}
+    for chapter_index, chapter in ipairs(chapters or {}) do
+        local uid = tostring(chapter.chapterUid or chapter_index)
+        for _i, asset in ipairs((assets_by_uid and assets_by_uid[uid]) or {}) do
+            table.insert(asset_list, asset)
+        end
     end
-
+    for asset_index, asset in ipairs(asset_list) do
+        table.insert(manifest_items, [[<item id="asset_]] .. tostring(asset_index) .. [[" href="]] .. xml_escape(asset.href) .. [[" media-type="]] .. xml_escape(asset.media_type) .. [["/>]])
+    end
+    local chapter_filenames = {}
     for chapter_index, chapter in ipairs(chapters or {}) do
         local uid = tostring(chapter.chapterUid or chapter_index)
         local filename = string.format("text/chapter-%03d.xhtml", chapter_index)
+        chapter_filenames[chapter_index] = filename
         local id = item_id("chapter_", uid)
         local title = chapter.title or ("Chapter " .. uid)
-        local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
-<head>
-<title>]] .. xml_escape(title) .. [[</title>
-<link rel="stylesheet" type="text/css" href="../style.css"/>
-</head>
-<body>
-]] .. body_fragment(chapter_bodies[uid] or "") .. [[
-</body>
-</html>]]
-        table.insert(entries, { name = "OEBPS/" .. filename, data = chapter_xhtml })
         table.insert(manifest_items, [[<item id="]] .. id .. [[" href="]] .. filename .. [[" media-type="application/xhtml+xml"/>]])
         table.insert(spine_items, [[<itemref idref="]] .. id .. [["/>]])
     end
-
     local opf = [[<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0" prefix="dcterms: http://purl.org/dc/terms/">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -740,7 +863,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 </spine>
 </package>]]
     local ncx_points = build_ncx_points(chapters, function(chapter_index)
-        return string.format("text/chapter-%03d.xhtml", chapter_index)
+        return chapter_filenames[chapter_index]
     end)
     local ncx = [[<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
@@ -762,18 +885,56 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 <nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops">
 <ol>
 ]] .. build_nav_items(chapters, function(chapter_index)
-        return string.format("text/chapter-%03d.xhtml", chapter_index)
+        return chapter_filenames[chapter_index]
     end) .. [[
 </ol>
 </nav>
 </body>
 </html>]]
     css = css or [[body { line-height: 1.7; margin: 5%; } img { max-width: 100%; }]]
-    table.insert(entries, { name = "OEBPS/content.opf", data = opf })
-    table.insert(entries, { name = "OEBPS/nav.xhtml", data = nav })
-    table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
-    table.insert(entries, { name = "OEBPS/style.css", data = css })
-    write_epub(path, entries)
+
+    local Archiver = require("ffi/archiver")
+    local archive = Archiver.Writer:new{}
+    if not archive:open(path, "epub") then
+        error("failed to open archive for writing: " .. tostring(archive.err))
+    end
+    local mtime = os.time()
+    archive:setZipCompression("store")
+    archive:addFileFromMemory("mimetype", "application/epub+zip", mtime)
+    archive:setZipCompression("deflate")
+    archive:addFileFromMemory("META-INF/container.xml", [[<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>]], mtime)
+    if cover_data and #cover_data > 0 then
+        archive:addFileFromMemory("OEBPS/" .. cover_img_href, cover_data, mtime)
+        archive:addFileFromMemory("OEBPS/text/cover.xhtml", cover_xhtml, mtime)
+    end
+    local spool = Content.spool_dir(settings, book)
+    for chapter_index, chapter in ipairs(chapters or {}) do
+        local uid = tostring(chapter.chapterUid or chapter_index)
+        local body = Content.read_file(body_paths and body_paths[uid])
+            or Content.read_file(Content.spool_body_path(settings, book, uid)) or ""
+        local title = chapter.title or ("Chapter " .. uid)
+        local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
+<head>
+<title>]] .. xml_escape(title) .. [[</title>
+<link rel="stylesheet" type="text/css" href="../style.css"/>
+</head>
+<body>
+]] .. body_fragment(body) .. [[
+</body>
+</html>]]
+        archive:addFileFromMemory("OEBPS/" .. chapter_filenames[chapter_index], chapter_xhtml, mtime)
+    end
+    for _asset_index, asset in ipairs(asset_list) do
+        local data = Content.read_file(spool .. "/" .. asset.file) or ""
+        archive:addFileFromMemory("OEBPS/" .. asset.href, data, mtime)
+    end
+    archive:addFileFromMemory("OEBPS/content.opf", opf, mtime)
+    archive:addFileFromMemory("OEBPS/nav.xhtml", nav, mtime)
+    archive:addFileFromMemory("OEBPS/toc.ncx", ncx, mtime)
+    archive:addFileFromMemory("OEBPS/style.css", css, mtime)
+    archive:close()
     return path
 end
 

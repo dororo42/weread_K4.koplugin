@@ -51,7 +51,12 @@ local MAX_SINGLE_REPORT_SECONDS = 30
 -- the cost of slower (but lossless — the watermark keeps the unreported time)
 -- catch-up. Reading time is never lost; it is simply reported in more, smaller
 -- increments over a longer window.
-local BACKLOG_TICK_SECONDS = 15
+-- 2026-08-24 conservative review R-B: raised 15s -> 30s to match the real
+-- heartbeat exactly. Draining a backlog at 2x the browser's heartbeat rate is
+-- an un-browser-like request pattern (risk flag) and wakes the K4 radio twice
+-- as often. At 30s the drain cadence is identical to normal reading, costs no
+-- extra wake-ups, and reading time is still never lost (watermark keeps it).
+local BACKLOG_TICK_SECONDS = 30
 -- K4 tuning: raised from 10s to 15s to further reduce radio wake-ups on the
 -- K4's weak WiFi, at the cost of slower (but lossless) catch-up.
 
@@ -212,6 +217,7 @@ function ReadReport:new(options)
     local object = {
         settings = options.settings,
         client = options.client,
+        library_db = options.library_db,
         scheduler = options.scheduler,
         get_document = options.get_document,
         detect_book = options.detect_book,
@@ -274,16 +280,37 @@ function ReadReport:_next_report_seconds()
     return math.min(MAX_SINGLE_REPORT_SECONDS, self:_interval())
 end
 
--- Tick cadence: normally one report per interval; while a backlog of unsent
--- reading time remains, tick faster to drain it at a throttled pace.
-function ReadReport:_next_tick_delay()
-    if not self.watermark then
-        return self:_interval()
+-- Exponential backoff for repeated report failures (2026-08-24 review R-C).
+-- The pipeline already fires up to 4 requests per tick; without a backoff a
+-- weak network would keep draining at BACKLOG_TICK pace into a ~16 req/min
+-- storm, and failed-request bursts look more suspicious than success bursts.
+-- Ramp: 30s -> 60s -> 120s -> ... capped at 300s. _record_success() resets
+-- consecutive_failures, so the backoff clears as soon as a report is accepted.
+local function backoff_delay(consecutive_failures)
+    if consecutive_failures <= 0 then
+        return nil
     end
-    if self.now() - self.watermark > self:_interval() then
+    return math.min(300, 30 * math.floor(2 ^ (consecutive_failures - 1)))
+end
+
+-- Tick cadence: normally one report per interval; while a backlog of unsent
+-- reading time remains, tick at BACKLOG_TICK to drain it at a throttled pace.
+-- After a failure the backoff takes precedence, so repeated failures never
+-- hammer the server or drain the battery in a request storm.
+function ReadReport:_next_tick_delay()
+    local consecutive = self.consecutive_failures or 0
+    local interval = self:_interval()
+    local backoff = backoff_delay(consecutive)
+    if backoff then
+        return backoff
+    end
+    if not self.watermark then
+        return interval
+    end
+    if self.now() - self.watermark > interval then
         return BACKLOG_TICK_SECONDS
     end
-    return self:_interval()
+    return interval
 end
 
 function ReadReport:status()
@@ -418,6 +445,10 @@ function ReadReport:start(reason)
     self.state = "waiting"
     self.stop_reason = nil
     self.last_skip = nil
+    -- New session: reset failure state so the R-C backoff does not carry a
+    -- stale ramp from a previous session into the first ticks (e.g. a weak
+    -- network that recovered overnight would otherwise still wait 300s).
+    self.consecutive_failures = 0
     -- Start the accumulation clock. watermark tracks how much reading time the
     -- server has already accepted; while the device is offline the tick leaves
     -- it intact, so once back online the backlog is drained as a series of
@@ -446,10 +477,20 @@ function ReadReport:start(reason)
     local pending = entry and tonumber(entry.pending_backlog)
     if pending and pending > 0 then
         -- Re-attach the preserved offline reading time in front of now.
-        -- Cap at a sane upper bound (24h) to reject corrupted/absurd values
-        -- from a flipped clock or a malformed config; anything beyond that
-        -- is almost certainly not real reading time.
-        local capped = math.min(pending, 24 * 3600)
+        -- Cap at a conservative 3h (2026-08-24 review R-A, was 24h): normal
+        -- offline reading (weak-network reconnect, overnight airplane-mode
+        -- reading) stays far below 3h, and pending_backlog is consumed and
+        -- cleared on each start(), so it never accumulates across sessions.
+        -- Anything beyond 3h is either corrupted (flipped clock / malformed
+        -- config) or an un-human 24h-style stretch a single web session could
+        -- never produce — drop the excess rather than report it (reporting
+        -- 24h at once is a classic abnormal-usage flag server-side).
+        local cap = 3 * 3600
+        local capped = math.min(pending, cap)
+        if pending > cap then
+            log("warn", "pending backlog exceeds conservative cap, dropping excess:",
+                "pending=", tostring(pending), "cap=", tostring(cap))
+        end
         self.watermark = now - capped
         self.pending_backlog_seconds = capped
     else
@@ -1261,11 +1302,20 @@ function ReadReport:_build_context(book_id, force, book)
     book.reader_url = WeRead.reader_url(book_id)
 
     -- BookStore never persists the chapter list, so a freshly loaded record
-    -- has no chapters. Restore them from the on-disk catalog cache first;
-    -- otherwise the TTL check below can never pass and every report would
-    -- refetch the whole reader page.
+    -- has no chapters. Restore them from the on-disk catalog cache (and the
+    -- SQLite library_db when available) first; otherwise the TTL check below
+    -- can never pass and every report would refetch the whole reader page.
     if type(book.chapters) ~= "table" or #book.chapters == 0 then
         Content.load_catalog_cache(self.client, self.settings, book)
+    end
+    if type(book.chapters) ~= "table" or #book.chapters == 0 then
+        -- v4.0 (2.5): SQLite double-storage fallback before hitting the
+        -- network (upstream library_db integration).
+        local db = self.library_db
+        local db_chapters = db and db:getChapters(book_id) or nil
+        if type(db_chapters) == "table" and #db_chapters > 0 then
+            book.chapters = db_chapters
+        end
     end
 
     local age = self.now() - (tonumber(book.read_context_updated_at) or 0)
@@ -1290,6 +1340,12 @@ function ReadReport:_build_context(book_id, force, book)
         if not cache_ok then
             log("warn", "save chapter catalog cache failed:", tostring(cache_err))
         end
+        -- v4.0 (2.5): mirror into the SQLite library_db so the offline
+        -- fallback above can serve it on later sessions.
+        if self.library_db then
+            pcall(function() self.library_db:putChapters(book_id, chapters) end)
+        end
+        book.chapters = chapters
     end
     self:_merge_remote_progress(book_id, book)
 

@@ -58,6 +58,15 @@ function M:showBookshelf()
             return self.client:get_shelf()
         end)
         if not ok then
+            -- v4.0 (2.5): offline fallback — serve the last cached shelf from
+            -- the SQLite library_db instead of failing outright.
+            local cached_books = self.library_db and self.library_db:getShelf() or nil
+            if type(cached_books) == "table" and #cached_books > 0 then
+                logger.warn("load bookshelf failed, showing cached shelf:",
+                    "books=", tostring(#cached_books), "error=", log_error(result))
+                self:_presentShelf(cached_books)
+                return
+            end
             self:closeBusy()
             logger.err("load bookshelf failed:", log_error(result))
             self:showInfo(T(
@@ -70,25 +79,36 @@ function M:showBookshelf()
             and type(result.books) == "table"
             and result.books
             or {}
-        local shelf = self.settings:get("shelf")
-        self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
-        self.shelf_regular = {}
-        self.shelf_mp = {}
-        for _i, book in ipairs(all_books) do
-            if WeRead.is_mp_book(book.bookId) then
-                table.insert(self.shelf_mp, book)
-            else
-                table.insert(self.shelf_regular, book)
-            end
+        -- v4.0 (2.5): persist the fetched shelf into the SQLite library_db
+        -- so the offline fallback above can serve it later.
+        if self.library_db then
+            pcall(function() self.library_db:cacheShelf(all_books) end)
         end
-        self.shelf_books = self.shelf_regular
-        self:closeBusy()
-        if #self.shelf_mp > 0 then
-            self:showShelfTabs()
-        else
-            self:showShelfPage()
-        end
+        self:_presentShelf(all_books)
     end)
+end
+
+-- Shared shelf presentation after books are available (online fetch or
+-- SQLite cache). Splits regular books / public accounts and shows them.
+function M:_presentShelf(all_books)
+    self:closeBusy()
+    local shelf = self.settings:get("shelf")
+    self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
+    self.shelf_regular = {}
+    self.shelf_mp = {}
+    for _i, book in ipairs(all_books) do
+        if WeRead.is_mp_book(book.bookId) then
+            table.insert(self.shelf_mp, book)
+        else
+            table.insert(self.shelf_regular, book)
+        end
+    end
+    self.shelf_books = self.shelf_regular
+    if #self.shelf_mp > 0 then
+        self:showShelfTabs()
+    else
+        self:showShelfPage()
+    end
 end
 
 local function sortBooks(books, sort_order)
@@ -210,6 +230,20 @@ function M:showBookRecord(book)
         self.settings:flush()
     end
     local saved = books[book_id] or book
+    -- v4.0 (2.5): before going online, try the SQLite detail snapshot so a
+    -- cached book still opens with its intro/rating metadata offline.
+    if not saved.intro and self.library_db then
+        local db_ok, db_book = pcall(function()
+            return self.library_db:getBook(book_id)
+        end)
+        if db_ok and type(db_book) == "table" then
+            for key, value in pairs(db_book) do
+                if saved[key] == nil then
+                    saved[key] = value
+                end
+            end
+        end
+    end
     self:showBusy(_("Loading book info..."))
     self:runOnlineTask(_("Book info"), function()
         local ok, err = pcall(function()
@@ -227,6 +261,11 @@ function M:showBookRecord(book)
                 books[book_id] = saved
                 self.settings:set("books", books)
                 self.settings:flush()
+                -- v4.0 (2.5): mirror the detail snapshot into the SQLite
+                -- library_db for offline book-detail fallback.
+                if self.library_db then
+                    pcall(function() self.library_db:putBook(saved) end)
+                end
             end
             local progress_result = self.client:get_progress(book_id)
             if progress_result and progress_result.book then
@@ -247,6 +286,15 @@ function M:showBookMenu(book)
     local book_id = book.book_id or book.bookId
     if type(book.chapters) ~= "table" then
         Content.load_catalog_cache(self.client, self.settings, book)
+    end
+    if type(book.chapters) ~= "table" and self.library_db then
+        -- v4.0 (2.5): SQLite double-storage fallback for the chapter list.
+        local db_ok, db_chapters = pcall(function()
+            return self.library_db:getChapters(book_id)
+        end)
+        if db_ok and type(db_chapters) == "table" and #db_chapters > 0 then
+            book.chapters = db_chapters
+        end
     end
     local menu, buildItems
     local function refresh()
@@ -589,6 +637,16 @@ function M:loadChapters(book, callback, force_refresh)
             callback(cached)
             return
         end
+        -- v4.0 (2.5): SQLite double-storage fallback before going online.
+        if self.library_db then
+            local db_ok, db_chapters = pcall(function()
+                return self.library_db:getChapters(book.book_id or book.bookId)
+            end)
+            if db_ok and type(db_chapters) == "table" and #db_chapters > 0 then
+                callback(db_chapters)
+                return
+            end
+        end
     end
     if not self:requireLogin(true, false) then
         return
@@ -609,6 +667,16 @@ function M:loadChapters(book, callback, force_refresh)
             self.client, self.settings, book, chapters_or_err)
         if not cache_ok then
             logger.warn("save chapter catalog cache failed:", log_error(cache_err))
+        end
+        -- v4.0 (2.5): mirror into the SQLite library_db for offline catalog
+        -- fallback on later sessions.
+        if self.library_db then
+            local db_ok, db_err = pcall(function()
+                self.library_db:putChapters(book.book_id or book.bookId, chapters_or_err)
+            end)
+            if not db_ok then
+                logger.warn("library_db catalog write failed:", log_error(db_err))
+            end
         end
         local books = self.settings:get("books", {})
         local book_id = book.book_id or book.bookId

@@ -5,6 +5,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Client = require("weread.lib.client")
 local Downloader = require("weread.lib.downloader")
+local LibraryDB = require("weread.lib.library_db")
 local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
 local PluginUtil = require("weread.lib.plugin_util")
@@ -21,7 +22,7 @@ local WeReadPlugin = WidgetContainer:extend{
     is_doc_only = false,
     -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
     -- self.version is what the in-plugin "About" dialog displays).
-    version = "0.6.0-k4-v3.5",
+    version = "0.6.0-k4-v4.0",
 }
 
 function WeReadPlugin:init()
@@ -35,6 +36,10 @@ function WeReadPlugin:init()
         logger.warn("manual login import skipped:", tostring(manual_err))
     end
     self.client = Client:new(self.settings)
+    -- v4.0 (2.5): SQLite-backed offline index (shelf / book detail / catalog).
+    -- Gracefully degrades to the existing file caches when lua-ljsqlite3 is
+    -- unavailable (open() returns nil and every caller falls back).
+    self.library_db = LibraryDB:new(self.settings)
     self.downloader = Downloader:new{
         client = self.client,
         settings = self.settings,
@@ -61,6 +66,7 @@ function WeReadPlugin:init()
     self.read_report = ReadReport:new{
         settings = self.settings,
         client = self.client,
+        library_db = self.library_db,
         scheduler = UIManager,
         get_document = function()
             return self.ui and self.ui.document

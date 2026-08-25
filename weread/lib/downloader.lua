@@ -23,6 +23,7 @@ local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
+local PluginUtil = require("weread.lib.plugin_util")
 local WeRead = require("weread.lib.protocol")
 
 local function _(text)
@@ -360,6 +361,130 @@ function Downloader:start(book, chapters, suffix, options)
         return false
     end
 
+    -- v4.0 breakpoint resume: if an interrupted download exists for this
+    -- book (same book/suffix/mode/chapter list), ask whether to continue
+    -- instead of silently restarting from scratch.
+    local mode = options.separate_chapters and "separate" or "book"
+    local progress = self:_loadProgress(book, mode)
+    if progress and not options.prefetch and not options.single_chapter then
+        local book_id = tostring(book.book_id or book.bookId or "")
+        local matches = tostring(progress.book_id or "") == book_id
+            and progress.suffix == (suffix or "book")
+            and progress.mode == mode
+            and type(progress.chapters) == "table"
+        if matches then
+            local uids = {}
+            for _, ch in ipairs(chapters) do
+                table.insert(uids, tostring(ch.chapterUid or ch.chapterId or ""))
+            end
+            local saved = progress.chapters
+            if #saved ~= #uids then
+                matches = false
+            else
+                for i, uid in ipairs(uids) do
+                    if saved[i] ~= uid then
+                        matches = false
+                        break
+                    end
+                end
+            end
+        end
+        if matches then
+            local done_count = 0
+            for _uid, done in pairs(progress.done or {}) do
+                if done then done_count = done_count + 1 end
+            end
+            local resume = progress
+            UIManager:show(ConfirmBox:new{
+                text = T(_("Incomplete download found (%1/%2 chapters done). Resume?"),
+                    tostring(done_count), tostring(total)),
+                ok_text = _("Resume"),
+                ok_callback = function()
+                    self:_startDownload(book, chapters, suffix, options, resume)
+                end,
+                cancel_text = _("Restart"),
+                cancel_callback = function()
+                    Content.clear_spool(self.settings, book)
+                    self:_startDownload(book, chapters, suffix, options, nil)
+                end,
+            })
+            return true
+        end
+        -- Mismatched progress (different mode/suffix or changed chapter list):
+        -- do NOT wipe it here. The user may have switched download mode and
+        -- still want to resume the other mode's progress later; a stale file
+        -- is tiny and gets cleaned on the next successful download.
+    end
+    return self:_startDownload(book, chapters, suffix, options, nil)
+end
+
+-- Persist download progress to <cache>/.dl/progress[-separate].json so an
+-- interrupted download can be resumed later. Skipped for prefetch and
+-- single-chapter jobs (they are short-lived and must not clobber progress).
+function Downloader:_saveProgress(dl)
+    if dl.prefetch or dl.single_chapter then
+        return
+    end
+    local mode = dl.separate_chapters and "separate" or "book"
+    local progress = {
+        version = 1,
+        book_id = tostring(dl.book.book_id or dl.book.bookId or ""),
+        suffix = dl.suffix,
+        mode = mode,
+        chapters = {},
+        done = {},
+        selected = {},
+        failed = dl.failed or {},
+        index = dl.index,
+        footnotes_done = dl.footnotes_done == true,
+        updated_at = os.time(),
+    }
+    for _, ch in ipairs(dl.chapters or {}) do
+        table.insert(progress.chapters, tostring(ch.chapterUid or ch.chapterId or ""))
+    end
+    for uid, _path in pairs(dl.body_paths or {}) do
+        progress.done[uid] = true
+    end
+    for _, ch in ipairs(dl.selected or {}) do
+        table.insert(progress.selected, tostring(ch.chapterUid or ch.chapterId or ""))
+    end
+    local ok, encoded = pcall(function()
+        return self.client:json_encode(progress)
+    end)
+    if not ok then
+        logger.warn("progress encode failed:", log_error(encoded))
+        return
+    end
+    local ok_write, err_write = pcall(function()
+        local spool = Content.spool_dir(self.settings, dl.book)
+        PluginUtil.mkdirs(spool)
+        Content.write_file(Content.spool_progress_path(self.settings, dl.book, mode), encoded)
+    end)
+    if not ok_write then
+        logger.warn("progress persist failed:", log_error(err_write))
+    end
+end
+
+function Downloader:_loadProgress(book, mode)
+    local path = Content.spool_progress_path(self.settings, book, mode)
+    local encoded = Content.read_file(path)
+    if not encoded then
+        return nil
+    end
+    local ok, progress = pcall(function()
+        return self.client:json_decode(encoded)
+    end)
+    if not ok or type(progress) ~= "table" then
+        return nil
+    end
+    return progress
+end
+
+-- Shared download launch: builds the job state and starts the async state
+-- machine. resume (optional) is a progress table that rebuilds finished
+-- chapters from the spool and continues at the first chapter not on disk.
+function Downloader:_startDownload(book, chapters, suffix, options, resume)
+    local total = #chapters
     local dl = {
         book = book,
         chapters = chapters,
@@ -368,6 +493,7 @@ function Downloader:start(book, chapters, suffix, options)
         cancelled = false,
         selected = {},
         bodies = {},
+        body_paths = {},
         assets = {},
         assets_by_uid = {},
         state = {},
@@ -394,6 +520,103 @@ function Downloader:start(book, chapters, suffix, options)
         on_complete = options.on_complete,
         started_at = time.now(),
     }
+    if resume then
+        -- v4.0 breakpoint resume: rebuild finished chapters from the spool.
+        -- Bodies and asset metadata live on disk; only chapter objects and
+        -- paths are reconstructed here. Footnote scans are re-run from the
+        -- spooled bodies so the footnote pass works on the remaining chapters.
+        local uid_to_chapter = {}
+        for _i, ch in ipairs(chapters) do
+            uid_to_chapter[tostring(ch.chapterUid or ch.chapterId or "")] = ch
+        end
+        local selected = {}
+        local body_paths = {}
+        local assets_by_uid = {}
+        local failed = {}
+        for _i, uid in ipairs(resume.selected or {}) do
+            local ch = uid_to_chapter[uid]
+            if ch then
+                local body_path = Content.spool_body_path(self.settings, book, uid)
+                if Content.read_file(body_path) then
+                    table.insert(selected, ch)
+                    body_paths[uid] = body_path
+                    local meta_ok, meta = pcall(function()
+                        return self.client:json_decode(
+                            Content.read_file(Content.spool_assets_meta_path(self.settings, book, uid)) or "[]")
+                    end)
+                    if meta_ok and type(meta) == "table" then
+                        assets_by_uid[uid] = meta
+                    end
+                end
+            end
+        end
+        -- De-duplicate the resumed failed list (S5 fix): the snapshot already
+        -- contains each uid once; if a chapter fails again after resume,
+        -- _failChapter would append a duplicate, inflating the "N failed"
+        -- count text. Seen-set keeps it unique.
+        local seen_failed = {}
+        for _i, uid in ipairs(resume.failed or {}) do
+            if not seen_failed[uid] then
+                seen_failed[uid] = true
+                table.insert(failed, uid)
+            end
+        end
+        -- Skip already-downloaded chapters: start at the first uid that is
+        -- not present in the spool (or at the first failed chapter).
+        local done_uids = {}
+        for _i, ch in ipairs(selected) do
+            done_uids[tostring(ch.chapterUid or ch.chapterId or "")] = true
+        end
+        local next_index = total + 1
+        for i, ch in ipairs(chapters) do
+            local uid = tostring(ch.chapterUid or ch.chapterId or "")
+            if not done_uids[uid] then
+                next_index = i
+                break
+            end
+        end
+        dl.selected = selected
+        dl.body_paths = body_paths
+        dl.assets_by_uid = assets_by_uid
+        dl.failed = failed
+        dl.index = next_index
+        dl.footnotes_done = resume.footnotes_done == true
+        -- Resume seeding (B1 fix): re-seed the cross-chapter asset-name
+        -- tracker from the spooled asset metadata of already-downloaded
+        -- chapters, so newly downloaded chapters never reuse an image name
+        -- already claimed by an old chapter. Without this the resumed run
+        -- starts from an empty used_asset_names and renumbers from img1,
+        -- colliding with old chapters' hrefs in the aggregated EPUB.
+        local used_asset_names = {}
+        for _uid, meta in pairs(dl.assets_by_uid or {}) do
+            for _j, asset in ipairs(meta or {}) do
+                local base = tostring(asset.href or ""):match("([^/]+)$")
+                if base and base ~= "" then
+                    used_asset_names[base] = true
+                end
+            end
+        end
+        dl.state = dl.state or {}
+        dl.state.used_asset_names = used_asset_names
+        if not dl.footnotes_done then
+            -- Re-scan footnotes for already-downloaded chapters so the
+            -- footnote pass can transform them along with the new ones.
+            for _i, ch in ipairs(selected) do
+                local uid = tostring(ch.chapterUid or ch.chapterId or "")
+                local body = Content.read_file(body_paths[uid])
+                if body then
+                    local scan_ok, scan = pcall(Footnotes.scan_chapter, body, ch)
+                    if scan_ok then
+                        dl.footnote_scans[uid] = scan
+                    end
+                end
+            end
+        end
+        logger.info("download resumed:", "book_id=",
+            tostring(book.book_id or book.bookId),
+            "done=", tostring(#selected), "total=", tostring(total),
+            "next_index=", tostring(next_index))
+    end
     self._active_job = dl
 
     local task_label = options.single_chapter and _("Download chapter and read") or _("Download full book")
@@ -515,6 +738,7 @@ function Downloader:_failChapter(dl, err)
     logger.warn("chapter download failed after retry, skipping:",
         "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
         "chapter_uid=", uid, "error=", log_error(err))
+    self:_saveProgress(dl)
     dl.current = nil
     dl.index = dl.index + 1
     if dl.progress_dialog then
@@ -554,6 +778,7 @@ function Downloader:_footnoteStep(dl)
         if job.css_needed then
             dl.state.css = (dl.state.css or "") .. "\n" .. Footnotes.FOOTNOTES_CSS
         end
+        self:_saveProgress(dl)
         logger.info("book footnotes processed:",
             "candidates=", tostring(dl.footnote_stats.candidates),
             "converted=", tostring(dl.footnote_stats.converted),
@@ -571,16 +796,24 @@ function Downloader:_footnoteStep(dl)
     self:_setStage(dl,
         T(_("Processing footnotes · chapter %1/%2"),
             tostring(job.index), tostring(#dl.selected)), dl.total)
-    local original = dl.bodies[uid]
+    -- v4.0: chapter bodies live on disk; read back one chapter at a time.
+    local original = Content.read_file(dl.body_paths and dl.body_paths[uid]) or ""
     local started = time.now()
     local ok, transformed, stats = pcall(Footnotes.transform_chapter,
         original, dl.footnote_scans[uid], job.index_data)
     if ok then
         local valid, validation_error = Footnotes.validate(transformed)
         if valid then
-            dl.bodies[uid] = transformed
-            add_footnote_stats(dl.footnote_stats, stats)
-            if Footnotes.has_converted(stats) then job.css_needed = true end
+            local write_ok, write_err = pcall(Content.write_file,
+                dl.body_paths and dl.body_paths[uid], transformed)
+            if not write_ok then
+                dl.footnote_stats.fallback = dl.footnote_stats.fallback + 1
+                logger.warn("footnote transform write-back failed; keeping original chapter:",
+                    "chapter_uid=", uid, "error=", log_error(write_err))
+            else
+                add_footnote_stats(dl.footnote_stats, stats)
+                if Footnotes.has_converted(stats) then job.css_needed = true end
+            end
         else
             dl.footnote_stats.fallback = dl.footnote_stats.fallback + 1
             logger.warn("footnote transform validation failed; keeping original chapter:",
@@ -652,13 +885,28 @@ function Downloader:_finishChapter(dl)
         return
     end
     local uid = tostring(chapter.chapterUid or dl.index)
-    dl.bodies[uid] = xhtml
+    -- v4.0: spool the finalized chapter (XHTML + assets) to disk immediately
+    -- instead of accumulating everything in RAM (256MB limit on K4).
+    local body_path, assets_meta = Content.spool_chapter(
+        self.settings, dl.book, uid, xhtml, chapter_assets or {})
+    dl.body_paths = dl.body_paths or {}
+    dl.body_paths[uid] = body_path
     dl.assets_by_uid = dl.assets_by_uid or {}
-    dl.assets_by_uid[uid] = chapter_assets or {}
+    dl.assets_by_uid[uid] = assets_meta or {}
     table.insert(dl.selected, chapter)
-    for _i, asset in ipairs(chapter_assets or {}) do
-        table.insert(dl.assets, asset)
+    -- Persist per-chapter asset metadata so a resume can rebuild the EPUB
+    -- without re-downloading assets.
+    local meta_ok, meta_err = pcall(function()
+        local meta_path = Content.spool_assets_meta_path(self.settings, dl.book, uid)
+        local encoded = self.client:json_encode(assets_meta or {})
+        Content.write_file(meta_path, encoded)
+    end)
+    if not meta_ok then
+        logger.warn("asset metadata persist failed:", "chapter_uid=", uid,
+            "error=", log_error(meta_err))
     end
+    -- v4.0: persist download progress for breakpoint resume.
+    self:_saveProgress(dl)
     dl.current = nil
     dl.index = dl.index + 1
     if dl.progress_dialog then
@@ -686,6 +934,11 @@ function Downloader:_step(dl)
             end
             self:_releaseStandby(dl)
             logger.err("book download failed: no chapters downloaded")
+            -- Only whole-book/separate jobs own the spool; prefetch and
+            -- single-chapter jobs must not wipe a paused download's state.
+            if not dl.prefetch and not dl.single_chapter then
+                Content.clear_spool(self.settings, dl.book)
+            end
             self:_notifyCompletion(dl, false, "no_chapters_downloaded")
             self:_finishJob(dl)
             if not dl.prefetch then
@@ -697,15 +950,47 @@ function Downloader:_step(dl)
             self:_startFootnotes(dl)
             return
         end
+        -- v4.0 resume: if the footnote pass already completed before the
+        -- interruption, state.css was not spooled; re-fetch the book CSS and
+        -- re-append the deterministic footnote stylesheet for the EPUB build.
+        if dl.footnotes_done and not dl.state.css then
+            pcall(function()
+                local css = Content.fetch_chapter_css(
+                    self.client, self.settings, dl.book, dl.selected[1])
+                if css then
+                    dl.state.css = css .. "\n" .. Footnotes.FOOTNOTES_CSS
+                end
+            end)
+        end
         self:_setStage(dl, _("Building EPUB..."), dl.total)
         local save_started = time.now()
         local ok, path, chapter_paths = pcall(function()
+            -- v4.0: bodies/assets are spooled to disk; read back per chapter
+            -- at aggregation time (single/separate) or stream from disk
+            -- (whole-book) so RAM stays bounded on K4's 256MB.
+            local function read_body(uid)
+                return Content.read_file(dl.body_paths and dl.body_paths[uid]) or ""
+            end
+            -- Spooled asset metadata stores spool-relative paths; resolve to
+            -- absolute paths for save_chapter_epub's read_file.
+            local spool = Content.spool_dir(self.settings, dl.book)
+            local function resolve_assets(uid)
+                local resolved = {}
+                for _i, asset in ipairs((dl.assets_by_uid and dl.assets_by_uid[uid]) or {}) do
+                    table.insert(resolved, {
+                        href = asset.href,
+                        media_type = asset.media_type,
+                        file = spool .. "/" .. asset.file,
+                    })
+                end
+                return resolved
+            end
             if dl.single_chapter then
                 local chapter = dl.selected[1]
                 local uid = tostring(chapter.chapterUid or 1)
                 return Content.save_chapter_epub(
-                    self.settings, dl.book, chapter, dl.bodies[uid],
-                    (dl.assets_by_uid and dl.assets_by_uid[uid]) or dl.assets,
+                    self.settings, dl.book, chapter, read_body(uid),
+                    resolve_assets(uid),
                     dl.state.css
                 )
             end
@@ -714,8 +999,8 @@ function Downloader:_step(dl)
                 for chapter_index, chapter in ipairs(dl.selected) do
                     local uid = tostring(chapter.chapterUid or chapter_index)
                     paths[uid] = Content.save_chapter_epub(
-                        self.settings, dl.book, chapter, dl.bodies[uid],
-                        (dl.assets_by_uid and dl.assets_by_uid[uid]) or {},
+                        self.settings, dl.book, chapter, read_body(uid),
+                        resolve_assets(uid),
                         dl.state.css
                     )
                 end
@@ -726,9 +1011,9 @@ function Downloader:_step(dl)
             if cover_url and cover_url ~= "" then
                 pcall(function() cover_data = self.client:get_binary(cover_url) end)
             end
-            return Content.save_book_epub(
-                self.settings, dl.book, dl.selected, dl.bodies,
-                dl.suffix, dl.assets, dl.state.css, cover_data
+            return Content.save_book_epub_streamed(
+                self.settings, dl.book, dl.selected, dl.body_paths,
+                dl.assets_by_uid, dl.suffix, dl.state.css, cover_data
             )
         end)
         self:_perf(dl, "save_epub", save_started, "ok=", tostring(ok),
@@ -792,6 +1077,26 @@ function Downloader:_step(dl)
                 self.show_info(T(_("Download failed:\n%1"), display_error(path)))
             end
             return
+        end
+        -- v4.0: download finished successfully; drop the spool now that
+        -- everything is baked into the EPUB(s).
+        --   whole-book: clear everything (bodies, assets, progress)
+        --   separate-chapters: remove this run's chapter files and its own
+        --     progress file (keeps any paused whole-book progress intact)
+        --   single-chapter / prefetch: leave the spool alone. A single
+        --     chapter is often part of a paused whole-book download; its
+        --     spooled body/assets then feed the resume instead of being
+        --     re-downloaded.
+        if dl.prefetch or dl.single_chapter then
+            -- keep spool
+        elseif dl.separate_chapters then
+            for _i, ch in ipairs(dl.selected) do
+                Content.remove_spool_chapter(self.settings, dl.book,
+                    tostring(ch.chapterUid or ch.chapterId or _i))
+            end
+            os.remove(Content.spool_progress_path(self.settings, dl.book, "separate"))
+        else
+            Content.clear_spool(self.settings, dl.book)
         end
         if #dl.failed > 0 then
             logger.warn(
@@ -860,6 +1165,19 @@ function Downloader:_step(dl)
     end
 
     local chapter = dl.chapters[dl.index]
+    -- Resume (B2 fix): a chapter already spooled in a previous round (e.g. it
+    -- sits after a failed-and-skipped chapter that created a gap) must not be
+    -- re-downloaded from the network. Skip straight past it and advance, so a
+    -- resumed run only fetches chapters that are actually missing.
+    local resume_uid = tostring(chapter.chapterUid or dl.index)
+    if dl.body_paths and dl.body_paths[resume_uid] then
+        dl.index = dl.index + 1
+        if dl.progress_dialog then
+            dl.progress_dialog:reportProgress(dl.index - 1)
+        end
+        self:_scheduleGuarded(dl, function() self:_step(dl) end)
+        return
+    end
     self:_setStage(dl,
         T(_("Downloading chapter %1/%2: %3"), tostring(dl.index), tostring(dl.total),
             chapter.title or tostring(chapter.chapterUid)),
