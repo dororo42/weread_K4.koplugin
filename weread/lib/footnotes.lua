@@ -8,19 +8,46 @@ local logger = require("weread.lib.logger").scoped("Footnotes")
 
 local Footnotes = {}
 
-Footnotes.FOOTNOTES_CSS = [[
+-- Shared prefix: the in-text reference markers.
+local FOOTNOTES_REF_CSS = [[
 .wr-fn-ref{font-size:0.75em;vertical-align:super;line-height:0;white-space:nowrap;}
 .wr-fn-ref a{-cr-hint:noteref;position:relative;text-decoration:none;color:#0366d6;}
 .wr-fn-ref a::after{content:"";position:absolute;top:-0.5em;right:-0.3em;bottom:-0.5em;left:-0.3em;}
-/* Do not use display:none here: CREngine then loses each aside's rendered
- * boundary and its popup range can expand across adjacent footnotes. Keep a
- * zero-height block for range detection; popup extraction ignores book CSS. */
-aside.wr-book-footnote{-cr-hint:footnote;display:block!important;visibility:hidden;height:0!important;max-height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;font-size:0!important;line-height:0!important;text-indent:0!important;}
-aside.wr-book-footnote *{margin:0!important;padding:0!important;font-size:0!important;line-height:0!important;}
+]]
+
+-- v4.5 page mode (experimental): CREngine's in-page footnote feature
+-- (crengine issue #5925) attaches the footnote content lines to the page
+-- that references them at page-split time, but KEEP the original lines in
+-- the flow, so an epub:type=footnote aside renders twice (page bottom +
+-- chapter end) on the K4 build regardless of CSS hints. To get a single
+-- display at the page bottom we keep the footnote semantics (so the
+-- page-bottom attachment happens) and collapse the in-flow copy with a
+-- zero-height overflow box; the extracted copy is laid out from the note's
+-- own text lines and is not affected by the collapse.
+Footnotes.FOOTNOTES_PAGE_CSS = FOOTNOTES_REF_CSS .. [[
+aside.wr-book-footnote{-cr-hint:footnote-inpage;display:block!important;height:0!important;max-height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;}
 div.wr-footnotes{margin:0;padding:0;border:0;}
 div.wr-footnotes>hr{display:none;}
 .wr-fn-num{font-weight:bold;margin-right:0.3em;text-decoration:none;color:inherit;}
 ]]
+
+-- v4.5 chapter mode: notes stay as plain visible blocks at the end of each
+-- chapter (build_section emits a plain div without epub:type=footnote), so
+-- CREngine does not re-layout them per page.
+Footnotes.FOOTNOTES_CHAPTER_CSS = FOOTNOTES_REF_CSS .. [[
+div.wr-book-footnote{font-size:0.85em;margin:0.4em 0;padding:0.3em 0;border-top:1px solid #d0d0d0;line-height:1.5;}
+div.wr-footnotes{margin:0;padding:0;border:0;}
+div.wr-footnotes>hr{display:none;}
+.wr-fn-num{font-weight:bold;margin-right:0.3em;text-decoration:none;color:inherit;}
+]]
+
+-- Compatibility alias (page mode is the default).
+Footnotes.FOOTNOTES_CSS = Footnotes.FOOTNOTES_PAGE_CSS
+
+function Footnotes.footnote_css_for(mode)
+    return mode == "chapter" and Footnotes.FOOTNOTES_CHAPTER_CSS
+        or Footnotes.FOOTNOTES_PAGE_CSS
+end
 
 local function xml_escape(value)
     return (tostring(value or "")
@@ -409,13 +436,22 @@ local function append_before_body_close(html, fragment)
     return html .. fragment
 end
 
-local function build_section(notes)
+local function build_section(notes, mode)
     if #notes == 0 then return "" end
     local out = { '\n<div class="wr-footnotes">\n<hr/>\n' }
+    local chapter_mode = mode == "chapter"
     for _i, note in ipairs(notes) do
-        out[#out + 1] = string.format(
-            '<aside epub:type="footnote" id="%s" class="wr-book-footnote"><p><a href="#%s" class="wr-fn-num">%s</a> %s</p></aside>\n',
-            note.target_id, note.ref_id, xml_escape(note.display), xml_escape(note.text))
+        if chapter_mode then
+            -- Plain div: no epub:type=footnote, so CREngine leaves it in the
+            -- flow at the end of the chapter (no per-page re-layout).
+            out[#out + 1] = string.format(
+                '<div id="%s" class="wr-book-footnote"><p><a href="#%s" class="wr-fn-num">%s</a> %s</p></div>\n',
+                note.target_id, note.ref_id, xml_escape(note.display), xml_escape(note.text))
+        else
+            out[#out + 1] = string.format(
+                '<aside epub:type="footnote" id="%s" class="wr-book-footnote"><p><a href="#%s" class="wr-fn-num">%s</a> %s</p></aside>\n',
+                note.target_id, note.ref_id, xml_escape(note.display), xml_escape(note.text))
+        end
     end
     out[#out + 1] = "</div>\n"
     return table.concat(out)
@@ -462,7 +498,7 @@ local function strip_consumed_note_blocks(html, converted_anchors)
     return html, removed
 end
 
-function Footnotes.transform_chapter(html, scan, index)
+function Footnotes.transform_chapter(html, scan, index, mode)
     local stats = {
         candidates = 0,
         converted = 0,
@@ -537,7 +573,7 @@ function Footnotes.transform_chapter(html, scan, index)
     end)
 
     html, stats.removed_note_blocks = strip_consumed_note_blocks(html, converted_anchors)
-    return append_before_body_close(html, build_section(notes)), stats
+    return append_before_body_close(html, build_section(notes, mode)), stats
 end
 
 function Footnotes.validate(html)

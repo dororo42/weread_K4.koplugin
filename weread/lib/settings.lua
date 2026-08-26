@@ -31,6 +31,12 @@ local defaults = {
         download_mp_images = false,
         auto_prefetch_next_chapter = false,
         show_prefetch_notifications = true,
+        -- v4.5: footnote display mode: "chapter" (default) = plain visible
+        -- blocks at the end of each chapter (guaranteed single display);
+        -- "page" = bottom of the referencing page (experimental: CREngine
+        -- in-page footnotes also keep the in-flow copy on some builds, and
+        -- long notes flow to the next page).
+        footnotes_mode = "chapter",
         -- K4 fork: underlines/thoughts feature removed; the corresponding
         -- config keys (download_underlines_and_thoughts, show_annotations,
         -- ignore_edge_thought_taps, edge_tap_ratio) are no longer used.

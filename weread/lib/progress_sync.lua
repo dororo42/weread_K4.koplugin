@@ -601,6 +601,39 @@ function ProgressSync:_pull(options)
     if self.pulling then return false end
     local local_position, reason, context = self:capture_local()
     if not local_position then
+        -- v4.5 fix: after a delete-and-redownload the book record has no
+        -- chapter list and the file catalog cache may be gone too. Refetch
+        -- the catalog online once (loadChapters persists it everywhere),
+        -- then retry the pull. No loop: the retry only happens after a
+        -- successful catalog fetch.
+        if reason == "catalog_unavailable"
+            and not self._catalog_retrying
+            and self.refresh_chapters
+            and self.is_online() then
+            self._catalog_retrying = true
+            local book = context and self.get_book(context.book_id)
+            if book then
+                local ok, refresh_err = pcall(function()
+                    self.refresh_chapters(book, function(chapters)
+                        self._catalog_retrying = false
+                        if type(chapters) == "table" and #chapters > 0 then
+                            self:_pull(options)
+                        elseif options.manual then
+                            self.notify("local_unavailable",
+                                { error = "catalog_unavailable" })
+                        end
+                    end)
+                end)
+                if not ok then
+                    self._catalog_retrying = false
+                    log("warn", "catalog recovery failed:", tostring(refresh_err))
+                else
+                    return true
+                end
+            else
+                self._catalog_retrying = false
+            end
+        end
         if options.manual then self.notify("local_unavailable", { error = reason }) end
         return false
     end

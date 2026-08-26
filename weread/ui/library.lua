@@ -7,6 +7,7 @@ local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local UIManager = require("ui/uimanager")
+local Event = require("ui/event")
 local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
@@ -863,7 +864,14 @@ function M:openChapter(book, chapter)
     elseif self:getFullBookCachePath(book) then
         -- Whole-book cache: this chapter lives inside the combined EPUB, so it
         -- is already downloaded — open the full book instead of re-downloading
-        -- the chapter as a separate file.
+        -- the chapter as a separate file. v4.5: locate the chapter inside the
+        -- EPUB via onReaderReady's pending GotoLink (see jumpToChapter).
+        local uid = tostring(chapter_uid)
+        local chapter_file = book.cached_chapter_files
+            and book.cached_chapter_files[uid]
+        if chapter_file then
+            self._pending_chapter_goto = chapter_file
+        end
         self:openFile(self:getFullBookCachePath(book))
     elseif self.downloader:promotePrefetch(book, chapter) then
         -- The downloader promotes the background task to a visible progress
@@ -885,9 +893,18 @@ function M:jumpToChapter(book, chapter)
         return true
     end
     -- Whole-book cache: the chapter is already inside the combined EPUB, so
-    -- open it rather than re-downloading the chapter as a new file.
+    -- open it rather than re-downloading the chapter as a new file. v4.5:
+    -- record the target chapter file so onReaderReady can GotoLink into it
+    -- once the full book has finished loading (openFile alone would land on
+    -- the previous reading position).
     local full_book = self:getFullBookCachePath(book)
     if full_book then
+        local uid = tostring(chapter_uid)
+        local chapter_file = book.cached_chapter_files
+            and book.cached_chapter_files[uid]
+        if chapter_file then
+            self._pending_chapter_goto = chapter_file
+        end
         self:openFile(full_book)
         return true
     end

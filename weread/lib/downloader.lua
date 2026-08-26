@@ -776,7 +776,8 @@ function Downloader:_footnoteStep(dl)
         dl.footnotes_done = true
         dl.footnote_job = nil
         if job.css_needed then
-            dl.state.css = (dl.state.css or "") .. "\n" .. Footnotes.FOOTNOTES_CSS
+            dl.state.css = (dl.state.css or "") .. "\n"
+                .. Footnotes.footnote_css_for(footnotes_mode)
         end
         self:_saveProgress(dl)
         logger.info("book footnotes processed:",
@@ -796,11 +797,15 @@ function Downloader:_footnoteStep(dl)
     self:_setStage(dl,
         T(_("Processing footnotes · chapter %1/%2"),
             tostring(job.index), tostring(#dl.selected)), dl.total)
+    -- v4.5: footnote display mode from download settings ("chapter"
+    -- default; legacy/absent setting = chapter).
+    local footnotes_mode = self.settings:get("cache").footnotes_mode
+        == "page" and "page" or "chapter"
     -- v4.0: chapter bodies live on disk; read back one chapter at a time.
     local original = Content.read_file(dl.body_paths and dl.body_paths[uid]) or ""
     local started = time.now()
     local ok, transformed, stats = pcall(Footnotes.transform_chapter,
-        original, dl.footnote_scans[uid], job.index_data)
+        original, dl.footnote_scans[uid], job.index_data, footnotes_mode)
     if ok then
         local valid, validation_error = Footnotes.validate(transformed)
         if valid then
@@ -958,7 +963,10 @@ function Downloader:_step(dl)
                 local css = Content.fetch_chapter_css(
                     self.client, self.settings, dl.book, dl.selected[1])
                 if css then
-                    dl.state.css = css .. "\n" .. Footnotes.FOOTNOTES_CSS
+                    local footnotes_mode = self.settings:get("cache").footnotes_mode
+                        == "page" and "page" or "chapter"
+                    dl.state.css = css .. "\n"
+                        .. Footnotes.footnote_css_for(footnotes_mode)
                 end
             end)
         end
@@ -1027,6 +1035,16 @@ function Downloader:_step(dl)
         local book_id = dl.book.book_id or dl.book.bookId
         if book_id then
             local record = books[book_id]
+            -- v4.5 fix: persist the downloaded chapter list back into the
+            -- book record. A delete-and-redownload rebuilds the record
+            -- without chapters, which breaks progress sync
+            -- (capture_local -> catalog_unavailable).
+            if type(dl.selected) == "table" and #dl.selected > 0 then
+                dl.book.chapters = dl.selected
+                if record then
+                    record.chapters = dl.selected
+                end
+            end
             if not record then
                 record = {}
                 for key, value in pairs(dl.book) do record[key] = value end
@@ -1051,6 +1069,19 @@ function Downloader:_step(dl)
                         end
                     end
                     target.cached_full_book = path
+                    -- v4.5: persist uid -> in-EPUB chapter file mapping so
+                    -- chapter-list jumps can locate the selected chapter
+                    -- inside the whole-book cache (text/chapter-NNN.xhtml,
+                    -- numbered in dl.selected order by
+                    -- save_book_epub_streamed).
+                    local chapter_files = {}
+                    for chapter_index, chapter in ipairs(dl.selected) do
+                        local uid = tostring(chapter.chapterUid
+                            or chapter.chapterId or chapter_index)
+                        chapter_files[uid] = string.format(
+                            "text/chapter-%03d.xhtml", chapter_index)
+                    end
+                    target.cached_chapter_files = chapter_files
                     -- Keep cached_file as a compatibility alias for existing
                     -- installs and cache-management code. Single/partial
                     -- downloads must never overwrite it.

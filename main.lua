@@ -113,6 +113,13 @@ function WeReadPlugin:init()
         get_chapters = function(book)
             return self:ensureChaptersLoaded(book)
         end,
+        -- v4.5 fix: forced online catalog refetch used by ProgressSync when
+        -- capture_local reports catalog_unavailable (e.g. after a
+        -- delete-and-redownload). loadChapters already persists the fetched
+        -- catalog to book.chapters + cache file + SQLite mirror.
+        refresh_chapters = function(book, callback)
+            return self:loadChapters(book, callback, true)
+        end,
         get_file_context = function(book, path)
             return self:getChapterInfoFromFile(book, path)
         end,

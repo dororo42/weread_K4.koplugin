@@ -106,6 +106,18 @@ function M:showEndOfBookDialog(book_id)
         on_chapter_list = function()
             if chapters then
                 self:showChapterList(book)
+            elseif is_regular_weread_book then
+                -- v4.5 fix: the chapter list may be missing after a
+                -- delete-and-redownload (record rebuilt without chapters).
+                -- loadChapters recovers it from file cache -> SQLite ->
+                -- online fetch instead of refusing.
+                self:loadChapters(book, function(refreshed)
+                    if type(refreshed) == "table" and #refreshed > 0 then
+                        self:showChapterList(book)
+                    else
+                        show_context_required()
+                    end
+                end, false)
             else
                 show_context_required()
             end

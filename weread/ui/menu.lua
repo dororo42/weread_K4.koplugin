@@ -217,6 +217,59 @@ function M:getSettingsMenuItems()
             sub_item_table_func = function()
                 return {
                     {
+                        text = _("Footnote display position"),
+                        sub_item_table_func = function()
+                            local function current_mode()
+                                return self.settings:get("cache").footnotes_mode
+                                    == "page" and "page" or "chapter"
+                            end
+                            return {
+                                {
+                                    text = _("End of each chapter"),
+                                    keep_menu_open = true,
+                                    check_callback_updates_menu = true,
+                                    checked_func = function()
+                                        return current_mode() == "chapter"
+                                    end,
+                                    callback = self:safeCallback(
+                                        _("End of each chapter"),
+                                        function(touchmenu_instance)
+                                            local cache = self.settings:get("cache")
+                                            cache.footnotes_mode = "chapter"
+                                            self.settings:set("cache", cache)
+                                            self.settings:flush()
+                                            if touchmenu_instance then
+                                                touchmenu_instance:updateItems()
+                                            end
+                                        end),
+                                },
+                                {
+                                    text = _("Bottom of the referencing page (experimental; long notes may flow to the next page)"),
+                                    keep_menu_open = true,
+                                    check_callback_updates_menu = true,
+                                    checked_func = function()
+                                        return current_mode() == "page"
+                                    end,
+                                    callback = self:safeCallback(
+                                        _("Bottom of the referencing page (experimental; long notes may flow to the next page)"),
+                                        function(touchmenu_instance)
+                                            local cache = self.settings:get("cache")
+                                            cache.footnotes_mode = "page"
+                                            self.settings:set("cache", cache)
+                                            self.settings:flush()
+                                            if touchmenu_instance then
+                                                touchmenu_instance:updateItems()
+                                            end
+                                        end),
+                                },
+                                {
+                                    text = _("This setting only affects new downloads; re-download the book to apply it."),
+                                    keep_menu_open = true,
+                                },
+                            }
+                        end,
+                    },
+                    {
                         text = _("Book images"),
                         keep_menu_open = true,
                         checked_func = function()

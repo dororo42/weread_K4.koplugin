@@ -2,6 +2,7 @@
 local Content = require("weread.lib.content")
 local logger = require("weread.lib.logger").scoped("Prefetch")
 local UIManager = require("ui/uimanager")
+local Event = require("ui/event")
 local PluginUtil = require("weread.lib.plugin_util")
 local WeRead = require("weread.lib.protocol")
 local _ = PluginUtil.tr
@@ -85,6 +86,21 @@ end
 
 function M:onReaderReady()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
+
+    -- v4.5: apply a pending whole-book chapter jump now that the document has
+    -- finished loading. jumpToChapter/openChapter record the target chapter
+    -- file (text/chapter-NNN.xhtml) before opening the full-book EPUB;
+    -- GotoLink is KOReader's native in-book link mechanism.
+    local pending_goto = self._pending_chapter_goto
+    self._pending_chapter_goto = nil
+    if pending_goto and self.ui and self.ui.document then
+        local ok, goto_err = pcall(function()
+            self.ui:handleEvent(Event:new("GotoLink", { file = pending_goto }))
+        end)
+        if not ok then
+            logger.err("pending chapter goto failed:", log_error(goto_err))
+        end
+    end
 
     local weread_book_id = self:detectWeReadBook()
     self._current_weread_book_id = weread_book_id
@@ -293,7 +309,22 @@ end
 function M:ensureChaptersLoaded(book)
     if not book then return nil end
     if not (type(book.chapters) == "table" and #book.chapters > 0) then
-        Content.load_catalog_cache(self.client, self.settings, book)
+        local cached = Content.load_catalog_cache(self.client, self.settings, book)
+        if type(cached) ~= "table" or #cached == 0 then
+            -- v4.5 fix: same fallback chain as loadChapters (SQLite mirror),
+            -- so progress sync survives a missing file catalog cache
+            -- (e.g. after cache cleanup) as long as the SQLite copy exists.
+            if self.library_db then
+                local db_ok, db_chapters = pcall(function()
+                    return self.library_db:getChapters(
+                        book.book_id or book.bookId)
+                end)
+                if db_ok and type(db_chapters) == "table"
+                    and #db_chapters > 0 then
+                    book.chapters = db_chapters
+                end
+            end
+        end
     end
     return book.chapters
 end
