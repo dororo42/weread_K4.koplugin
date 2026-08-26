@@ -219,6 +219,42 @@ function Settings:set(key, value)
     self.store:saveSetting(key, value)
 end
 
+-- P0-1C (2026-08-26 翻页卡滞修复): persist a single book record instead of
+-- the whole books table. set("books") walks every book and writes up to 3
+-- JSON files each (BookStore.save) — on a slow K4 flash with dozens of books
+-- that is 0.5-2s of blocking I/O per call, and read_report called it on every
+-- 30s report tick. This writes only the changed book and updates the stored
+-- index (a tiny table of cache_dir entries) plus the in-memory books cache,
+-- so callers that hold a reference to the cached record stay consistent.
+-- Semantics are identical to set("books") for the single record: fields are
+-- split into metadata/reading_state/articles JSONs exactly as before.
+function Settings:set_book(book_id, book)
+    book_id = tostring(book_id or "")
+    if book_id == "" then
+        return false
+    end
+    local indexes = self.store:readSetting("books", {})
+    if type(indexes) ~= "table" then
+        indexes = {}
+    end
+    local ok, index_or_err = BookStore.save(self, book_id, book)
+    if not ok then
+        error("Could not save book data: " .. tostring(index_or_err))
+    end
+    indexes[book_id] = index_or_err
+    self.store:saveSetting("books", indexes)
+    -- Keep the in-memory books cache consistent: the record the caller just
+    -- persisted is the live record; store the reference so later get("books")
+    -- does not trigger a full O(N) disk rebuild on the next tick.
+    if self._books_cache then
+        self._books_cache[book_id] = book
+        self._books_cache_dirty = false
+    else
+        self._books_cache_dirty = true
+    end
+    return true
+end
+
 function Settings:has_legacy_book_records()
     local books = self.store:readSetting("books", {})
     return not BookStore.is_minimal_index(books)

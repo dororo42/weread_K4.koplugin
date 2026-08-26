@@ -659,9 +659,13 @@ function Client:get_mp_content(review_id, opts)
     error(http_error(self, code, text, resp_headers))
 end
 
-function Client:report_read(payload, referer)
+function Client:report_read(payload, referer, opts)
+    opts = opts or {}
     return self:post_json("https://weread.qq.com/web/book/read", payload, {
         referer = referer or "https://weread.qq.com/",
+        -- P0-3a (2026-08-26): optional degraded timeout from read_report
+        -- (weak-network failure streak); nil falls back to the 8s default.
+        timeout = opts.timeout,
     })
 end
 

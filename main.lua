@@ -80,6 +80,13 @@ function WeReadPlugin:init()
             end
             return self.progress_sync:position_for_report(book_id)
         end,
+        -- P0-2 (2026-08-26 翻页卡滞修复): expose the last page-turn time so
+        -- the report tick can deconflict with page turns (see
+        -- reader_lifecycle onPageUpdate). Nil-safe: read_report falls back
+        -- to no deconfliction when this callback is absent.
+        get_last_page_update = function()
+            return self._last_page_update_at
+        end,
         -- The report tick runs on the UI loop; use the link-state check here
         -- because NetworkMgr:isOnline() does a blocking DNS lookup.
         is_online = function()

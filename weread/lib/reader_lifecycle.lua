@@ -116,6 +116,10 @@ function M:onReaderReady()
 end
 
 M.onPageUpdate = guarded("onPageUpdate", function(self)
+    -- P0-2 (2026-08-26 翻页卡滞修复): stamp every page turn so read_report
+    -- can postpone its 30s report tick while the user is turning pages
+    -- (inline HTTP + disk writes on the UI loop are what read as stutter).
+    self._last_page_update_at = os.time()
     self.progress_sync:on_page_update()
 end)
 

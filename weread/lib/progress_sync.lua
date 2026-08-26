@@ -129,7 +129,10 @@ function ProgressSync:_persist(book_id, patch)
         end
     end
     books[book_id] = book
-    self.settings:set("books", books)
+    -- P0-1C (2026-08-26 翻页卡滞修复): single-record write instead of a
+    -- full books-table rewrite (set("books") writes every book's JSONs).
+    -- _schedule_flush() still coalesces the LuaSettings flush as before.
+    self.settings:set_book(book_id, book)
     self:_schedule_flush()
     return true
 end

@@ -12,6 +12,33 @@ local DEFAULT_INTERVAL_SECONDS = 30
 -- K4 tuning: 30s default interval (was 45) tightens the tick window for more
 -- uniform pacing now that subprocess fork is disabled (inline uploads).
 local MIN_INTERVAL_SECONDS = 10
+-- P0-2 (2026-08-26 翻页卡滞修复): page-turn deconfliction. A report tick
+-- that lands while the user is turning pages blocks the UI loop (inline
+-- LuaSocket + disk writes), which reads as page-turn stutter. When the last
+-- page update was less than PAGE_DEFER_WINDOW_SECONDS ago, the tick is
+-- postponed PAGE_DEFER_DELAY_SECONDS; after PAGE_DEFER_LIMIT consecutive
+-- postponements (~30s of continuous page-turning) the tick runs anyway so
+-- reading time keeps flowing (watermark semantics unchanged).
+local PAGE_DEFER_WINDOW_SECONDS = 2
+local PAGE_DEFER_DELAY_SECONDS = 5
+local PAGE_DEFER_LIMIT = 6
+-- P0-3a (2026-08-26 翻页卡滞修复): weak-network timeout degradation.
+-- client.lua's default per-request timeout is 8s (DEFAULT_TIMEOUT_SECONDS);
+-- on a phone-hotspot cellular path (Kindle -> hotspot WiFi is fine, the
+-- cellular leg stalls) a stalled tick can freeze the UI loop for seconds.
+-- After FAILURE_DEGRADE_THRESHOLD consecutive report failures the report
+-- request timeout drops to FAILURE_DEGRADE_TIMEOUT; one success restores
+-- the default. Normal (fast) links never hit the threshold, so the degrade
+-- only ever engages where the link is actually bad.
+local FAILURE_DEGRADE_THRESHOLD = 2
+local FAILURE_DEGRADE_TIMEOUT = 4
+-- P2 (2026-08-26): tick cost instrumentation. time.now() (ms) so on-device
+-- logs can quantify UI-loop freezes per tick (failed ticks and slow ticks).
+local ok_time, time = pcall(require, "ui/time")
+if not ok_time then
+    time = nil
+end
+
 local CONTEXT_TTL_SECONDS = 15 * 60
 local RENEWAL_COOLDOWN_SECONDS = 10 * 60
 local JOB_POLL_INITIAL_SECONDS = 0.25
@@ -253,6 +280,11 @@ function ReadReport:new(options)
         -- The close→reopen gap (after last_active_at) is never included.
         -- Cleared once ticks drain the backlog to zero.
         pending_backlog_seconds = nil,
+        -- P0-3: set when a report was server-rejected with renewal on
+        -- cooldown; forces the next ensure_context() to rebuild (deferred
+        -- refresh instead of an in-tick retry chain).
+        _context_stale = false,
+        _context_stale_book = nil,
     }
     return setmetatable(object, self)
 end
@@ -286,11 +318,16 @@ end
 -- storm, and failed-request bursts look more suspicious than success bursts.
 -- Ramp: 30s -> 60s -> 120s -> ... capped at 300s. _record_success() resets
 -- consecutive_failures, so the backoff clears as soon as a report is accepted.
+-- P1-2 (2026-08-26 翻页卡滞修复): cap lowered 300s -> 60s. With the P0-3
+-- retry-chain slimming, a failed tick now costs at most one request, so a
+-- shorter ramp no longer risks a request storm; the old 120-300s gaps showed
+-- up on-device as "stutter every 1-2 minutes" pacing that collided with page
+-- turns. Watermark still guarantees no reading time is lost.
 local function backoff_delay(consecutive_failures)
     if consecutive_failures <= 0 then
         return nil
     end
-    return math.min(300, 30 * math.floor(2 ^ (consecutive_failures - 1)))
+    return math.min(60, 30 * math.floor(2 ^ (consecutive_failures - 1)))
 end
 
 -- Tick cadence: normally one report per interval; while a backlog of unsent
@@ -507,6 +544,10 @@ function ReadReport:start(reason)
     end
     self.started_at = now
     self.waiting_count = 0
+    -- P0-3: a new session must not inherit a stale-context flag (the
+    -- deferred refresh belongs to the previous session's book).
+    self._context_stale = false
+    self._context_stale_book = nil
 
     local task
     task = function()
@@ -566,6 +607,12 @@ function ReadReport:stop(reason)
     -- Force flush on stop to ensure watermark is persisted (M-L9 fix)
     if self._watermark_flush_pending then
         self._watermark_flush_pending = false
+        pcall(function() self.settings:flush() end)
+    end
+    -- P0-1B: force any deferred report-context flush before teardown so a
+    -- stopped report never leaves the last position write on disk.
+    if self._context_flush_pending then
+        self._context_flush_pending = false
         pcall(function() self.settings:flush() end)
     end
     if had_task then
@@ -662,10 +709,22 @@ function ReadReport:_tick(generation, task)
         end
     end
     self.next_tick_expected = nil
+    -- P2: wall-clock cost of this tick (ms) for on-device diagnosis of
+    -- UI-loop freezes (failed ticks and slow ticks are logged below).
+    local tick_started_ms = time and time.now() or 0
     local ok, err = pcall(function()
         local proceed, book_id, position = self:_precheck()
         if not proceed then
             self:_schedule_next(generation, task)
+            return
+        end
+        -- P0-2: page-turn deconfliction. A report tick is pure UI-loop work
+        -- (inline HTTP + book-record writes); firing it mid page-turn is what
+        -- the user perceives as stutter. Postpone while pages are being
+        -- turned, with a hard ceiling so continuous reading never starves
+        -- the report.
+        if self:_recent_page_update() then
+            self:_schedule_next(generation, task, PAGE_DEFER_DELAY_SECONDS)
             return
         end
         if self.job then
@@ -691,6 +750,21 @@ function ReadReport:_tick(generation, task)
             position = position,
             elapsed_seconds = elapsed_seconds,
         })
+        -- P2: log every failed tick's cost (and slow successes >= 1s) so a
+        -- crash.log session can quantify how long the UI loop froze and how
+        -- many requests a failure actually burned (P0-3 validation).
+        if time then
+            local elapsed_ms = time.now() - tick_started_ms
+            if outcome and not outcome.accepted then
+                log("warn", "read report tick failed:",
+                    "elapsed_ms=", tostring(elapsed_ms),
+                    "error_kind=", tostring(outcome.error_kind or "unknown"),
+                    "error=", tostring(outcome.error or "unknown"))
+            elseif elapsed_ms >= 1000 then
+                log("info", "read report tick slow:",
+                    "elapsed_ms=", tostring(elapsed_ms))
+            end
+        end
         self:_apply_outcome(outcome)
         self:_schedule_next(generation, task, self:_next_tick_delay())
     end)
@@ -698,6 +772,40 @@ function ReadReport:_tick(generation, task)
         self:_set_error(err, "task", "read report task failed:")
         self:_schedule_next(generation, task)
     end
+end
+
+-- P0-3a helper: degraded per-request timeout while the report pipeline is
+-- in a failure streak (see constants above). Returns nil (= client default
+-- 8s) on healthy links.
+function ReadReport:_request_timeout()
+    if (self.consecutive_failures or 0) >= FAILURE_DEGRADE_THRESHOLD then
+        return FAILURE_DEGRADE_TIMEOUT
+    end
+    return nil
+end
+
+-- P0-2 helper: true when the reader turned a page within the defer window.
+-- The host injects get_last_page_update (main.lua -> reader_lifecycle's
+-- onPageUpdate timestamp). Consecutive postponements are capped so a fast
+-- continuous page-turner never starves the reading-time report.
+function ReadReport:_recent_page_update()
+    if type(self.get_last_page_update) ~= "function" then
+        return false
+    end
+    local last = self.get_last_page_update()
+    if not last or type(last) ~= "number" then
+        return false
+    end
+    if self.now() - last < PAGE_DEFER_WINDOW_SECONDS then
+        self._page_defers = (self._page_defers or 0) + 1
+        if self._page_defers <= PAGE_DEFER_LIMIT then
+            return true
+        end
+        self._page_defers = 0
+    else
+        self._page_defers = 0
+    end
+    return false
 end
 
 -- Parent-side gate before any network work. Returns true, book_id when a
@@ -1102,8 +1210,36 @@ function ReadReport:_persist_context(book_id, snapshot)
     end
     book.book_id = book.book_id or book_id
     books[book_id] = book
-    self.settings:set("books", books)
-    self.settings:flush()
+    self.settings:set_book(book_id, book)
+    self:_schedule_context_flush()
+end
+
+-- P0-3 helper: flag the reader context as stale so the next
+-- ensure_context() rebuilds it via the normal TTL path (instead of firing
+-- refresh+retry inside the current tick, which used to block the UI loop
+-- with up to 5 extra requests). Implemented as an instance flag, not a
+-- book-field write: mutating read_context_updated_at in the cached record
+-- could be overwritten by _persist_context (upload path) before the next
+-- tick rebuilds, silently cancelling the deferral.
+function ReadReport:_mark_context_stale(book_id)
+    self._context_stale_book = book_id
+end
+
+-- P0-1B (2026-08-26 翻页卡滞修复): coalesced settings flush for report
+-- context writes. Same pattern as the watermark flush: mark dirty, schedule
+-- a single flush 30s later, force on stop(). Removes one full weread.lua
+-- write per tick.
+function ReadReport:_schedule_context_flush()
+    self._context_flush_pending = true
+    if self._context_flush_scheduled then return end
+    self._context_flush_scheduled = true
+    self.scheduler:scheduleIn(30, function()
+        self._context_flush_scheduled = false
+        if self._context_flush_pending then
+            self._context_flush_pending = false
+            pcall(function() self.settings:flush() end)
+        end
+    end)
 end
 
 -- ------------------------------------------------------------------
@@ -1187,31 +1323,22 @@ function ReadReport:_run_pipeline(book_id, opts)
     end
 
     local failure = response_summary(self.client, result, http_code)
-    local refresh_ok, refreshed = pcall(function()
-        return self:ensure_context(book_id, true)
-    end)
-    if refresh_ok then
-        outcome.book = self:_context_snapshot(refreshed)
-        local retry_ok, retry_result, retry_code = pcall(function()
-            return self:_send(
-                book_id, refreshed, opts.position, opts.elapsed_seconds)
-        end)
-        outcome.book = self:_context_snapshot(refreshed)
-        local retry_accepted, retry_body = response_accepted(retry_result, retry_code)
-        if retry_ok and retry_accepted then
-            outcome.accepted = true
-            outcome.has_synckey = type(retry_body) == "table"
-                and retry_body.synckey ~= nil or false
-            return outcome
-        end
-        failure = "initial=" .. failure .. "; refreshed="
-            .. (retry_ok and response_summary(self.client, retry_result, retry_code)
-                or tostring(retry_result))
-    else
-        failure = failure .. "; context_refresh=" .. tostring(refreshed)
-    end
 
+    -- P0-3 (2026-08-26 翻页卡滞修复): slimming the in-tick retry chain.
+    -- Previously a rejected send triggered refresh+retry and (with renewal
+    -- allowed) renew+final in the SAME tick — up to 5 more blocking requests
+    -- on the UI loop (each up to 8s) for one failed report. Now:
+    --  * renewal recently attempted (!allow_renewal): give up on this tick
+    --    and mark the context stale, so the NEXT tick's ensure_context()
+    --    rebuilds it (TTL check) and retries there — refresh work is
+    --    deferred, not dropped;
+    --  * renewal allowed: skip the refresh+retry middle step (a stale psvts
+    --    is rebuilt by the final ensure_context(force) anyway) and go
+    --    straight to renew + final send. At most 2 extra requests, at most
+    --    once per 10 minutes (RENEWAL_COOLDOWN_SECONDS), instead of up to 5
+    --    on every failure.
     if not opts.allow_renewal then
+        self:_mark_context_stale(book_id)
         outcome.error = failure
         outcome.error_kind = "server"
         outcome.error_prefix = "read report server rejected:"
@@ -1323,6 +1450,10 @@ function ReadReport:_build_context(book_id, force, book)
         and book.chapter_uid ~= nil
         and type(book.chapters) == "table" and #book.chapters > 0
         and book.read_session_id == self.session_id
+        -- P0-3: a rejected report flagged the context stale; force a rebuild
+        -- even inside the TTL window so the deferred refresh actually happens
+        -- on the next tick.
+        and not self._context_stale
     if not force and ready and age < CONTEXT_TTL_SECONDS then
         return book
     end
@@ -1342,8 +1473,16 @@ function ReadReport:_build_context(book_id, force, book)
         end
         -- v4.0 (2.5): mirror into the SQLite library_db so the offline
         -- fallback above can serve it on later sessions.
+        -- P1-1 (2026-08-26 翻页卡滞修复): defer the SQLite mirror write out
+        -- of the tick's critical path — putChapters opens the DB, runs schema
+        -- PRAGMAs and inserts one row per chapter (hundreds of rows on large
+        -- books), which blocked the UI loop for 0.5-2s. The on-disk catalog
+        -- JSON written above is the authoritative cache; SQLite is only a
+        -- secondary mirror, so a one-event-loop defer is safe.
         if self.library_db then
-            pcall(function() self.library_db:putChapters(book_id, chapters) end)
+            self.scheduler:scheduleIn(0.1, function()
+                pcall(function() self.library_db:putChapters(book_id, chapters) end)
+            end)
         end
         book.chapters = chapters
     end
@@ -1380,18 +1519,41 @@ function ReadReport:ensure_context(book_id, force)
     end
 
     local books = self.settings:get("books", {})
-    local book = book_record(books, book_id) or {
+    local existing = book_record(books, book_id)
+    local book = existing or {
         book_id = book_id,
         title = self.current_book_title or book_id,
     }
+    -- P0-1A (2026-08-26 翻页卡滞修复): snapshot the persisted fields before
+    -- building so an unchanged context (the common case for a 30s tick
+    -- inside the TTL window) skips the full book-record write + settings
+    -- flush that used to run unconditionally on every tick.
+    local before = existing and self:_context_snapshot(existing) or nil
     self:_build_context(book_id, force, book)
+    -- P0-3: any rebuild (fresh or forced) clears the stale flag; the
+    -- deferred refresh has now happened (whichever book it was for).
+    self._context_stale = false
+    self._context_stale_book = nil
     if self._no_persist then
         -- Forked child: the parent persists the context from the outcome.
         return book
     end
     books[book_id] = book
-    self.settings:set("books", books)
-    self.settings:flush()
+    if before then
+        local changed = false
+        for _i, field in ipairs(CONTEXT_FIELDS) do
+            if before[field] ~= book[field] then
+                changed = true
+                break
+            end
+        end
+        if not changed then
+            return book
+        end
+    end
+    -- P0-1C: single-record write instead of rewriting every book's JSONs.
+    self.settings:set_book(book_id, book)
+    self:_schedule_context_flush()
     return book
 end
 
@@ -1448,7 +1610,8 @@ function ReadReport:_send(book_id, book, position, elapsed_seconds)
         }
         self.client:report_read(
             enter_payload,
-            book.reader_url or WeRead.reader_url(book_id)
+            book.reader_url or WeRead.reader_url(book_id),
+            self:_request_opts()
         )
         book.read_session_entered_at = self.now()
         book.read_session_id = self.session_id
@@ -1459,7 +1622,20 @@ function ReadReport:_send(book_id, book, position, elapsed_seconds)
         book,
         position
     )
-    return self.client:report_read(payload, book.reader_url or WeRead.reader_url(book_id))
+    -- P0-3a: pass the degraded timeout (nil on healthy links = client 8s).
+    return self.client:report_read(payload,
+        book.reader_url or WeRead.reader_url(book_id),
+        self:_request_opts())
+end
+
+-- P0-3a helper: request options carrying the degraded timeout when the
+-- report pipeline is in a failure streak.
+function ReadReport:_request_opts()
+    local timeout = self:_request_timeout()
+    if timeout then
+        return { timeout = timeout }
+    end
+    return nil
 end
 
 -- Async upload: spawns subprocess, calls on_complete(accepted, outcome) when done.
