@@ -1,14 +1,24 @@
 -- reader_menu_order.lua
--- Custom menu order configuration for KOReader.
--- Places weread_K4 at the top of the tools menu for quick access on Kindle 4.
--- Hides touch-only and irrelevant plugins on non-touch devices.
-
-local Device = require("device")
+-- Custom menu order configuration for KOReader (template).
+--
+-- IMPORTANT: KOReader only reads this file from its own settings directory.
+-- A copy inside the plugin folder is NOT loaded. To enable it, copy this
+-- file to the KOReader settings directory on the device:
+--     koreader/settings/reader_menu_order.lua
+-- (restart KOReader afterwards; the built-in default lives at
+-- frontend/ui/elements/reader_menu_order.lua and is overridden by the
+-- settings copy).
+--
+-- This template places WeRead at the top of the tools menu for quick
+-- access on Kindle 4. NOTE: the menu id must be "weread" (the plugin's
+-- registered menu key, see weread/ui/menu.lua addToMainMenu), NOT the
+-- plugin folder name. The "KOMenu:disabled" key used by some older custom
+-- files is NOT a supported key in current KOReader and has been removed.
 
 local order = {
     -- tools: weread_K4 first, then frequently used tools
     tools = {
-        "weread_K4",
+        "weread",
         "----------------------------",
         "read_timer",
         "calibre",
@@ -46,25 +56,5 @@ local order = {
         "patch_management",
     },
 }
-
--- Hide touch-only and irrelevant plugins on non-touch devices
-if not Device:isTouchDevice() then
-    order["KOMenu:disabled"] = {
-        "gestures",
-        "hotkeys",
-        "perception_expander",
-        "cover_browser",
-        "cover_image",
-        "external_keyboard",
-        "japanese",
-        "hello",
-        "http_inspector",
-        "terminal",
-        "system_statistics",
-        "vocabulary_builder",
-        "archive_viewer",
-        "SSH",
-    }
-end
 
 return order

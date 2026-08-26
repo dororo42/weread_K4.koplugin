@@ -225,14 +225,14 @@ function M:getSettingsMenuItems()
                             end
                             return {
                                 {
-                                    text = _("End of each chapter"),
+                                    text = _("Chapter end"),
                                     keep_menu_open = true,
                                     check_callback_updates_menu = true,
                                     checked_func = function()
                                         return current_mode() == "chapter"
                                     end,
                                     callback = self:safeCallback(
-                                        _("End of each chapter"),
+                                        _("Chapter end"),
                                         function(touchmenu_instance)
                                             local cache = self.settings:get("cache")
                                             cache.footnotes_mode = "chapter"
@@ -244,14 +244,14 @@ function M:getSettingsMenuItems()
                                         end),
                                 },
                                 {
-                                    text = _("Bottom of the referencing page (experimental; long notes may flow to the next page)"),
+                                    text = _("Page bottom + chapter end"),
                                     keep_menu_open = true,
                                     check_callback_updates_menu = true,
                                     checked_func = function()
                                         return current_mode() == "page"
                                     end,
                                     callback = self:safeCallback(
-                                        _("Bottom of the referencing page (experimental; long notes may flow to the next page)"),
+                                        _("Page bottom + chapter end"),
                                         function(touchmenu_instance)
                                             local cache = self.settings:get("cache")
                                             cache.footnotes_mode = "page"
@@ -262,10 +262,7 @@ function M:getSettingsMenuItems()
                                             end
                                         end),
                                 },
-                                {
-                                    text = _("This setting only affects new downloads; re-download the book to apply it."),
-                                    keep_menu_open = true,
-                                },
+
                             }
                         end,
                     },

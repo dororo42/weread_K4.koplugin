@@ -15,17 +15,20 @@ local FOOTNOTES_REF_CSS = [[
 .wr-fn-ref a::after{content:"";position:absolute;top:-0.5em;right:-0.3em;bottom:-0.5em;left:-0.3em;}
 ]]
 
--- v4.5 page mode (experimental): CREngine's in-page footnote feature
--- (crengine issue #5925) attaches the footnote content lines to the page
--- that references them at page-split time, but KEEP the original lines in
--- the flow, so an epub:type=footnote aside renders twice (page bottom +
--- chapter end) on the K4 build regardless of CSS hints. To get a single
--- display at the page bottom we keep the footnote semantics (so the
--- page-bottom attachment happens) and collapse the in-flow copy with a
--- zero-height overflow box; the extracted copy is laid out from the note's
--- own text lines and is not affected by the collapse.
+-- v4.5 page mode: CREngine's in-page footnote feature renders the note at
+-- the bottom of the referencing page AND keeps the original chapter-end
+-- copy visible. This double display is crengine's documented design
+-- (koreader issue #8623 "EPUB3 <aside> footnotes rendered twice",
+-- maintainer: "the original footnote content is still part of the book, and
+-- must exist and be visible for the above to work"); it affects ALL devices
+-- (issue reports Device: All), not just K4. The only standards-based fix is
+-- marking the footnote fragments as non-linear in the EPUB, which the
+-- publisher must do. Upstream v1.2.0 ships exactly this CSS. Collapsing the
+-- in-flow copy was tested on K4 and does NOT remove the duplicate (the
+-- page-bottom attachment is derived from the in-flow lines), so we keep the
+-- upstream-equivalent visible styles.
 Footnotes.FOOTNOTES_PAGE_CSS = FOOTNOTES_REF_CSS .. [[
-aside.wr-book-footnote{-cr-hint:footnote-inpage;display:block!important;height:0!important;max-height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;}
+aside.wr-book-footnote{-cr-hint:footnote-inpage;font-size:0.85em;margin:0!important;}
 div.wr-footnotes{margin:0;padding:0;border:0;}
 div.wr-footnotes>hr{display:none;}
 .wr-fn-num{font-weight:bold;margin-right:0.3em;text-decoration:none;color:inherit;}

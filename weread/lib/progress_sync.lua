@@ -767,38 +767,75 @@ function ProgressSync:on_reader_ready()
 
     self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
         if generation ~= self.generation then return end
-        local book_id = self.detect_book()
-        if not book_id or is_mp_book(book_id) then
-            self.state = "unsupported"
-            return
-        end
-        book_id = tostring(book_id)
-        self.current_book_id = book_id
-        if self:_apply_pending_jump(book_id) then return end
-
-        -- Check for pending offline upload backlog
-        local book = self.get_book(book_id)
-        if book and book.pending_upload_position then
-            local pending = book.pending_upload_position
-            -- Only retry if we're now online
-            if self.is_online() then
-                self:_upload_snapshot(pending, "offline_backlog", false)
+        -- v4.5 R1: the whole flow is a local function so that a successful
+        -- online catalog recovery can re-run it (delete-and-redownload
+        -- rebuilds the book record without chapters).
+        local function ready_flow()
+            if generation ~= self.generation then return end
+            local book_id = self.detect_book()
+            if not book_id or is_mp_book(book_id) then
+                self.state = "unsupported"
+                return
             end
-        end
+            book_id = tostring(book_id)
+            self.current_book_id = book_id
+            if self:_apply_pending_jump(book_id) then return end
 
-        local local_position, reason = self:capture_local()
-        if not local_position then
-            self.state = "unsafe"
-            log("warn", "local position unavailable:", tostring(reason))
-            return
+            -- Check for pending offline upload backlog
+            local book = self.get_book(book_id)
+            if book and book.pending_upload_position then
+                local pending = book.pending_upload_position
+                -- Only retry if we're now online
+                if self.is_online() then
+                    self:_upload_snapshot(pending, "offline_backlog", false)
+                end
+            end
+
+            local local_position, reason = self:capture_local()
+            if not local_position then
+                -- v4.5 R1: same online recovery as _pull: refetch the
+                -- catalog once, then re-run this flow. No loop: recovery
+                -- only re-runs after a successful (non-empty) fetch.
+                if reason == "catalog_unavailable"
+                    and not self._catalog_retrying
+                    and self.refresh_chapters
+                    and self.is_online() then
+                    self._catalog_retrying = true
+                    local recovery_book = self.get_book(book_id)
+                    if recovery_book then
+                        local ok, refresh_err = pcall(function()
+                            self.refresh_chapters(recovery_book, function(chapters)
+                                self._catalog_retrying = false
+                                if type(chapters) == "table" and #chapters > 0 then
+                                    ready_flow()
+                                else
+                                    self.state = "unsafe"
+                                end
+                            end)
+                        end)
+                        if not ok then
+                            self._catalog_retrying = false
+                            log("warn", "catalog recovery failed:",
+                                tostring(refresh_err))
+                            self.state = "unsafe"
+                        end
+                        return
+                    end
+                    self._catalog_retrying = false
+                end
+                self.state = "unsafe"
+                log("warn", "local position unavailable:", tostring(reason))
+                return
+            end
+            self.local_position = local_position
+            self:_persist(book_id, { last_local_position = local_position })
+            if self:_config().pull_on_open ~= true then
+                self.state = "unverified"
+                return
+            end
+            self:_pull({ manual = false })
         end
-        self.local_position = local_position
-        self:_persist(book_id, { last_local_position = local_position })
-        if self:_config().pull_on_open ~= true then
-            self.state = "unverified"
-            return
-        end
-        self:_pull({ manual = false })
+        ready_flow()
     end)
 end
 
