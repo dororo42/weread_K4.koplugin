@@ -20,6 +20,7 @@ local time = require("ui/time")
 local T = require("ffi/util").template
 
 local Content = require("weread.lib.content")
+local ForegroundBarrier = require("weread.lib.foreground_barrier")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
@@ -258,7 +259,21 @@ end
 -- Schedule any download step behind xpcall so an uncaught error always releases
 -- the standby guard, closes the progress dialog, and reports the failure.
 function Downloader:_scheduleGuarded(dl, step_fn, delay)
-    UIManager:scheduleIn(delay or 0.1, function()
+    -- v4.5 (barrier): while the foreground barrier is up (user interaction,
+    -- e.g. page turns), defer download steps so downloads never fight the
+    -- UI. A hard defer cap prevents starving the download during a long
+    -- interaction; when the cap is hit the step runs anyway.
+    local function run_guarded()
+        if ForegroundBarrier.active() then
+            dl._barrier_defers = (dl._barrier_defers or 0) + 1
+            if dl._barrier_defers < ForegroundBarrier.max_defers() then
+                UIManager:scheduleIn(0.5, run_guarded)
+                return
+            end
+            dl._barrier_defers = 0
+        else
+            dl._barrier_defers = 0
+        end
         local ok, err = xpcall(step_fn, debug.traceback)
         if not ok and dl.standby_guard then
             self:_releaseStandby(dl)
@@ -273,7 +288,8 @@ function Downloader:_scheduleGuarded(dl, step_fn, delay)
                 self.show_info(T(_("Download failed:\n%1"), display_error(err)))
             end
         end
-    end)
+    end
+    UIManager:scheduleIn(delay or 0.1, run_guarded)
 end
 
 -- Public entry: start downloading the given chapters as one EPUB.

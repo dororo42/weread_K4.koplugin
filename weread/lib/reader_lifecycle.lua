@@ -1,5 +1,6 @@
 -- KOReader event lifecycle and reader-state orchestration.
 local Content = require("weread.lib.content")
+local ForegroundBarrier = require("weread.lib.foreground_barrier")
 local logger = require("weread.lib.logger").scoped("Prefetch")
 local UIManager = require("ui/uimanager")
 local Event = require("ui/event")
@@ -136,6 +137,10 @@ M.onPageUpdate = guarded("onPageUpdate", function(self)
     -- can postpone its 30s report tick while the user is turning pages
     -- (inline HTTP + disk writes on the UI loop are what read as stutter).
     self._last_page_update_at = os.time()
+    -- v4.5 (barrier): page turns also raise the foreground barrier so ALL
+    -- background tasks (download steps, prefetch, ...) defer for a short
+    -- window, not just the report tick.
+    ForegroundBarrier.set("page_turn")
     self.progress_sync:on_page_update()
 end)
 
