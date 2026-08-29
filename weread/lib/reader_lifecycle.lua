@@ -88,19 +88,105 @@ end
 function M:onReaderReady()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
 
-    -- v4.5: apply a pending whole-book chapter jump now that the document has
-    -- finished loading. jumpToChapter/openChapter record the target chapter
-    -- file (text/chapter-NNN.xhtml) before opening the full-book EPUB;
-    -- GotoLink is KOReader's native in-book link mechanism.
-    local pending_goto = self._pending_chapter_goto
-    self._pending_chapter_goto = nil
+    -- v5.0: apply a pending whole-book chapter jump now that the document has
+    -- finished loading. jumpToChapter/openChapter record the chapter's
+    -- catalog index + title. Locating works through the document TOC
+    -- (generated at download time from the same chapter list, so TOC entries
+    -- map 1:1 in order to catalog chapters): GotoXPointer / GotoPage, with a
+    -- title match and a percent approximation as fallbacks. KOReader's
+    -- onGotoLink cannot be used for this: its crengine branch is
+    -- xpointer-only and a nil xpointer jumps to page 1 (wrong position).
+    -- v5.0 fix (no-jump): KOReader restores the last reading position AFTER
+    -- ReaderReady, so a jump issued synchronously here gets overwritten.
+    -- Defer the jump ~1s (past restore) and log every branch so crash.log
+    -- can pinpoint a failure on device.
+    local pending_shared = rawget(_G, "__WEREAD_PENDING_CHAPTER_GOTO")
+    local pending_goto = pending_shared and pending_shared.data or nil
+    if pending_shared then pending_shared.data = nil end
     if pending_goto and self.ui and self.ui.document then
-        local ok, goto_err = pcall(function()
-            self.ui:handleEvent(Event:new("GotoLink", { file = pending_goto }))
+        local goto_generation = self._reader_session_gen
+        logger.info("chapter jump scheduled:",
+            "index=", tostring(pending_goto.index),
+            "title=", tostring(pending_goto.title),
+            "total=", tostring(pending_goto.total))
+        self.scheduler:scheduleIn(1.0, function()
+            if goto_generation ~= self._reader_session_gen then
+                logger.warn("chapter jump cancelled: session changed")
+                return
+            end
+            if not (self.ui and self.ui.document) then
+                logger.warn("chapter jump cancelled: no document")
+                return
+            end
+            -- v5.0 fix: the pending jump is consumed by whatever book opens
+            -- next; verify it still belongs to the current document.
+            local jumped_book_id = tostring(self:detectWeReadBook() or "")
+            if pending_goto.book_id and pending_goto.book_id ~= ""
+                and jumped_book_id ~= pending_goto.book_id then
+                logger.warn("chapter jump cancelled: book mismatch",
+                    "pending=", pending_goto.book_id,
+                    "current=", jumped_book_id)
+                return
+            end
+            local ok, goto_err = pcall(function()
+            local toc = self.ui.toc and self.ui.toc.toc
+            if (type(toc) ~= "table" or #toc == 0) and self.ui.toc then
+                pcall(function() self.ui.toc:fillToc() end)
+                toc = self.ui.toc.toc
+            end
+            if type(toc) ~= "table" or #toc == 0 then
+                logger.warn("chapter jump: TOC unavailable")
+                return
+            end
+            logger.info("chapter jump: TOC loaded, entries=", tostring(#toc))
+            -- Direct index hit, guarded by a TOC/catalog count check.
+            local entry = toc[pending_goto.index]
+            if entry and pending_goto.total and #toc ~= pending_goto.total then
+                entry = nil
+            end
+            -- Fallback: normalized title match.
+            if not entry and pending_goto.title then
+                local function norm(s)
+                    return tostring(s or ""):gsub("%s+", "")
+                end
+                for _, e in ipairs(toc) do
+                    if norm(e.title) == norm(pending_goto.title) then
+                        entry = e
+                        break
+                    end
+                end
+            end
+            if entry then
+                logger.info("chapter jump: entry resolved via",
+                    pending_goto.total and #toc == pending_goto.total
+                        and "index" or "title",
+                    "xpointer=", tostring(entry.xpointer ~= nil),
+                    "page=", tostring(entry.page))
+                if entry.xpointer then
+                    self.ui:handleEvent(Event:new("GotoXPointer", entry.xpointer))
+                    return
+                elseif entry.page then
+                    self.ui:handleEvent(Event:new("GotoPage", entry.page))
+                    return
+                end
+            end
+            -- Last resort: approximate percent from the chapter index.
+            if pending_goto.index and pending_goto.total and self.ui.rolling
+                and self.ui.rolling.onGotoPercent then
+                local percent = math.floor(
+                    (pending_goto.index - 1) / pending_goto.total * 100 + 0.5)
+                logger.info("chapter jump fallback: percent=", tostring(percent))
+                self.ui.rolling:onGotoPercent(percent)
+                return
+            end
+            logger.warn("chapter jump: no target resolved",
+                "index=", tostring(pending_goto.index),
+                "title=", tostring(pending_goto.title))
         end)
         if not ok then
             logger.err("pending chapter goto failed:", log_error(goto_err))
         end
+        end)
     end
 
     local weread_book_id = self:detectWeReadBook()

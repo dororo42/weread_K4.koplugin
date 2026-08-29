@@ -154,7 +154,7 @@ function M:showEndOfBookDialog(book_id)
                 ui:showFileManager(file)
             end
         end,
-    })
+    }, self)
     return true
 end
 

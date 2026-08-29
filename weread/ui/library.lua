@@ -744,6 +744,13 @@ function M:showChapterList(book)
                     mandatory = cached and _("Cached")
                         or T(_("%1 words"), tostring(chapter.wordCount or 0)),
                     callback = self:safeCallback(chapter.title or _("Chapter"), function()
+                        -- v5.0 fix: close the chapter list before jumping. The
+                        -- v5.0 jump (GotoXPointer inside the same document) no
+                        -- longer rebuilds the ReaderUI, so the list would
+                        -- otherwise stay on the widget stack and the Back key
+                        -- would walk back through stale chapter lists instead
+                        -- of exiting.
+                        if menu then UIManager:close(menu) end
                         self:jumpToChapter(book, chapter)
                     end),
                 }
@@ -844,6 +851,11 @@ function M:openFile(path)
         self:showInfo(_("No cached file."))
         return
     end
+    -- v5.0 fix: close every dialog the plugin has opened (chapter lists,
+    -- bookshelf, book menus, quick menu leftovers). Without this, they stay
+    -- on the UIManager stack and the Back key walks through stale lists
+    -- instead of exiting.
+    self:closeTrackedDialogs()
     if self.ui.document then
         self.ui:switchDocument(path)
     else
@@ -864,13 +876,28 @@ function M:openChapter(book, chapter)
     elseif self:getFullBookCachePath(book) then
         -- Whole-book cache: this chapter lives inside the combined EPUB, so it
         -- is already downloaded — open the full book instead of re-downloading
-        -- the chapter as a separate file. v4.5: locate the chapter inside the
-        -- EPUB via onReaderReady's pending GotoLink (see jumpToChapter).
+        -- the chapter as a separate file. v5.0: record the chapter's catalog
+        -- index + title for the onReaderReady TOC-based jump (see
+        -- jumpToChapter).
         local uid = tostring(chapter_uid)
-        local chapter_file = book.cached_chapter_files
-            and book.cached_chapter_files[uid]
-        if chapter_file then
-            self._pending_chapter_goto = chapter_file
+        if type(book.chapters) == "table" then
+            for i, ch in ipairs(book.chapters) do
+                if tostring(ch.chapterUid or ch.chapterId) == uid then
+                    -- v5.0 fix: store in _G (see jumpToChapter).
+                    local shared = rawget(_G, "__WEREAD_PENDING_CHAPTER_GOTO")
+                    if type(shared) ~= "table" then
+                        shared = {}
+                        rawset(_G, "__WEREAD_PENDING_CHAPTER_GOTO", shared)
+                    end
+                    shared.data = {
+                        book_id = tostring(book.book_id or book.bookId or ""),
+                        index = i,
+                        title = chapter.title,
+                        total = #book.chapters,
+                    }
+                    break
+                end
+            end
         end
         self:openFile(self:getFullBookCachePath(book))
     elseif self.downloader:promotePrefetch(book, chapter) then
@@ -899,11 +926,33 @@ function M:jumpToChapter(book, chapter)
     -- the previous reading position).
     local full_book = self:getFullBookCachePath(book)
     if full_book then
+        -- v5.0: record the chapter's catalog index + title so onReaderReady
+        -- can locate it via the document TOC (built at download time from the
+        -- same chapter list, so TOC entries map 1:1 to catalog chapters).
+        -- GotoLink{file=...} is NOT supported by KOReader's crengine
+        -- onGotoLink (xpointer-only; a nil xpointer jumps to page 1).
         local uid = tostring(chapter_uid)
-        local chapter_file = book.cached_chapter_files
-            and book.cached_chapter_files[uid]
-        if chapter_file then
-            self._pending_chapter_goto = chapter_file
+        if type(book.chapters) == "table" then
+            for i, ch in ipairs(book.chapters) do
+                if tostring(ch.chapterUid or ch.chapterId) == uid then
+                    -- v5.0 fix: store the pending jump in _G. openFile()
+                    -- rebuilds the ReaderUI (and this plugin instance), so an
+                    -- instance field would die with the old reader before the
+                    -- new one can consume it.
+                    local shared = rawget(_G, "__WEREAD_PENDING_CHAPTER_GOTO")
+                    if type(shared) ~= "table" then
+                        shared = {}
+                        rawset(_G, "__WEREAD_PENDING_CHAPTER_GOTO", shared)
+                    end
+                    shared.data = {
+                        book_id = tostring(book.book_id or book.bookId or ""),
+                        index = i,
+                        title = chapter.title,
+                        total = #book.chapters,
+                    }
+                    break
+                end
+            end
         end
         self:openFile(full_book)
         return true

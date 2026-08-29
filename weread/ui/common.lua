@@ -168,7 +168,38 @@ function M:showList(title, items, empty_text, options)
         subtitle = options.subtitle,
     }
     UIManager:show(menu)
+    self:trackDialog(menu)
     return menu
+end
+
+-- v5.0: track every top-level widget the plugin shows, so a navigation can
+-- close all of them at once. The stack lives in _G because openFile() may
+-- rebuild the ReaderUI (and this plugin instance) mid-flow; state stored on
+-- the instance would be lost together with the stale widgets.
+local DIALOG_STACK_KEY = "__WEREAD_DIALOG_STACK"
+
+function M:trackDialog(widget)
+    if not widget then return end
+    local stack = rawget(_G, DIALOG_STACK_KEY)
+    if type(stack) ~= "table" then
+        stack = {}
+        rawset(_G, DIALOG_STACK_KEY, stack)
+    end
+    for _, existing in ipairs(stack) do
+        if existing == widget then return end
+    end
+    table.insert(stack, widget)
+end
+
+function M:closeTrackedDialogs()
+    local stack = rawget(_G, DIALOG_STACK_KEY)
+    if type(stack) ~= "table" then return end
+    rawset(_G, DIALOG_STACK_KEY, nil)
+    for i = #stack, 1, -1 do
+        pcall(function()
+            UIManager:close(stack[i])
+        end)
+    end
 end
 
 function M:requireLogin(require_cookie, require_api_key)

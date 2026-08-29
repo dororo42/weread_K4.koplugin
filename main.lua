@@ -170,6 +170,10 @@ function WeReadPlugin:init()
         logger.warn("read_report config corrupted, using defaults")
     end
     self._reader_session_gen = 0
+    -- v5.0 fix: expose UIManager to mixins (reader_lifecycle's deferred
+    -- chapter jump uses self.scheduler; without this it errors with
+    -- 'attempt to index field scheduler (a nil value)' on ReaderReady).
+    self.scheduler = UIManager
     -- K4: wrap hotkeys.koplugin's ScreenKB+Down so it opens the WeRead quick
     -- menu while a WeRead book is open (book map is kept for other books).
     -- Deferred one UI tick: self.ui.hotkeys only exists after ReaderUI has

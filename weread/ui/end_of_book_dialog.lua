@@ -29,9 +29,10 @@ local M = {}
 --                             on_book_details, on_read_stats, on_sync_progress,
 --                             on_report_status, on_close_book }
 -- Returns the dialog widget instance.
-function M.show(opts, callbacks)
+function M.show(opts, callbacks, controller)
     opts = opts or {}
     callbacks = callbacks or {}
+    controller = controller or {}
 
     local dialog
 
@@ -130,6 +131,10 @@ function M.show(opts, callbacks)
     }
 
     UIManager:show(dialog)
+    -- v5.0: tracked so openFile's close-all also dismisses it as a fallback.
+    if controller and controller.trackDialog then
+        pcall(function() controller:trackDialog(dialog) end)
+    end
     return dialog
 end
 

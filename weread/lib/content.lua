@@ -244,6 +244,13 @@ local function unique_asset_name(used, name, ext)
 end
 
 local function write_file(path, data)
+    -- v4.5 fix: ensure the parent directory exists (e.g. the spool "assets/"
+    -- folder is only created by spool_chapter; the asset metadata json sits
+    -- one level up and failed to write on first download).
+    local dir = path:match("^(.*/)")
+    if dir and dir ~= "" then
+        PluginUtil.mkdirs(dir)
+    end
     local tmp_path = path .. ".tmp"
     local file, err = io.open(tmp_path, "wb")
     if not file then
