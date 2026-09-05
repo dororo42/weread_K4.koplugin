@@ -47,9 +47,44 @@ end
 function PluginUtil.display_error(err)
     local text = tostring(err)
     text = text:match("^[^\r\n]+") or text
+    -- S-11 (2026-09-05): strip URL query strings before the text reaches the
+    -- UI — queries can carry book ids/tokens and the user never needs them.
+    text = text:gsub("https?://%S+", function(url)
+        return (url:gsub("%?.*$", ""))
+    end)
     if #text > 300 then
         return text:sub(1, 300) .. "..."
     end
+    return text
+end
+
+-- S-01 (2026-09-05): mask credential-looking values before a response body
+-- or error string lands in crash.log. crash.log is device-local, but it is
+-- also the file users paste verbatim into issue reports.
+function PluginUtil.redact_body(text)
+    text = tostring(text or "")
+    local function is_sensitive(key)
+        key = key:lower()
+        return key:find("skey", 1, true) ~= nil
+            or key:find("token", 1, true) ~= nil
+            or key:find("ticket", 1, true) ~= nil
+            or key:find("key", 1, true) ~= nil
+            or key == "cookie" or key == "authorization" or key == "wr_rt"
+    end
+    -- JSON style: "key":"value"
+    text = text:gsub('"([%w_]+)"%s*:%s*"([^"]*)"', function(key, value)
+        if value ~= "" and is_sensitive(key) then
+            return '"' .. key .. '":"***"'
+        end
+        return nil
+    end)
+    -- Query/param style: key=value
+    text = text:gsub('([%w_]+)=[^&%s"\']+', function(key)
+        if is_sensitive(key) then
+            return key .. "=***"
+        end
+        return nil
+    end)
     return text
 end
 

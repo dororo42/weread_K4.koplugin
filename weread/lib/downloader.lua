@@ -49,8 +49,14 @@ local function display_error(err)
 end
 
 -- Block OS-level standby (Kindle powerd, Kobo lid/menu-suspend, etc.)
+-- 原#4 (2026-09-05): feature flag for the Kindle lipc guard. The command is
+-- a constant string (no injection surface) and Device:isKindle()-gated, but
+-- the os.execute fork itself costs ~50-150ms on the UI loop; flip this off
+-- to trade the standby guarantee for that cost, or on non-Kindle ports.
+local LIPC_STANDBY_GUARD_ENABLED = true
+
 local function preventOsStandby()
-    if Device:isKindle() then
+    if LIPC_STANDBY_GUARD_ENABLED and Device:isKindle() then
         os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 1")
     end
     if Device:isCervantes() or Device:isKobo() then
@@ -59,7 +65,7 @@ local function preventOsStandby()
 end
 
 local function allowOsStandby()
-    if Device:isKindle() then
+    if LIPC_STANDBY_GUARD_ENABLED and Device:isKindle() then
         os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 0")
     end
     if Device:isCervantes() or Device:isKobo() then
@@ -1112,7 +1118,9 @@ function Downloader:_step(dl)
                 or dl.book.reader_url or WeRead.reader_url(book_id)
             dl.book.reader_url = dl.book.reader_url or record.reader_url
             books[book_id] = record
-            self.settings:set("books", books)
+            -- S-20 (2026-09-05): single-record write instead of rewriting
+            -- every book's JSONs on each download completion.
+            self.settings:set_book(book_id, record)
             self.settings:flush()
         end
         self.refresh_shelf()

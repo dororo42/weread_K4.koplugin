@@ -11,6 +11,7 @@ local Event = require("ui/event")
 local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
+local GlobalState = require("weread.lib.global_state")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 local log_error = PluginUtil.log_error
@@ -221,13 +222,17 @@ function M:showBookRecord(book)
         return
     end
     if book_id then
-        books[book_id] = books[book_id] or {}
-        books[book_id].book_id = book_id
-        books[book_id].title = book.title
-        books[book_id].author = book.author
-        books[book_id].cover = book.cover
-        books[book_id].updated_at = os.time()
-        self.settings:set("books", books)
+        -- S-20 (2026-09-05): single-record write. set("books") walks every
+        -- book and rewrites up to 3 JSONs each — 0.5-2s of blocking I/O on
+        -- the K4 for a one-record change.
+        local record = books[book_id] or {}
+        record.book_id = book_id
+        record.title = book.title
+        record.author = book.author
+        record.cover = book.cover
+        record.updated_at = os.time()
+        books[book_id] = record
+        self.settings:set_book(book_id, record)
         self.settings:flush()
     end
     local saved = books[book_id] or book
@@ -260,7 +265,8 @@ function M:showBookRecord(book)
                 saved.categoryName = info.categoryName or info.category
                 saved.publishTime = info.publishTime
                 books[book_id] = saved
-                self.settings:set("books", books)
+                -- S-20: single-record write (see showBookRecord).
+                self.settings:set_book(book_id, saved)
                 self.settings:flush()
                 -- v4.0 (2.5): mirror the detail snapshot into the SQLite
                 -- library_db for offline book-detail fallback.
@@ -478,7 +484,8 @@ function M:rememberMPAccount(book)
     record.cache_dir = book.cache_dir or record.cache_dir
     book.cache_dir = record.cache_dir
     books[book_id] = record
-    self.settings:set("books", books)
+    -- S-20: single-record write.
+    self.settings:set_book(book_id, record)
     self.settings:flush()
 end
 
@@ -540,7 +547,8 @@ function M:cacheMPArticles(book_id, articles)
     books[book_id] = books[book_id] or {}
     books[book_id].mp_articles = articles
     books[book_id].mp_articles_time = os.time()
-    self.settings:set("books", books)
+    -- S-20: single-record write.
+    self.settings:set_book(book_id, books[book_id])
     self.settings:flush()
 end
 
@@ -620,7 +628,8 @@ function M:downloadMPArticleAndRead(book, article)
             local record = books[book_id] or {}
             record.cache_dir = book.cache_dir
             books[book_id] = record
-            self.settings:set("books", books)
+            -- S-20: single-record write.
+            self.settings:set_book(book_id, record)
             self.settings:flush()
         end
         self:openFile(path_or_err)
@@ -683,7 +692,9 @@ function M:loadChapters(book, callback, force_refresh)
         local book_id = book.book_id or book.bookId
         if book_id then
             books[book_id] = book
-            self.settings:set("books", books)
+            -- S-20: single-record write (chapters are persisted separately
+            -- via save_catalog_cache above).
+            self.settings:set_book(book_id, book)
             self.settings:flush()
         end
         callback(chapters_or_err)
@@ -883,11 +894,12 @@ function M:openChapter(book, chapter)
         if type(book.chapters) == "table" then
             for i, ch in ipairs(book.chapters) do
                 if tostring(ch.chapterUid or ch.chapterId) == uid then
-                    -- v5.0 fix: store in _G (see jumpToChapter).
-                    local shared = rawget(_G, "__WEREAD_PENDING_CHAPTER_GOTO")
+                    -- v5.0 fix: store in _G (see jumpToChapter). 原#2 收口
+                    -- (2026-09-05): via the shared global_state slot.
+                    local shared = GlobalState.get("pending_chapter_goto")
                     if type(shared) ~= "table" then
                         shared = {}
-                        rawset(_G, "__WEREAD_PENDING_CHAPTER_GOTO", shared)
+                        GlobalState.set("pending_chapter_goto", shared)
                     end
                     shared.data = {
                         book_id = tostring(book.book_id or book.bookId or ""),
@@ -935,14 +947,15 @@ function M:jumpToChapter(book, chapter)
         if type(book.chapters) == "table" then
             for i, ch in ipairs(book.chapters) do
                 if tostring(ch.chapterUid or ch.chapterId) == uid then
-                    -- v5.0 fix: store the pending jump in _G. openFile()
-                    -- rebuilds the ReaderUI (and this plugin instance), so an
-                    -- instance field would die with the old reader before the
-                    -- new one can consume it.
-                    local shared = rawget(_G, "__WEREAD_PENDING_CHAPTER_GOTO")
+                    -- v5.0 fix: store the pending jump cross-instance.
+                    -- openFile() rebuilds the ReaderUI (and this plugin
+                    -- instance), so an instance field would die with the old
+                    -- reader before the new one can consume it. 原#2 收口
+                    -- (2026-09-05): via the shared global_state slot.
+                    local shared = GlobalState.get("pending_chapter_goto")
                     if type(shared) ~= "table" then
                         shared = {}
-                        rawset(_G, "__WEREAD_PENDING_CHAPTER_GOTO", shared)
+                        GlobalState.set("pending_chapter_goto", shared)
                     end
                     shared.data = {
                         book_id = tostring(book.book_id or book.bookId or ""),
@@ -1209,7 +1222,8 @@ function M:parseReaderURLWithUI(url)
         record.token = token
         record.updated_at = os.time()
         books[book_id] = record
-        self.settings:set("books", books)
+        -- S-20: single-record write.
+        self.settings:set_book(book_id, record)
         self.settings:flush()
         return T(_("Reader URL parsed.\nBook: %1\nbookId: %2"), title, book_id)
     end)

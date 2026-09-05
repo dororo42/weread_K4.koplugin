@@ -49,20 +49,41 @@ local function dirname(path)
     end
 end
 
-local function resolved_dir(settings, book_id, book)
-    if type(book) == "table" and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
-        return book.cache_dir
+-- S-07 (2026-09-05): every path a book record contributes must resolve
+-- inside the configured download root. A hand-edited or corrupted
+-- weread.lua record (book.cache_dir / cached_file / cached_chapters) must
+-- not redirect metadata reads/writes elsewhere on the filesystem; when the
+-- root check fails, fall back to the safe per-book directory under the root.
+local function is_inside_root(root, dir)
+    if type(root) ~= "string" or root == "" or type(dir) ~= "string" or dir == "" then
+        return false
     end
-    local dir = type(book) == "table"
-        and dirname(book.cached_full_book or book.cached_file) or nil
+    local check = dir:gsub("/+$", "")
+    return check == root or check:sub(1, #root + 1) == root .. "/"
+end
+
+function BookStore.resolved_dir(settings, book_id, book)
+    local dir
+    if type(book) == "table" and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
+        dir = book.cache_dir
+    end
+    if not dir then
+        dir = type(book) == "table"
+            and dirname(book.cached_full_book or book.cached_file) or nil
+    end
     if not dir and type(book) == "table" and type(book.cached_chapters) == "table" then
         for _uid, path in pairs(book.cached_chapters) do
             dir = dirname(path)
             if dir then break end
         end
     end
-    return dir or (settings.cache_dir .. "/" .. basename_safe(book_id))
+    local root = tostring(settings and settings.cache_dir or ""):gsub("/+$", "")
+    if dir and is_inside_root(root, dir) then
+        return dir
+    end
+    return root .. "/" .. basename_safe(book_id)
 end
+local resolved_dir = BookStore.resolved_dir
 
 local function encode(value)
     if not ok_json then

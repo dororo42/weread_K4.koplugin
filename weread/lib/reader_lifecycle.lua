@@ -5,6 +5,7 @@ local logger = require("weread.lib.logger").scoped("Prefetch")
 local UIManager = require("ui/uimanager")
 local Event = require("ui/event")
 local PluginUtil = require("weread.lib.plugin_util")
+local GlobalState = require("weread.lib.global_state")
 local WeRead = require("weread.lib.protocol")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
@@ -100,7 +101,9 @@ function M:onReaderReady()
     -- ReaderReady, so a jump issued synchronously here gets overwritten.
     -- Defer the jump ~1s (past restore) and log every branch so crash.log
     -- can pinpoint a failure on device.
-    local pending_shared = rawget(_G, "__WEREAD_PENDING_CHAPTER_GOTO")
+    -- 原#2 收口 (2026-09-05): the jump intent lives in the shared
+    -- global_state slot instead of its own rawget(_G, ...) key.
+    local pending_shared = GlobalState.get("pending_chapter_goto")
     local pending_goto = pending_shared and pending_shared.data or nil
     if pending_shared then pending_shared.data = nil end
     if pending_goto and self.ui and self.ui.document then

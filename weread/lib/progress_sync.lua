@@ -105,10 +105,15 @@ function ProgressSync:_schedule_flush()
     self._flush_pending = true
     if self._flush_scheduled then return end
     self._flush_scheduled = true
-    self.scheduler:scheduleIn(FLUSH_INTERVAL_SECONDS, function()
+    -- S-05 (2026-09-05): keep the closure reachable so on_close_document can
+    -- unschedule it (previously an anonymous closure that pinned the
+    -- instance for up to 30s after teardown).
+    self._flush_fn = function()
         self._flush_scheduled = false
+        self._flush_fn = nil
         self:_flush_now()
-    end)
+    end
+    self.scheduler:scheduleIn(FLUSH_INTERVAL_SECONDS, self._flush_fn)
 end
 
 function ProgressSync:_flush_now()
@@ -929,6 +934,14 @@ function ProgressSync:on_close_document()
     -- Persist any pending progress state (e.g. an offline upload backlog)
     -- before the reader tears down.
     self:_flush_now()
+    -- S-05 (2026-09-05): unschedule the coalesced flush — the forced
+    -- _flush_now() above already persisted everything pending, and the
+    -- leftover timer used to pin this instance for up to 30s.
+    if self._flush_fn then
+        self.scheduler:unschedule(self._flush_fn)
+        self._flush_fn = nil
+        self._flush_scheduled = false
+    end
 end
 
 function ProgressSync:on_suspend()

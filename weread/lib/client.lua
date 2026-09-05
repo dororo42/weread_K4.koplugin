@@ -11,13 +11,16 @@ if not ok_json then
 end
 
 -- Default HTTP timeout for synchronous LuaSocket requests. These run on the
--- UI thread (except read-report jobs, which fork a subprocess), so a long
--- timeout means a long UI freeze on the K4 under weak network. 8s keeps
--- weak-network tolerance while capping the worst-case freeze (K4 tuning:
--- reduced from 10s; weak-network recovery relies on retry, not long waits).
+-- UI thread — read-report's subprocess fork is disabled on K4
+-- (read_report.lua runs the pipeline inline), so a long timeout means a
+-- long UI freeze on the K4 under weak network. 8s keeps weak-network
+-- tolerance while capping the worst-case freeze (K4 tuning: reduced from
+-- 10s; weak-network recovery relies on retry, not long waits).
 local DEFAULT_TIMEOUT_SECONDS = 8
 local Client = {}
 Client.__index = Client
+
+local PluginUtil = require("weread.lib.plugin_util")
 
 local function header_value(headers, name)
     if type(headers) ~= "table" or type(name) ~= "string" then return nil end
@@ -102,36 +105,48 @@ end
 local function log_response(label, context, text)
     context = context or {}
     text = text or ""
+    -- S-01 (2026-09-05): redact credential-looking values before the body
+    -- reaches crash.log (see PluginUtil.redact_body).
     local truncated_text = #text > 500 and text:sub(1, 500) .. "..." or text
     logger.err(
         label,
         "method=", tostring(context.method or "unknown"),
-        "url=", tostring(context.url or "unknown"),
+        "url=", tostring(PluginUtil.display_error(context.url or "unknown")),
         "api=", tostring(context.api_name or "unknown"),
         "status=", tostring(context.code or "unknown"),
         "content_type=", tostring(header_value(context.headers, "content-type") or "unknown"),
         "body_bytes=", tostring(#text),
-        "response_body=", truncated_text
+        "response_body=", PluginUtil.redact_body(truncated_text)
     )
 end
 
 local function merge_req_opts(default_opts, user_opts)
     default_opts = default_opts or {}
-    if not user_opts then
-        return deepcopy(default_opts)
-    end
     local result = deepcopy(default_opts)
+    if not user_opts then
+        return result
+    end
     for k, v in pairs(user_opts) do
         if k == "headers" and type(v) == "table" then
-            result.headers = result.headers or {}
-            for hk, hv in pairs(v) do
-                local target = hk:lower()
-                for existing_k, _ in pairs(result.headers) do
-                    if type(existing_k) == "string" and existing_k:lower() == target then
-                        result.headers[existing_k] = nil
-                    end
+            result.headers = type(result.headers) == "table" and result.headers or {}
+            -- S-19 (2026-09-05): index existing headers by lowercase name
+            -- once and keep the index updated while replacing, instead of
+            -- rescanning every existing header per incoming key.
+            local headers = result.headers
+            local lower_index = {}
+            for existing_key in pairs(headers) do
+                if type(existing_key) == "string" then
+                    lower_index[existing_key:lower()] = existing_key
                 end
-                result.headers[hk] = deepcopy(hv)
+            end
+            for hk, hv in pairs(v) do
+                local target = tostring(hk):lower()
+                local existing = lower_index[target]
+                if existing ~= nil then
+                    headers[existing] = nil
+                end
+                headers[hk] = deepcopy(hv)
+                lower_index[target] = hk
             end
         else
             result[k] = deepcopy(v)

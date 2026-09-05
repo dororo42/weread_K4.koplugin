@@ -764,8 +764,10 @@ function M:clearBookCache(book_id)
             tostring(cache_dir))
     end
     if books[book_id] then
+        -- S-20 (2026-09-05): index-level removal instead of set("books")
+        -- (which rewrote every book's JSONs just to drop one entry).
         books[book_id] = nil
-        self.settings:set("books", books)
+        self.settings:remove_book(book_id)
         self.settings:flush()
     end
     self:refreshShelfCacheIndicators()
@@ -776,6 +778,7 @@ function M:clearAllMPCache()
     -- root) rather than scanning only the current cache_dir, and only touch
     -- plugin-owned entries tracked in the books table.
     local books = self.settings:get("books", {})
+    local removed = false
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
             local target = Content.book_resolved_dir(self.settings, book_id, book)
@@ -785,11 +788,15 @@ function M:clearAllMPCache()
                 logger.warn("refusing to delete unsafe cache path:",
                     tostring(target))
             end
+            -- S-20 (2026-09-05): index-level removal per entry.
             books[book_id] = nil
+            self.settings:remove_book(book_id)
+            removed = true
         end
     end
-    self.settings:set("books", books)
-    self.settings:flush()
+    if removed then
+        self.settings:flush()
+    end
     self:refreshShelfCacheIndicators()
 end
 
