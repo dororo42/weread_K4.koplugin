@@ -23,3 +23,12 @@ files["spec/settings_spec.lua"] = {
         "__TEST_DISK",
     },
 }
+
+-- lupa-harness filesystem hooks injected by the local test runner (absent
+-- under real busted/CI, where the spec falls back to os.execute).
+files["spec/mp_images_spec.lua"] = {
+    globals = {
+        "__py_dir_exists",
+        "__py_mkdir",
+    },
+}

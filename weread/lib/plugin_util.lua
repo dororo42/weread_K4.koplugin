@@ -111,7 +111,14 @@ function PluginUtil.mkdirs(path)
     if not ok_lfs or not lfs or type(lfs.mkdir) ~= "function" then
         return false, "lfs unavailable"
     end
+    -- Tolerate Windows-style input (drive letter + backslashes): production
+    -- KOReader paths are POSIX, but tests and helpers may pass "C:\...".
     local current = ""
+    if path:sub(2, 2) == ":" then
+        current = path:sub(1, 2)
+        path = path:sub(3)
+    end
+    path = path:gsub("\\", "/")
     for part in path:gmatch("[^/]+") do
         current = current .. "/" .. part
         local mode = lfs.attributes(current, "mode")

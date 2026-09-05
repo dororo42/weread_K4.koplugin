@@ -1191,12 +1191,119 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
     )
 end
 
+-- Ported from upstream PR #137 (2026-09-05): true when the text following the
+-- literal "0" of a font-size declaration (already captured by the caller's
+-- pattern) is only an optional unit plus whitespace and an optional !important
+-- flag, i.e. the declared size really is zero. Zero times any unit is still
+-- zero length, so an empty tail (bare 0) and every letter-unit form
+-- (px/em/rem/vh/...) count; fractional sizes such as 0.5rem never match
+-- because "." is not a letter.
+local function is_zero_font_size(tail)
+    local value = tail:lower():match("^%s*(.-)%s*$")
+    if value:sub(-10) == "!important" then
+        value = (value:match("^(.-)%s*!important$") or ""):match("^%s*(.-)%s*$")
+    end
+    return value == "" or value == "%" or value:match("^%a+$") ~= nil
+end
+
+-- Ported from upstream PR #137. Known limitations: property-name matching is
+-- case-sensitive (all observed WeRead shards are lowercase), a CSS comment
+-- containing exactly "font-size: 0" may have its interior rewritten without
+-- structural harm, and only top-level rules naming exactly html/body are
+-- touched (:root, descendant selectors and @media-wrapped rules are left
+-- as-is).
+--
+-- True when the selector list names nothing but the root elements, i.e. every
+-- comma-separated selector is exactly html or body (case- and
+-- whitespace-insensitive). Compound selectors such as "body p" or
+-- "body, .wrapper" also style other content, so they never qualify.
+local function is_root_selector_list(selectors)
+    local count = 0
+    for selector in (selectors or ""):gmatch("[^,]+") do
+        count = count + 1
+        local name = selector:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        if name ~= "html" and name ~= "body" then return false end
+    end
+    return count > 0
+end
+
+-- Ported from upstream PR #137: remove every zero `font-size` declaration from
+-- one braceless declaration block. The sentinel "{" guarantees the boundary
+-- capture below always has a character to inspect, even when the declaration
+-- opens the block.
+local function strip_zero_font_sizes(block)
+    local removed = 0
+    local cleaned = ("{" .. block):gsub("([^%w%-])(%s*)font%-size%s*:%s*0([^;}]*)(;?)", function(boundary, leading, tail, _terminator)
+        if not is_zero_font_size(tail) then
+            return nil -- keep fractional sizes such as 0.5rem untouched
+        end
+        removed = removed + 1
+        return boundary .. leading
+    end)
+    return cleaned:sub(2), removed
+end
+
+-- Ported from upstream PR #137: strip hostile `font-size: 0` declarations from
+-- server-provided book css, but only inside rules whose selector list is
+-- exactly `html` and/or `body`. WeRead shards occasionally ship
+-- `html, body { ... font-size: 0; }`; WeRead's own apps ignore root-element
+-- sizing but crengine honors it, collapsing the whole book to a near-zero font
+-- size on device. Elsewhere `font-size: 0` can be intentional (e.g. hiding
+-- whitespace between inline-block items), so every other rule passes through
+-- verbatim.
+local function sanitize_book_css_pass(css)
+    local removed = 0
+    -- Scan whole `selector { block }` units (balanced braces); untouched units
+    -- are returned verbatim so no other declaration can be disturbed.
+    local sanitized = css:gsub("([^{}]*)(%b{})", function(prelude, block)
+        -- Text before the last ";" belongs to an at-rule or a previous
+        -- statement, not to this block's selector list.
+        local selectors = prelude:match("[^;]*$") or ""
+        if not is_root_selector_list(selectors) then
+            return prelude .. block
+        end
+        local cleaned, dropped = strip_zero_font_sizes(block:sub(2, -2))
+        removed = removed + dropped
+        return prelude .. "{" .. cleaned .. "}"
+    end)
+    return sanitized, removed
+end
+
+-- Ported from upstream PR #137 (2026-09-05): public entry point.
+function Content.sanitize_book_css(css)
+    if type(css) ~= "string" or css == "" then
+        return css, 0
+    end
+    -- Each pass consumes one boundary character per match, so adjacent zero
+    -- declarations ("font-size:0;font-size:0") need repeated passes until the
+    -- fixpoint; the cap only guards pathological input.
+    local removed_total = 0
+    local sanitized = css
+    for _i = 1, 16 do
+        local removed
+        sanitized, removed = sanitize_book_css_pass(sanitized)
+        removed_total = removed_total + removed
+        if removed == 0 then break end
+    end
+    return sanitized, removed_total
+end
+
 function Content.fetch_chapter_css(client, settings, book, chapter)
     local ok, css = pcall(function()
         return Content.decode_content_shard(Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_2"))
     end)
     if ok then
-        return css
+        -- Ported from upstream PR #137 (2026-09-05): WeRead shards
+        -- occasionally ship `html, body { font-size: 0 }`, which WeRead's own
+        -- apps ignore but crengine honors — the whole book collapses to a
+        -- near-zero font size ("opens to blank pages"). Strip those before the
+        -- CSS lands in the EPUB style sheet.
+        local sanitized, removed = Content.sanitize_book_css(css)
+        if removed > 0 then
+            logger.warn("removed ", removed,
+                " hostile font-size:0 declarations from book css")
+        end
+        return sanitized
     end
     return nil
 end
@@ -1415,18 +1522,56 @@ local function strip_blank_mp_blocks(html)
     return html
 end
 
-function Content.download_mp_images(client, body_html, progress, embed_base64)
-    local assets = {}
+-- #132 (2026-09-05, ported from upstream): hard cap on a single article
+-- image. The binary still has to be received before its size is known, but
+-- oversized payloads are dropped immediately instead of accumulating in RAM
+-- (K4/K5 have 256MB total).
+local MP_IMAGE_MAX_BYTES = 64 * 1024 * 1024
+
+-- #132 (2026-09-05): anchor the allowlist to protocol + host. WeRead serves
+-- article images from mmbiz.qpic.cn / mmbiz.qlogo.cn only; the previous
+-- unanchored match would accept URLs like "//evil.com/?x=mmbiz.qpic.cn".
+local function is_mp_image_url(src)
+    local url = tostring(src or "")
+    if url:match("^//") then url = "https:" .. url end
+    return url:match("^https?://mmbiz%.qpic%.cn/") ~= nil
+        or url:match("^https?://mmbiz%.qlogo%.cn/") ~= nil
+end
+Content.is_mp_image_url = is_mp_image_url
+
+-- #132 (2026-09-05): sibling directory holding an MP article's streamed
+-- images (<title>.html next to <title>.assets/). Cleaned up with the book
+-- directory by cache management.
+function Content.mp_article_assets_dir(settings, book, article)
+    local dir = Content.book_resolved_dir(settings,
+        book.book_id or book.bookId, book)
+    local title = filename_safe(article.title or "article")
+    return dir .. "/" .. title .. ".assets"
+end
+
+-- #132 (2026-09-05, ported from upstream): stream article images to a sibling
+-- assets directory and reference them relatively. The previous implementation
+-- base64-inlined every image into the HTML string, keeping the binary and its
+-- encoded copy in RAM for the whole article (multi-image MP posts pushed the
+-- 256MB K4/K5 close to OOM). Each image is written to disk as soon as it
+-- arrives, so the peak footprint stays at one image. Returns the rewritten
+-- HTML and the list of written assets.
+function Content.download_mp_images(client, body_html, progress, assets_dir)
+    assets_dir = tostring(assets_dir or "")
+    if assets_dir ~= "" then
+        PluginUtil.mkdirs(assets_dir)
+    end
+    local written = {}
     local used_names = {}
     local img_total = 0
-    body_html:gsub('src=(["\'])(.-)%1', function(quote, src)
-        if src:match("mmbiz%.qpic%.cn") or src:match("mmbiz%.qlogo%.cn") then
+    body_html:gsub('src=(["\'])(.-)%1', function(_quote, src)
+        if is_mp_image_url(src) then
             img_total = img_total + 1
         end
     end)
     local index = 0
     local body = body_html:gsub('src=(["\'])(.-)%1', function(quote, src)
-        if not src:match("mmbiz%.qpic%.cn") and not src:match("mmbiz%.qlogo%.cn") then
+        if not is_mp_image_url(src) then
             return "src=" .. quote .. src .. quote
         end
         index = index + 1
@@ -1440,24 +1585,41 @@ function Content.download_mp_images(client, body_html, progress, embed_base64)
         local ok, data = pcall(function()
             return client:get_binary(url, { referer = "https://weread.qq.com/" })
         end)
-        if not ok or not data or #data == 0 then
+        if not ok or type(data) ~= "string" or #data == 0 then
+            logger.warn("MP image download failed, keeping original src:",
+                "url=", url)
+            return "src=" .. quote .. src .. quote
+        end
+        if #data > MP_IMAGE_MAX_BYTES then
+            logger.warn("MP image exceeds size cap, dropping:",
+                "url=", url, "bytes=", tostring(#data),
+                "cap=", tostring(MP_IMAGE_MAX_BYTES))
             return "src=" .. quote .. src .. quote
         end
         local ext, mt = media_type_for(data)
-        if embed_base64 then
+        if assets_dir == "" then
+            -- Defensive: no assets directory, fall back to inlining.
             local b64 = base64_encode(data)
             return "src=" .. quote .. "data:" .. mt .. ";base64," .. b64 .. quote
         end
         local fname = unique_asset_name(used_names, "img" .. tostring(index), ext)
-        local href = "images/" .. fname
-        table.insert(assets, {
+        local file = io.open(assets_dir .. "/" .. fname, "wb")
+        if not file then
+            logger.warn("MP image write failed, keeping original src:",
+                "path=", assets_dir .. "/" .. fname)
+            return "src=" .. quote .. src .. quote
+        end
+        file:write(data)
+        file:close()
+        local href = assets_dir:match("([^/\\]+)$") .. "/" .. fname
+        table.insert(written, {
             href = href,
+            path = assets_dir .. "/" .. fname,
             media_type = mt,
-            data = data,
         })
-        return "src=" .. quote .. "../" .. href .. quote
+        return "src=" .. quote .. href .. quote
     end)
-    return body, assets
+    return body, written
 end
 
 function Content.mp_article_path(settings, book, article)
@@ -1647,7 +1809,11 @@ function Content.fetch_mp_article_html(client, settings, book, article, opts)
     end
     local cache = settings:get("cache", {})
     if cache.download_mp_images then
-        body = Content.download_mp_images(client, body, opts.progress, true)
+        -- #132 (2026-09-05): stream images into a sibling assets directory
+        -- and reference them relatively instead of base64-inlining the whole
+        -- article into RAM.
+        body = Content.download_mp_images(client, body, opts.progress,
+            Content.mp_article_assets_dir(settings, book, article))
     else
         body = Content.strip_mp_images(body)
     end
