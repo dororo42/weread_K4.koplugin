@@ -3,9 +3,11 @@ local Cookie = {}
 function Cookie.to_header(cookies)
     local parts = {}
     for key, value in pairs(cookies or {}) do
-        -- Strip control characters from value to prevent CRLF header injection (L-1 fix)
+        -- Strip control characters from both key and value to prevent CRLF
+        -- header injection (L-1 fix; S-08: the key was previously trusted).
+        local safe_key = tostring(key or ""):gsub("[%c]", "")
         local safe_value = tostring(value or ""):gsub("[%c]", "")
-        table.insert(parts, tostring(key) .. "=" .. safe_value)
+        table.insert(parts, safe_key .. "=" .. safe_value)
     end
     table.sort(parts)
     return table.concat(parts, "; ")

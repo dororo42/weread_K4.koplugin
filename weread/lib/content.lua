@@ -4,6 +4,7 @@ local WeRead = require("weread.lib.protocol")
 local bit = require("bit")
 local logger = require("weread.lib.logger")
 local PluginUtil = require("weread.lib.plugin_util")
+local BookStore = require("weread.lib.book_store")
 
 local Content = {}
 
@@ -60,24 +61,14 @@ end
 -- of orphaning them. MP article-only books have no cached_file, so book.cache_dir
 -- is the only thing that pins them down.
 function Content.book_resolved_dir(settings, book_id, book)
-    if book and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
-        return book.cache_dir
+    -- S-07 (2026-09-05): delegate to BookStore.resolved_dir so both copies
+    -- share one implementation and the download-root validation. This copy
+    -- previously trusted book.cache_dir / recorded paths unconditionally.
+    local dir = BookStore.resolved_dir(settings, book_id, book)
+    if type(dir) == "string" and dir ~= "" then
+        return dir
     end
-    local function dirname(path)
-        if type(path) == "string" then
-            return path:match("^(.*)/[^/]+$")
-        end
-    end
-    local dir = book and dirname(book.cached_full_book or book.cached_file)
-    if not dir and book and type(book.cached_chapters) == "table" then
-        for _i, chapter_path in pairs(book.cached_chapters) do
-            dir = dirname(chapter_path)
-            if dir then
-                break
-            end
-        end
-    end
-    return dir or Content.book_cache_dir(settings, book_id)
+    return Content.book_cache_dir(settings, book_id)
 end
 
 function Content.catalog_cache_path(settings, book)

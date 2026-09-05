@@ -22,8 +22,13 @@ local defaults = {
     },
     books = {},
     sync = {
-        pull_on_open = false,
-        upload_on_close = false,
+        -- S-18 (2026-09-05): flipped to true for the K4+K5 dual-device
+        -- scenario — with two devices on one account the old false default
+        -- let progress silently fall back or get overwritten. Explicitly
+        -- saved false values are respected; Settings:new backfills only
+        -- missing keys on configs saved by older versions.
+        pull_on_open = true,
+        upload_on_close = true,
         ask_on_conflict = true,
     },
     cache = {
@@ -136,6 +141,24 @@ function Settings:new()
         obj.store:saveSetting("cache", cache)
         obj.store:flush()
     end
+    -- S-18 (2026-09-05): backfill sync keys so the new pull/upload defaults
+    -- also apply to configs saved by older versions. Keys the user explicitly
+    -- set (including false) are preserved. A config with NO stored sync table
+    -- gets the full defaults persisted, because callers read the table with
+    -- get("sync", {}) — an empty default — and would otherwise never see the
+    -- defaults at all (pre-existing gap the flip surfaced).
+    local stored_sync = obj.store:readSetting("sync", nil)
+    local sync = type(stored_sync) == "table" and stored_sync or deepcopy(defaults.sync)
+    local sync_changed = stored_sync == nil
+    for _, key in ipairs({ "pull_on_open", "upload_on_close", "ask_on_conflict" }) do
+        if sync[key] == nil then
+            sync[key] = defaults.sync[key]
+            sync_changed = true
+        end
+    end
+    if sync_changed then
+        obj.store:saveSetting("sync", sync)
+    end
     local legacy_changed = false
     for _, key in ipairs({
         "config_auth_fingerprint",
@@ -162,7 +185,7 @@ function Settings:new()
         obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
         legacy_changed = true
     end
-    if legacy_changed then
+    if legacy_changed or sync_changed then
         obj.store:flush()
     end
     -- H-8 fix: in-memory cache for the books table so get("books") does not
@@ -188,6 +211,14 @@ function Settings:get(key, default)
     end
     -- Return cached books table if available (H-8 fix: avoid O(N) disk reads
     -- on every get("books") call).
+    --
+    -- CONTRACT (S-02, 2026-09-05): the returned table is the SHARED in-memory
+    -- cache, handed out by reference on purpose (H-8 / P0-1C). Mutating a
+    -- record in place changes the cache but does NOT persist it — only
+    -- set("books") / set_book() write through, and a later cache invalidation
+    -- rebuilds records from disk, silently discarding uncommitted changes.
+    -- New code must mutate through Settings:mutate_book(), which applies a
+    -- change and persists it atomically.
     if self._books_cache and not self._books_cache_dirty then
         return self._books_cache
     end
@@ -264,6 +295,44 @@ end
 function Settings:has_legacy_book_records()
     local books = self.store:readSetting("books", {})
     return not BookStore.is_minimal_index(books)
+end
+
+-- S-02 (2026-09-05): transactional single-book mutation. See the contract
+-- comment on get("books"): in-place edits on the shared cache do not
+-- persist. This applies fn to the cached record and writes the result
+-- through immediately. Returns false when the book does not exist.
+function Settings:mutate_book(book_id, fn)
+    book_id = tostring(book_id or "")
+    if book_id == "" or type(fn) ~= "function" then
+        return false
+    end
+    local book = self:get("books", {})[book_id]
+    if type(book) ~= "table" then
+        return false
+    end
+    fn(book)
+    return self:set_book(book_id, book)
+end
+
+-- S-02 (2026-09-05): removal counterpart of set_book. set("books", books)
+-- used to be called just to drop one entry, rewriting every book's JSONs in
+-- the process; this edits the index and the in-memory cache in place.
+-- Caller is responsible for settings:flush().
+function Settings:remove_book(book_id)
+    book_id = tostring(book_id or "")
+    if book_id == "" then
+        return false
+    end
+    local indexes = self.store:readSetting("books", {})
+    if type(indexes) ~= "table" or indexes[book_id] == nil then
+        return false
+    end
+    indexes[book_id] = nil
+    self.store:saveSetting("books", indexes)
+    if self._books_cache then
+        self._books_cache[book_id] = nil
+    end
+    return true
 end
 
 function Settings:flush()
@@ -376,10 +445,14 @@ function Settings:import_manual_login()
         return false, "invalid_format"
     end
     -- Sandbox: restrict the environment so the loaded file cannot access
-    -- os, io, require, ffi, etc. (M-S1 fix).
+    -- os, io, require, ffi, etc. (M-S1 fix). S-17 (2026-09-05): math and a
+    -- minimal os (time/date/clock only) were added so a legitimately filled
+    -- template can use them; io/require/dofile stay out on purpose.
     local sandbox_env = {
         table = table,
         string = string,
+        math = math,
+        os = { time = os.time, date = os.date, clock = os.clock },
         tonumber = tonumber,
         tostring = tostring,
         pairs = pairs,

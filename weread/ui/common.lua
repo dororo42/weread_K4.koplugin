@@ -7,6 +7,7 @@ local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
+local GlobalState = require("weread.lib.global_state")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 local log_error = PluginUtil.log_error
@@ -173,28 +174,38 @@ function M:showList(title, items, empty_text, options)
 end
 
 -- v5.0: track every top-level widget the plugin shows, so a navigation can
--- close all of them at once. The stack lives in _G because openFile() may
--- rebuild the ReaderUI (and this plugin instance) mid-flow; state stored on
--- the instance would be lost together with the stale widgets.
-local DIALOG_STACK_KEY = "__WEREAD_DIALOG_STACK"
+-- close all of them at once. The stack lives in global_state because
+-- openFile() may rebuild the ReaderUI (and this plugin instance) mid-flow;
+-- state stored on the instance would be lost together with the stale
+-- widgets. 原#2 收口 (2026-09-05): moved from a dedicated _G key into the
+-- shared global_state slot.
+local DIALOG_STACK_KEY = "dialog_stack"
+-- S-21 (2026-09-05): widgets the user closes themselves stay in the stack
+-- (only whole-stack teardown empties it); cap it so a long session cannot
+-- grow it without bound. UIManager:close on an already-closed widget is
+-- pcall-guarded below, so dropping the oldest entries is safe.
+local MAX_TRACKED_DIALOGS = 16
 
 function M:trackDialog(widget)
     if not widget then return end
-    local stack = rawget(_G, DIALOG_STACK_KEY)
+    local stack = GlobalState.get(DIALOG_STACK_KEY)
     if type(stack) ~= "table" then
         stack = {}
-        rawset(_G, DIALOG_STACK_KEY, stack)
+        GlobalState.set(DIALOG_STACK_KEY, stack)
     end
     for _, existing in ipairs(stack) do
         if existing == widget then return end
+    end
+    while #stack >= MAX_TRACKED_DIALOGS do
+        table.remove(stack, 1)
     end
     table.insert(stack, widget)
 end
 
 function M:closeTrackedDialogs()
-    local stack = rawget(_G, DIALOG_STACK_KEY)
+    local stack = GlobalState.get(DIALOG_STACK_KEY)
     if type(stack) ~= "table" then return end
-    rawset(_G, DIALOG_STACK_KEY, nil)
+    GlobalState.clear(DIALOG_STACK_KEY)
     for i = #stack, 1, -1 do
         pcall(function()
             UIManager:close(stack[i])

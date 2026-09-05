@@ -1,12 +1,8 @@
 local Content = require("weread.lib.content")
 local WeRead = require("weread.lib.protocol")
+local PluginUtil = require("weread.lib.plugin_util")
 
 local logger = require("weread.lib.logger").scoped("ReadReport")
-
-local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
-if not ok_ffiutil then
-    ffiutil = nil
-end
 
 local DEFAULT_INTERVAL_SECONDS = 30
 -- K4 tuning: 30s default interval (was 45) tightens the tick window for more
@@ -32,6 +28,16 @@ local PAGE_DEFER_LIMIT = 6
 -- only ever engages where the link is actually bad.
 local FAILURE_DEGRADE_THRESHOLD = 2
 local FAILURE_DEGRADE_TIMEOUT = 4
+-- P0-1 (2026-09-05): second-level degrade. A failure streak this long means
+-- the link is effectively dead; 2s caps the worst-case per-request freeze
+-- even lower while the streak lasts (one success restores the default).
+local FAILURE_DEGRADE_DEEP_THRESHOLD = 5
+local FAILURE_DEGRADE_DEEP_TIMEOUT = 2
+-- S-12 (2026-09-05): a sustained failure streak means the link is dead or
+-- stalling; stretch the tick cadence to 120s so retries stop colliding with
+-- page turns. Reading time is never lost — the watermark covers the gap.
+local WEAK_NETWORK_FAILURE_THRESHOLD = 4
+local WEAK_NETWORK_TICK_SECONDS = 120
 -- P2 (2026-08-26): tick cost instrumentation. time.now() (ms) so on-device
 -- logs can quantify UI-loop freezes per tick (failed ticks and slow ticks).
 local ok_time, time = pcall(require, "ui/time")
@@ -103,37 +109,6 @@ local function log(level, ...)
     if type(logger[level]) == "function" then
         logger[level](...)
     end
-end
-
-local function make_subprocess_runner()
-    if not ffiutil or type(ffiutil.runInSubProcess) ~= "function" then
-        return nil
-    end
-    return {
-        -- Returns pid, parent_read_fd on success; false, error message on failure.
-        run = function(child_func)
-            return ffiutil.runInSubProcess(child_func, true)
-        end,
-        -- Blocking write from inside the child; closes the fd when done.
-        write_all = function(fd, data)
-            return ffiutil.writeToFD(fd, data, true)
-        end,
-        -- Non-blocking waitpid; also reaps the child once it has exited.
-        is_done = function(pid)
-            return ffiutil.isSubProcessDone(pid)
-        end,
-        terminate = function(pid)
-            ffiutil.terminateSubProcess(pid)
-        end,
-        -- Non-blocking readable-size probe (0 when nothing is buffered).
-        read_size = function(fd)
-            return ffiutil.getNonBlockingReadSize(fd)
-        end,
-        -- Reads until EOF and closes the fd.
-        read_all = function(fd)
-            return ffiutil.readAllFromFD(fd)
-        end,
-    }
 end
 
 local function book_record(books, book_id)
@@ -229,7 +204,9 @@ local function response_summary(client, result, http_code)
     -- Only rejected reading reports call this function. Keep the complete
     -- decoded response in the failure log so unexpected server replies can be
     -- diagnosed without enabling verbose logging for successful reports.
-    parts[#parts + 1] = "response_body=" .. full_response_body(client, result)
+    -- S-01 (2026-09-05): redact credential-looking values first.
+    parts[#parts + 1] = "response_body="
+        .. PluginUtil.redact_body(full_response_body(client, result))
     return table.concat(parts, ", ")
 end
 
@@ -252,7 +229,10 @@ function ReadReport:new(options)
         is_online = options.is_online or function() return true end,
         now = options.now or os.time,
         session_id = tostring({}) .. ":" .. tostring((options.now or os.time)()),
-        subprocess = nil,  -- K4：禁用子进程 fork（fork 导致 UI 卡顿 0.5-3s），全部上传走 inline（见 K4_v2.5_P0待改项_子进程fork卡顿.md）
+        -- K4：禁用子进程 fork（fork 导致 UI 卡顿 0.5-3s），全部上传走
+        -- inline（见 K4_v2.5_P0待改项_子进程fork卡顿.md）。S-13 (2026-09-05)
+        -- 已删除永不启用的 make_subprocess_runner 死代码；若未来恢复 fork，
+        -- 在此重新注入 runner。
         state = "stopped",
         generation = 0,
         count = 0,
@@ -337,6 +317,11 @@ end
 function ReadReport:_next_tick_delay()
     local consecutive = self.consecutive_failures or 0
     local interval = self:_interval()
+    -- S-12: sustained failure streak — stretch the cadence before the
+    -- backoff ramp so retries stop colliding with page turns.
+    if consecutive >= WEAK_NETWORK_FAILURE_THRESHOLD then
+        return WEAK_NETWORK_TICK_SECONDS
+    end
     local backoff = backoff_delay(consecutive)
     if backoff then
         return backoff
@@ -615,6 +600,19 @@ function ReadReport:stop(reason)
         self._context_flush_pending = false
         pcall(function() self.settings:flush() end)
     end
+    -- S-05 (2026-09-05): release the coalesced-flush timers. stop() used to
+    -- leave them scheduled, keeping this instance alive up to 30s after
+    -- teardown; the forced flushes above already persisted everything.
+    if self._watermark_flush_fn then
+        self.scheduler:unschedule(self._watermark_flush_fn)
+        self._watermark_flush_scheduled = false
+        self._watermark_flush_fn = nil
+    end
+    if self._context_flush_fn then
+        self.scheduler:unschedule(self._context_flush_fn)
+        self._context_flush_scheduled = false
+        self._context_flush_fn = nil
+    end
     if had_task then
         log("info", "reading time report stopped:",
             "reason=", reason,
@@ -727,6 +725,15 @@ function ReadReport:_tick(generation, task)
             self:_schedule_next(generation, task, PAGE_DEFER_DELAY_SECONDS)
             return
         end
+        -- S-03: never fabricate reading time after a wall-clock rollback
+        -- (see _clock_rolled_back).
+        if self:_clock_rolled_back() then
+            log("warn", "clock rollback detected, skipping this report tick:",
+                "now=", tostring(self.now()),
+                "watermark=", tostring(self.watermark))
+            self:_schedule_next(generation, task)
+            return
+        end
         if self.job then
             -- Previous report is still in flight; keep the cadence and let
             -- the poller reschedule once it completes.
@@ -778,10 +785,23 @@ end
 -- in a failure streak (see constants above). Returns nil (= client default
 -- 8s) on healthy links.
 function ReadReport:_request_timeout()
-    if (self.consecutive_failures or 0) >= FAILURE_DEGRADE_THRESHOLD then
+    local failures = self.consecutive_failures or 0
+    if failures >= FAILURE_DEGRADE_DEEP_THRESHOLD then
+        return FAILURE_DEGRADE_DEEP_TIMEOUT
+    end
+    if failures >= FAILURE_DEGRADE_THRESHOLD then
         return FAILURE_DEGRADE_TIMEOUT
     end
     return nil
+end
+
+-- S-03 (2026-09-05): wall-clock rollback guard. Domain math (watermark,
+-- backlog) runs on os.time(); if the wall clock jumped backwards past the
+-- watermark (NTP correction / manual adjust), reporting would fabricate
+-- reading time — an anomaly the server can observe. The tick caller skips
+-- sending; the watermark keeps the already-accumulated time.
+function ReadReport:_clock_rolled_back()
+    return self.watermark ~= nil and self.now() < self.watermark
 end
 
 -- P0-2 helper: true when the reader turned a page within the defer window.
@@ -1144,13 +1164,18 @@ function ReadReport:_persist_watermark()
     self._watermark_flush_pending = true
     if not self._watermark_flush_scheduled then
         self._watermark_flush_scheduled = true
-        self.scheduler:scheduleIn(30, function()
+        -- S-05 (2026-09-05): keep the closure reachable so stop() can
+        -- unschedule it (previously an anonymous closure that pinned the
+        -- instance for up to 30s after teardown).
+        self._watermark_flush_fn = function()
             self._watermark_flush_scheduled = false
+            self._watermark_flush_fn = nil
             if self._watermark_flush_pending then
                 self._watermark_flush_pending = false
                 pcall(function() self.settings:flush() end)
             end
-        end)
+        end
+        self.scheduler:scheduleIn(30, self._watermark_flush_fn)
     end
 end
 
@@ -1233,13 +1258,16 @@ function ReadReport:_schedule_context_flush()
     self._context_flush_pending = true
     if self._context_flush_scheduled then return end
     self._context_flush_scheduled = true
-    self.scheduler:scheduleIn(30, function()
+    -- S-05 (2026-09-05): keep the closure reachable so stop() can unschedule.
+    self._context_flush_fn = function()
         self._context_flush_scheduled = false
+        self._context_flush_fn = nil
         if self._context_flush_pending then
             self._context_flush_pending = false
             pcall(function() self.settings:flush() end)
         end
-    end)
+    end
+    self.scheduler:scheduleIn(30, self._context_flush_fn)
 end
 
 -- ------------------------------------------------------------------

@@ -9,14 +9,17 @@
 -- barrier is up, with a hard defer cap so a long interaction can never
 -- starve a download.
 
+local GlobalState = require("weread.lib.global_state")
+
 local ForegroundBarrier = {}
 
 -- Runtime state survives plugin reloads inside one KOReader process.
-local KEY = "__WEREAD_K4_FOREGROUND_BARRIER"
-local state = rawget(_G, KEY)
+-- 原#2 收口 (2026-09-05): moved from its own rawget(_G, ...) key into the
+-- shared global_state slot.
+local state = GlobalState.get("foreground_barrier")
 if type(state) ~= "table" then
     state = { until_at = 0, reason = nil }
-    rawset(_G, KEY, state)
+    GlobalState.set("foreground_barrier", state)
 end
 
 -- How long the barrier stays up after an interaction (seconds).
