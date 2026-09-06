@@ -22,7 +22,6 @@
 --   4. 输出详细的清除前后对比，便于核对
 
 local DataStorage = require("datastorage")
-local logger = require("logger")
 local lfs = require("libs/libkoreader-lfs")
 
 local settings_file = DataStorage:getSettingsDir() .. "/weread.lua"

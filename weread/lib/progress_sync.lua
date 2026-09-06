@@ -213,8 +213,8 @@ function ProgressSync:capture_local()
         if type(chapters) ~= "table" or #chapters == 0 then
             return nil, "catalog_unavailable"
         end
-        local _index
-        _index, current_chapter, is_full_book =
+        local _
+        _, current_chapter, is_full_book =
             self.get_file_context(book, path)
         self.document_context = {
             book_id = book_id,
@@ -770,7 +770,7 @@ function ProgressSync:_apply_pending_jump(book_id)
     if not pending or tostring(pending.book_id) ~= tostring(book_id) then
         return false
     end
-    local local_position, _reason, context = self:capture_local()
+    local local_position, _, context = self:capture_local()
     if not context or not context.current_chapter
         or tostring(context.current_chapter.chapterUid or context.current_chapter.chapterId)
             ~= tostring(pending.chapter_uid) then

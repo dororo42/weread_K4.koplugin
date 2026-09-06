@@ -1,3 +1,7 @@
 # Local evaluation / assessment documents stay out of the repository.
 K4_*.md
 wereadr_*.md
+# CI installs rocks into the project dir; never commit vendored dependencies.
+.luarocks/
+# Local build artifact.
+*.zip

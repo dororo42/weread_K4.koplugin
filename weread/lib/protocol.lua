@@ -145,7 +145,7 @@ function WeRead.utf8_substr(value, max_chars)
 
     while index <= #text and count < limit do
         local first = text:byte(index)
-        local width = 0
+        local width
         local second = text:byte(index + 1)
 
         if first <= 0x7f then

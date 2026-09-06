@@ -3,7 +3,9 @@
 -- builtins like `bit` plus the union of Lua std libs).
 std = "max"
 cache = true
-max_line_length = 120
+-- Historical code (i18n tables, EPUB manifest templates) relies on long
+-- string lines; a line-width check adds no value here.
+max_line_length = false
 unused_args = false
 
 -- CI installs rocks into the project dir; never lint vendored dependencies.

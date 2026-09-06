@@ -84,7 +84,6 @@ local zh = {
     ["Done"] = "已读完",
     ["WeRead Bookshelf"] = "微信读书书架",
     ["Your WeRead shelf is empty."] = "微信读书书架为空。",
-    ["Loading bookshelf..."] = "正在加载书架...",
     ["%1 chapters"] = "%1 章",
     ["Not loaded"] = "未加载",
     ["Loading chapter list..."] = "正在加载章节目录...",

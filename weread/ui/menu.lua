@@ -1,6 +1,5 @@
 -- Main menu and settings menu composition.
 local BD = require("ui/bidi")
-local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
@@ -182,7 +181,7 @@ function M:getSettingsMenuItems()
                         callback = self:safeCallback(_("Pull progress on open"),
                             function(touchmenu_instance)
                                 local sync = self.settings:get("sync")
-                                sync.pull_on_open = not (sync.pull_on_open == true)
+                                sync.pull_on_open = sync.pull_on_open ~= true
                                 self.settings:set("sync", sync)
                                 self.settings:flush()
                                 if touchmenu_instance then
@@ -201,7 +200,7 @@ function M:getSettingsMenuItems()
                             function(touchmenu_instance)
                                 local sync = self.settings:get("sync")
                                 sync.upload_on_close =
-                                    not (sync.upload_on_close == true)
+                                    sync.upload_on_close ~= true
                                 self.settings:set("sync", sync)
                                 self.settings:flush()
                                 if touchmenu_instance then
@@ -385,7 +384,7 @@ function M:getSettingsMenuItems()
                                         function(touchmenu_instance)
                                             local cache = self.settings:get("cache")
                                             cache.show_prefetch_notifications =
-                                                not (cache.show_prefetch_notifications ~= false)
+                                                cache.show_prefetch_notifications == false
                                             self.settings:set("cache", cache)
                                             self.settings:flush()
                                             if touchmenu_instance then

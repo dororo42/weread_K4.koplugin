@@ -440,7 +440,7 @@ function Client:get_public_text(url, opts)
             ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://mp.weixin.qq.com/",
         }
     })
-    local text, code, resp_headers, _status, final_url = self:request_follow(
+    local text, code, resp_headers, _, final_url = self:request_follow(
         merge_req_opts(req_opts, { url = url, method = "GET" })
     )
     if not code or code < 200 or code >= 300 then

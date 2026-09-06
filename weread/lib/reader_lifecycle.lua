@@ -63,7 +63,7 @@ function M:handleEndOfBook(status_self)
     local book = books[book_id]
     self:ensureChaptersLoaded(book)
     local file = self.ui.document and self.ui.document.file
-    local current_idx, current_ch, is_full_book = self:getChapterInfoFromFile(book, file)
+    local current_idx, _, is_full_book = self:getChapterInfoFromFile(book, file)
     local next_ch = (not is_full_book) and current_idx and book.chapters[current_idx + 1]
 
     if action == "next_file" then
@@ -214,7 +214,7 @@ function M:onReaderReady()
         if prefetch_session_gen ~= self._reader_session_gen then return end
         self:maybePrefetchNextChapter(weread_book_id)
     end)
-    local _started, _title, reason = self.read_report:on_reader_ready()
+    local reason = select(3, self.read_report:on_reader_ready())
     local rr = self.settings:get("read_report")
     if rr.enabled and rr.mode == "auto" and reason == "document_not_weread" then
         self:showTransientInfo(_("Current book is not from WeRead, reading time not reported"), 1)

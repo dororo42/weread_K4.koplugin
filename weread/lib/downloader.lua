@@ -798,8 +798,14 @@ function Downloader:_footnoteStep(dl)
         dl.footnotes_done = true
         dl.footnote_job = nil
         if job.css_needed then
+            -- v5.6 lint fix: the display mode must come from settings. The
+            -- old code referenced a global `footnotes_mode` (always nil), so
+            -- whole-book downloads always got PAGE css even when chapters
+            -- were converted in the default chapter mode.
             dl.state.css = (dl.state.css or "") .. "\n"
-                .. Footnotes.footnote_css_for(footnotes_mode)
+                .. Footnotes.footnote_css_for(
+                    self.settings:get("cache").footnotes_mode == "page"
+                        and "page" or "chapter")
         end
         self:_saveProgress(dl)
         logger.info("book footnotes processed:",
@@ -1142,16 +1148,16 @@ function Downloader:_step(dl)
         --     chapter is often part of a paused whole-book download; its
         --     spooled body/assets then feed the resume instead of being
         --     re-downloaded.
-        if dl.prefetch or dl.single_chapter then
-            -- keep spool
-        elseif dl.separate_chapters then
-            for _i, ch in ipairs(dl.selected) do
-                Content.remove_spool_chapter(self.settings, dl.book,
-                    tostring(ch.chapterUid or ch.chapterId or _i))
+        if not (dl.prefetch or dl.single_chapter) then
+            if dl.separate_chapters then
+                for _i, ch in ipairs(dl.selected) do
+                    Content.remove_spool_chapter(self.settings, dl.book,
+                        tostring(ch.chapterUid or ch.chapterId or _i))
+                end
+                os.remove(Content.spool_progress_path(self.settings, dl.book, "separate"))
+            else
+                Content.clear_spool(self.settings, dl.book)
             end
-            os.remove(Content.spool_progress_path(self.settings, dl.book, "separate"))
-        else
-            Content.clear_spool(self.settings, dl.book)
         end
         if #dl.failed > 0 then
             logger.warn(

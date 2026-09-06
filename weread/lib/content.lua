@@ -838,7 +838,6 @@ function Content.save_book_epub_streamed(settings, book, chapters, body_paths, a
         local filename = string.format("text/chapter-%03d.xhtml", chapter_index)
         chapter_filenames[chapter_index] = filename
         local id = item_id("chapter_", uid)
-        local title = chapter.title or ("Chapter " .. uid)
         table.insert(manifest_items, [[<item id="]] .. id .. [[" href="]] .. filename .. [[" media-type="application/xhtml+xml"/>]])
         table.insert(spine_items, [[<itemref idref="]] .. id .. [["/>]])
     end
@@ -1394,18 +1393,6 @@ function Content.extract_mp_body(html)
     body = body:gsub(" src=''", "")
     body = body:gsub("data%-src=", "src=")
     return body
-end
-
-local function normalize_void_elements(html)
-    html = html:gsub("<(br)%s*>", "<%1/>")
-    html = html:gsub("<(hr)%s*>", "<%1/>")
-    html = html:gsub("<(img)(%s[^>]-)>", function(tag, attrs)
-        if not attrs:match("/$") then
-            return "<" .. tag .. attrs .. "/>"
-        end
-        return "<" .. tag .. attrs .. ">"
-    end)
-    return html
 end
 
 local function strip_mp_reader_font_styles(html)

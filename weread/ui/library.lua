@@ -7,7 +7,6 @@ local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local UIManager = require("ui/uimanager")
-local Event = require("ui/event")
 local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")

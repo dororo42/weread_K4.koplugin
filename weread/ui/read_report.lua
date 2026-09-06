@@ -211,9 +211,14 @@ function M:showReadReportBookPicker()
             self:showInfo(_("Your WeRead shelf is empty."))
             return
         end
-        local menu, buildItems
+        local buildItems
         local function refresh()
-            menu:switchItemTable(nil, buildItems())
+            -- v5.6 lint fix: the picker widget lives on the instance (M-6);
+            -- the old local `menu` was never assigned, so a refresh callback
+            -- would have crashed on nil.
+            if self._picker_menu then
+                self._picker_menu:switchItemTable(nil, buildItems())
+            end
         end
         buildItems = function()
             local items = self:shelfToolbarItems(false, refresh)
