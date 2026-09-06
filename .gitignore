@@ -5,3 +5,5 @@ wereadr_*.md
 .luarocks/
 # Local build artifact.
 *.zip
+# luacheck cache file (cache = true in .luacheckrc).
+.luacheck_cache

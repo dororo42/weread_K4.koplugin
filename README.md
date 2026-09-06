@@ -353,3 +353,10 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 ## 许可证
 
 本分支代码沿用上游 [AGPL-3.0](LICENSE) 许可证。修改、整合或再分发时须遵守 AGPL-3.0，保留版权和许可证声明。
+
+## 开发与测试
+
+- 单元测试：`luarocks install busted && busted spec`；静态检查：`luarocks install luacheck && luacheck weread spec tools main.lua _meta.lua`。
+- CI（`.github/workflows/ci.yml`）使用**标准 Lua 5.1** 作为兼容性哨兵：新增 `spec/*.lua` 必须遵守 Lua 5.1 语法子集（禁止 `\x`/`\z` 转义、`goto`、整除 `//` 等新语法），本地 LuaJIT/5.3+ 不报错的问题会在 CI 拦下。
+- 依赖以 `luarocks install --tree .luarocks` 安装或依赖 CI 的排除配置；`.luarocks/`、`.luacheck_cache` 已在 `.gitignore` 中。
+- **设备部署不需要 `spec/` 与 `.luacheckrc`**：KOReader 只加载 `main.lua` + `_meta.lua` + `weread/`。发布包（`weread_K4.koplugin_v5.6.zip`）已按运行时清单打包。
