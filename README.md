@@ -134,6 +134,12 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 **测试**：新增 `spec/footnotes_spec.lua`（#133 七组回归，含双语书污染/shortest-wins/箭头共享 id/多文字系统/纯符号拒绝/双模式渲染）、`spec/content_css_sanitize_spec.lua`（#137 全部断言）、`spec/mp_images_spec.lua`（#132 锚定/流式/上限/失败兜底），全套 51 个用例通过；`PluginUtil.mkdirs` 顺带容忍 Windows 风格路径（盘符/反斜杠，生产 KOReader 无感知）。
 
+**CI 接入与修复（2026-09-05 ~ 09-06，`101405e`/`3a57bbe`/`55b2c7d`/`3657b83`）**：
+- CI 首次接入撞了两轮墙并全部对症修复：① CI 的标准 Lua 5.1 不支持 `\x` 转义（spec 的 PNG 魔数改十进制转义；本地 LuaJIT/5.3+ 不报错，CI 是**兼容性哨兵**）；② luarocks 把依赖装进项目目录 `.luarocks/` 被 `luacheck .` 全仓误扫（改显式白名单 `luacheck weread spec tools main.lua _meta.lua`）。
+- lint 首跑清出 **70 条历史警告**（清零），并顺带修复 **3 个真隐患**：整本书下载的脚注 CSS 引用未定义全局 `footnotes_mode` 导致始终取 PAGE 样式（与章节转换的 chapter 模式不匹配）；选书列表的 `refresh` 回调引用永远未赋值的局部 `menu`（工具栏刷新即崩）；死函数 `normalize_void_elements` 清理。
+- CI 加固：`concurrency` 防过时 run 排队；`.gitignore` 补 `.luarocks/`、`.luacheck_cache`、`*.zip`；README 新增「开发与测试」节（新 spec 必须遵守 Lua 5.1 语法子集）。
+- **设备部署说明**：`spec/` 与 `.luacheckrc` 属开发资产，KOReader 只加载 `main.lua` + `_meta.lua` + `weread/`；发布包已按运行时清单打包（见「开发与测试」节）。
+
 ### v5.5（2026-09-05）· 按综合评估报告 v3 修复
 
 **适用设备**：Kindle 4 / Kindle 5（同代硬件，i.MX508 · 800MHz 单核 · 256MB RAM · 非触摸）。
