@@ -26,7 +26,9 @@ package.preload["libs/libkoreader-lfs"] = function()
                 _G.__py_mkdir(path)
                 return true
             end
-            os.execute('mkdir "' .. tostring(path) .. '"')
+            -- Idempotent on CI: suppress the "File exists" noise when the
+            -- directory was already created by an earlier case.
+            os.execute('test -d "' .. tostring(path) .. '" || mkdir "' .. tostring(path) .. '"')
             return true
         end,
     }
@@ -47,8 +49,9 @@ local function temp_dir()
     return (base:gsub("/+$", "")) .. "/weread_mp_images_spec"
 end
 
--- Fake PNG payload: magic bytes so media_type_for detects image/png.
-local PNG = "\137PNG\r\n\x1a\n" .. string.rep("x", 128)
+-- Fake PNG payload: magic bytes so media_type_for detects image/png. Use
+-- decimal escapes only — Lua 5.1 (CI) has no \x escape.
+local PNG = "\137PNG\r\n\026\n" .. string.rep("x", 128)
 
 describe("Content.is_mp_image_url anchoring (upstream PR #132)", function()
     it("accepts the two WeRead image hosts over http(s)", function()
