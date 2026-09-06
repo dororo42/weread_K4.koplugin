@@ -6,6 +6,11 @@ cache = true
 max_line_length = 120
 unused_args = false
 
+-- CI installs rocks into the project dir; never lint vendored dependencies.
+exclude_files = {
+    ".luarocks/**",
+}
+
 -- KOReader globals the plugin legitimately reads.
 globals = {
     "G_reader_settings",
