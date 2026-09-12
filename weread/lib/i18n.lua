@@ -31,6 +31,13 @@ local zh = {
     ["Cloud progress is in \"%1\", but this chapter has not been downloaded.\n\nDownload and open it now?"] = "云端进度位于《%1》，但该章节尚未下载。\n\n是否立即下载并打开？",
     ["Download target chapter"] = "下载目标章节",
     ["Download settings"] = "下载设置",
+    -- K4 fork v5.7: built-in footer wifi status icon toggle (Option B glue).
+    ["Network status icon in status bar"] = "状态栏联网状态图标",
+    ["Show a small Wi-Fi connected/disconnected icon in the reading status bar (KOReader's built-in item). Enabling it switches the status bar to show all items at once, so the icon stays visible."] = "在阅读页底部状态栏显示 Wi-Fi 连接/断开小图标（KOReader 内置项）。开启时会同时把状态栏切换为「全部同时显示」，保证图标常驻可见；关闭时仅移除图标。",
+    ["To keep the icon visible, the status bar will also switch to 'Show all selected items at once'. Continue?"] = "为让图标常驻可见，将同时把状态栏切换为「全部同时显示」。是否继续？",
+    ["Enable"] = "开启",
+    ["Status bar setting saved. It takes effect the next time a book is opened."] = "状态栏设置已保存，下次打开书籍时生效。",
+    ["Unable to update the status bar setting."] = "无法更新状态栏设置。",
     ["Book images"] = "书籍图片",
     ["Public account article images"] = "公众号文章图片",
     ["Footnote display position"] = "脚注显示位置",

@@ -6,6 +6,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
+local FooterIndicator = require("weread.ui.footer_indicator")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -137,6 +138,51 @@ function M:getMainMenuItems()
     return items
 end
 
+-- Toggle KOReader's built-in footer Wi-Fi status icon (feasibility study
+-- 2026-09-11, Option B). Reader context: applies to the live footer via
+-- footer_indicator's native-mirroring bookkeeping. No live footer (file
+-- manager): writes the global store; takes effect on next book open.
+-- Enabling also switches the status bar to "show all selected items at
+-- once" (with explicit confirmation) so the icon is actually visible;
+-- disabling only removes the icon.
+function M:toggleFooterWifiIndicator(touchmenu_instance)
+    local footer = FooterIndicator.resolve_footer(self.ui)
+    if footer then
+        local enabled = footer.settings.wifi_status ~= true
+        local apply = self:safeCallback("footer wifi indicator", function()
+            if FooterIndicator.apply_to_footer(footer, enabled) then
+                logger.info("footer wifi indicator:", enabled and "enabled" or "disabled")
+            end
+        end)
+        if enabled and footer.settings.all_at_once ~= true then
+            UIManager:show(ConfirmBox:new{
+                text = _("To keep the icon visible, the status bar will also switch to 'Show all selected items at once'. Continue?"),
+                ok_text = _("Enable"),
+                cancel_text = _("Cancel"),
+                ok_callback = apply,
+            })
+        else
+            apply()
+        end
+    else
+        local enabled = FooterIndicator.read_enabled(self.ui)
+        if FooterIndicator.apply_to_store(_G.G_reader_settings, not enabled) then
+            UIManager:show(InfoMessage:new{
+                text = _("Status bar setting saved. It takes effect the next time a book is opened."),
+                timeout = 3,
+            })
+        else
+            UIManager:show(InfoMessage:new{
+                text = _("Unable to update the status bar setting."),
+                timeout = 3,
+            })
+        end
+    end
+    if touchmenu_instance then
+        touchmenu_instance:updateItems()
+    end
+end
+
 function M:getSettingsMenuItems()
     local items = {
         {
@@ -210,6 +256,19 @@ function M:getSettingsMenuItems()
                     },
                 }
             end,
+        },
+        {
+            text = _("Network status icon in status bar"),
+            help_text = _("Show a small Wi-Fi connected/disconnected icon in the reading status bar (KOReader's built-in item). Enabling it switches the status bar to show all items at once, so the icon stays visible."),
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
+            checked_func = function()
+                return FooterIndicator.read_enabled(self.ui)
+            end,
+            callback = self:safeCallback(_("Network status icon in status bar"),
+                function(touchmenu_instance)
+                    self:toggleFooterWifiIndicator(touchmenu_instance)
+                end),
         },
         {
             text = _("Download settings"),

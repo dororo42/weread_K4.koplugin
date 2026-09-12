@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v5.6）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v5.7）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -119,6 +119,15 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v5.7（2026-09-12）· 状态栏联网状态图标（复用 KOReader 内置项）
+
+- **新功能**：设置菜单新增「状态栏联网状态图标」开关，开启后阅读页底部状态栏常驻显示 Wi-Fi 连接/断开小图标（KOReader ReaderFooter 内置 `wifi_status` 项，v2026.07.1 源码级验证 K4 门控 `hasFastWifiStatusQuery=yes` 通过，默认关闭）。
+- **实现（零 patch、零自绘控件）**：新增 `weread/ui/footer_indicator.lua` 胶水层，逐分支对齐内置开关的刷新簿记（`set_has_no_mode` → `updateFooterTextGenerator` → `refreshFooter` → `rescheduleFooterAutoRefreshIfNeeded`），并即时 `flush` 全局设置防掉电丢失。开启时经 ConfirmBox 确认后同时切换「全部同时显示」保证图标常驻可见；关闭时仅移除图标。
+- **文件管理器降级路径**：FM 无实时 footer，写入全局 `G_reader_settings` 的 `footer` 表（缺表时以 `readerfooter.default_settings` 完整种子，绝不写半截表覆盖掉其他状态项），下次开书生效并弹提示。
+- **语义边界**：图标反映 Wi-Fi 射频/链路状态（`NetworkMgr:isWifiOn`，sysfs 级非阻塞查询），**不等于**互联网可达（`isOnline` 需阻塞 DNS，与阅读循环互斥）；被动断网的图标刷新滞后 ≤1 分钟或一次翻页。
+- 手动等价路径：KOReader 顶部菜单 → 设置 → 状态栏 → 状态栏项目 → 勾选「Wi-Fi 状态」。
+- **测试**：新增 `spec/footer_indicator_spec.lua`（19 用例：刷新簿记契约、塌缩/恢复/单显切换、FM 存储降级、缺省值种子、flush 容错），全套 spec 与 luacheck 通过。
 
 ### v5.6（2026-09-05）· 脚注双缺陷修复 + 公众号图片流式（对齐上游 v1.4.0）
 
