@@ -16,6 +16,14 @@
 -- DNS lookup and must stay off the UI loop -- see ui/common.lua).
 local logger = require("weread.lib.logger")
 
+-- MODE indexes from readerfooter.lua v2026.07.1 (module-local there; only
+-- needed for the no-live-footer store path -- the reader path always reads
+-- footer.mode_list.wifi_status off the live instance). The plugin targets a
+-- pinned KOReader build, so these are stable; a mismatch would at worst show
+-- a different single item until the next toggle.
+local WIFI_MODE = 11
+local PAGE_PROGRESS_MODE = 1
+
 local M = {}
 
 local function get_store()
@@ -151,6 +159,24 @@ function M.apply_to_footer(footer, enabled)
             footer:applyFooterMode()
         end
         M.save_reader_footer_mode(footer.mode)
+    elseif enabled and not footer.settings.all_at_once then
+        -- K4/non-touch specific (v5.7 compact design): the single-mode footer
+        -- cannot be cycled without a touchscreen (footer tap zone is dead and
+        -- the "Toggle mode" menu item only exists when the tap zone is zeroed),
+        -- so a natively "quiet join" would leave the icon unreachable. Switch
+        -- the displayed mode to the wifi item itself: the footer then shows
+        -- one small glyph plus the progress bar -- the smallest persistent
+        -- footprint, symmetric with disable (which restores page progress).
+        local wifi_mode = footer.mode_list and footer.mode_list.wifi_status
+        if wifi_mode then
+            if footer.applyFooterMode then
+                footer:applyFooterMode(wifi_mode)
+            else
+                footer.mode = wifi_mode
+            end
+            M.save_reader_footer_mode(footer.mode)
+            should_update = true
+        end
     end
 
     if should_update or should_signal then
@@ -192,12 +218,20 @@ function M.apply_to_store(store, enabled)
         fs = M.deep_copy(defaults)
     end
     fs.wifi_status = enabled
-    if enabled then
-        -- keep the same contract as apply_to_footer's enable path: make sure
-        -- the icon is actually visible (all_at_once shows it persistently)
-        fs.all_at_once = true
-    end
     store:saveSetting("footer", fs)
+    -- Mirror the reader-context contract for the single-mode (default) K4
+    -- layout: enable points the persisted mode at the wifi item so the icon
+    -- is actually visible on next book open; disable restores page progress
+    -- (only when the persisted mode is the one we set). all_at_once is never
+    -- touched: flipping it would crowd the whole status bar (v5.7 compact
+    -- design; 7 items enabled by default on an 800px screen).
+    if store.saveSetting then
+        if enabled then
+            store:saveSetting("reader_footer_mode", WIFI_MODE)
+        elseif store:readSetting("reader_footer_mode") == WIFI_MODE then
+            store:saveSetting("reader_footer_mode", PAGE_PROGRESS_MODE)
+        end
+    end
     M.flush_store()
     return true
 end

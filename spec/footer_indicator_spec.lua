@@ -63,13 +63,19 @@ describe("footer_indicator", function()
             footer_text = { height = 20 },
             calls = {},
         }
+        -- mirrors readerfooter.lua's MODE order (v2026.07.1) so the
+        -- "first enabled mode number" contract is faithful
+        local MODE_INDEX = {
+            "page_progress", "pages_left_book", "time", "pages_left",
+            "battery", "percentage", "book_time_to_read",
+            "chapter_time_to_read", "frontlight", "mem_usage", "wifi_status",
+        }
         footer.set_has_no_mode = function(self)
             table.insert(self.calls, "set_has_no_mode")
-            for _, key in ipairs(
-                { "page_progress", "time", "pages_left", "percentage", "battery", "wifi_status" }) do
+            for i, key in ipairs(MODE_INDEX) do
                 if self.settings[key] == true then
                     self.has_no_mode = false
-                    return 1
+                    return i
                 end
             end
             self.has_no_mode = true
@@ -85,8 +91,9 @@ describe("footer_indicator", function()
         footer.rescheduleFooterAutoRefreshIfNeeded = function(self)
             table.insert(self.calls, "reschedule")
         end
-        footer.applyFooterMode = function(self)
+        footer.applyFooterMode = function(self, mode)
             table.insert(self.calls, "applyFooterMode")
+            if mode ~= nil then self.mode = mode end
         end
         return footer
     end
@@ -201,16 +208,49 @@ describe("footer_indicator", function()
             assert.equals("refreshFooter:true:false", footer.calls[#footer.calls - 1])
         end)
 
-        it("does not repaint when a single-mode item quietly joins the cycle", function()
+        it("takes over the single footer slot on enable (compact design)", function()
             local footer = make_footer({
                 settings = { wifi_status = false, all_at_once = false, page_progress = true },
                 mode = 1,
             })
             assert.is_true(FI.apply_to_footer(footer, true))
             assert.is_true(footer.settings.wifi_status)
+            -- K4 non-touch cannot cycle single modes; the icon must become
+            -- the displayed item itself, not an unreachable rotation entry
+            assert.equals(11, footer.mode)
+            assert.equals("applyFooterMode", footer.calls[2])
+            assert.equals(11, store.data.reader_footer_mode)
+            assert.equals("refreshFooter:true:false", footer.calls[#footer.calls - 1])
+            assert.equals("reschedule", footer.calls[#footer.calls])
+        end)
+
+        it("enables from a no-mode footer in single mode via the transition branch", function()
+            local footer = make_footer({
+                settings = { wifi_status = false, all_at_once = false },
+                has_no_mode = true,
+                mode = 0,
+            })
+            assert.is_true(FI.apply_to_footer(footer, true))
+            assert.is_false(footer.has_no_mode)
+            -- wifi is the only enabled item, so the native first-enabled
+            -- restore lands on it (mode 11) with the signal path
+            assert.equals(11, footer.mode)
+            assert.equals("applyFooterMode", footer.calls[2])
+            assert.equals(11, store.data.reader_footer_mode)
+            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
+            assert.equals("reschedule", footer.calls[#footer.calls])
+        end)
+
+        it("does not repaint when a disabled non-current single mode is toggled", function()
+            -- disable while the footer already shows something else and the
+            -- icon was on: only bookkeeping, the native quiet path
+            local footer = make_footer({
+                settings = { wifi_status = true, all_at_once = false, page_progress = true },
+                mode = 1,
+            })
+            assert.is_true(FI.apply_to_footer(footer, false))
+            assert.is_false(footer.settings.wifi_status)
             assert.equals(1, footer.mode)
-            -- native behavior: bookkeeping + auto-refresh reschedule only,
-            -- the item becomes visible after the user cycles the mode
             assert.equals(2, #footer.calls)
             assert.equals("set_has_no_mode", footer.calls[1])
             assert.equals("reschedule", footer.calls[2])
@@ -218,13 +258,17 @@ describe("footer_indicator", function()
     end)
 
     describe("apply_to_store (no live footer)", function()
-        it("mutates an existing footer table in place", function()
+        it("mutates an existing footer table in place without crowding it", function()
             local fs = { wifi_status = false, all_at_once = false, page_progress = true }
             store.data.footer = fs
             assert.is_true(FI.apply_to_store(store, true))
             assert.equals(fs, store.data.footer)
             assert.is_true(fs.wifi_status)
-            assert.is_true(fs.all_at_once)
+            -- compact design: all_at_once must never be flipped (7 items are
+            -- enabled by default; showing them all crowds the 800px bar)
+            assert.is_false(fs.all_at_once)
+            -- single-mode contract: the persisted mode points at the wifi item
+            assert.equals(11, store.data.reader_footer_mode)
             assert.equals(1, store.flushed)
         end)
 
@@ -233,20 +277,25 @@ describe("footer_indicator", function()
             local fs = store.data.footer
             assert.is_table(fs)
             assert.is_true(fs.wifi_status)
-            assert.is_true(fs.all_at_once)
+            assert.is_false(fs.all_at_once)
             -- completeness: non-target keys must survive, not be nil'ed
             assert.equals(true, fs.page_progress)
             assert.equals("icons", fs.item_prefix)
+            assert.equals(11, store.data.reader_footer_mode)
             assert.equals(1, store.flushed)
         end)
 
-        it("seeding on disable leaves all_at_once untouched", function()
+        it("restores the persisted mode on disable only when it points at wifi", function()
             assert.is_true(FI.apply_to_store(store, true))
-            local fs = store.data.footer
-            fs.all_at_once = false
+            assert.equals(11, store.data.reader_footer_mode)
             assert.is_true(FI.apply_to_store(store, false))
-            assert.is_false(fs.wifi_status)
-            assert.is_false(fs.all_at_once)
+            assert.is_false(store.data.footer.wifi_status)
+            assert.equals(1, store.data.reader_footer_mode)
+            -- a mode the user set himself (not the one we wrote) is not
+            -- clobbered by a disable that finds wifi already off
+            store.data.reader_footer_mode = 3
+            assert.is_true(FI.apply_to_store(store, false))
+            assert.equals(3, store.data.reader_footer_mode)
         end)
 
         it("returns false instead of writing a partial table when defaults are gone", function()

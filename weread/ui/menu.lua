@@ -139,12 +139,13 @@ function M:getMainMenuItems()
 end
 
 -- Toggle KOReader's built-in footer Wi-Fi status icon (feasibility study
--- 2026-09-11, Option B). Reader context: applies to the live footer via
--- footer_indicator's native-mirroring bookkeeping. No live footer (file
--- manager): writes the global store; takes effect on next book open.
--- Enabling also switches the status bar to "show all selected items at
--- once" (with explicit confirmation) so the icon is actually visible;
--- disabling only removes the icon.
+-- 2026-09-11, Option B; v5.7 compact design). Reader context: applies to the
+-- live footer via footer_indicator's native-mirroring bookkeeping. No live
+-- footer (file manager): writes the global store; takes effect on next book
+-- open. In the default single-item status bar the icon takes over the one
+-- footer slot (progress bar unaffected); disabling restores page progress.
+-- all_at_once is deliberately never touched: flipping it would crowd the
+-- whole status bar on the 800px K4 screen.
 function M:toggleFooterWifiIndicator(touchmenu_instance)
     local footer = FooterIndicator.resolve_footer(self.ui)
     if footer then
@@ -154,16 +155,7 @@ function M:toggleFooterWifiIndicator(touchmenu_instance)
                 logger.info("footer wifi indicator:", enabled and "enabled" or "disabled")
             end
         end)
-        if enabled and footer.settings.all_at_once ~= true then
-            UIManager:show(ConfirmBox:new{
-                text = _("To keep the icon visible, the status bar will also switch to 'Show all selected items at once'. Continue?"),
-                ok_text = _("Enable"),
-                cancel_text = _("Cancel"),
-                ok_callback = apply,
-            })
-        else
-            apply()
-        end
+        apply()
     else
         local enabled = FooterIndicator.read_enabled(self.ui)
         if FooterIndicator.apply_to_store(_G.G_reader_settings, not enabled) then
@@ -259,7 +251,7 @@ function M:getSettingsMenuItems()
         },
         {
             text = _("Network status icon in status bar"),
-            help_text = _("Show a small Wi-Fi connected/disconnected icon in the reading status bar (KOReader's built-in item). Enabling it switches the status bar to show all items at once, so the icon stays visible."),
+            help_text = _("Show a small Wi-Fi status icon in the reading status bar. In the default single-item bar the icon takes the one footer slot (progress bar unaffected); page numbers come back when it is disabled."),
             keep_menu_open = true,
             check_callback_updates_menu = true,
             checked_func = function()
