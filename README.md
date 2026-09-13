@@ -8,7 +8,7 @@
 
 本分支 fork 自 [finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)（AGPL-3.0），K4 非触摸适配分支独立维护于 [dororo42/weread_K4.koplugin](https://github.com/dororo42/weread_K4.koplugin)。
 - 基线：官方 **v0.6.0**（含个人 K4 适配补丁）
-- 上游最新：**v1.3.0**（本分支**不完全跟随**，见「与主线 v1.0.0 的差别」）
+- 上游最新：**v1.4.0**（本分支**不完全跟随**，脚注双修复已随 v5.6 对齐；见「与主线 v1.0.0 的差别」）
 
 ## 本分支定位
 
@@ -120,7 +120,16 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 ## 版本变更日志
 
+### v5.7 补遗（2026-09-14）· FM 模式位置修复 + 健壮性加固（审计驱动）
+
+- **FM 存储路径修复（P0）**：`footer_indicator.apply_to_store` 此前硬编码 `reader_footer_mode = 11`（MODE 常量值），但官方 `reader_footer_mode` 语义是 **mode_index 的 0 基位置**，且设备门控会先行剔除不支持的项——无前光的 K4 上 `wifi_status` 实际位置是 **10**，硬编码 11 会在文件管理器场景启用后静默指向 `book_title`（图标不显示）。现改为**运行时计算位置**：镜像官方 `set_mode_index` 逻辑（设备能力门控 `hasFastWifiStatusQuery`/`hasFrontlight`/`hasNaturalLight`/`hasBattery` + 可选自定义排序 `footer.order`），无自定义排序时 K4 得 10、有前光设备得 11、自定义排序按保存顺序。
+- **接口探测加固（新报告「中」项）**：`apply_to_footer` 对 `updateFooterTextGenerator`/`refreshFooter` 增加存在性探测，缺失时降级走 `onUpdateFooter` 通用重绘；`device_supports` 对探测错误保守判为不支持，不再假设可用。
+- **CI 语法哨兵**：新增 `luac -p`（严格 Lua 5.1）全量语法检查步骤，与既有 busted/luacheck 并列。
+- **README**：上游版本号同步 v1.3.0 → v1.4.0（脚注双修复已随 v5.6 对齐）。
+- **测试**：`footer_indicator_spec` 新增 7 用例（设备门控位置计算 ×2 / 自定义排序镜像 / 门控项跳过 / 无 device 模块回退 / 探测错误保守化 / FM 路径持久化计算值 / 自定义排序持久化 / 既有断言修正为计算值）。
+
 ### v5.7（2026-09-13）· 状态栏联网状态图标（复用 KOReader 内置项，紧凑设计）
+
 
 - **新功能**：设置菜单新增「状态栏联网状态图标」开关，开启后阅读页底部状态栏显示 Wi-Fi 连接/断开小图标（KOReader ReaderFooter 内置 `wifi_status` 项，v2026.07.1 源码级验证 K4 门控 `hasFastWifiStatusQuery=yes` 通过，默认关闭）。
 - **紧凑设计（v5.7 定稿）**：**绝不触碰 `all_at_once`**——默认单显模式下 7 个状态项全亮会挤爆 800px 状态栏。改为：开启时把单显模式**直接切到 wifi 图标**（状态栏只剩一个小图标+进度条，最小视觉足迹；关闭时自动切回页码，对称可逆）。依据：K4 非触摸无法轮换单显模式（footer 触区不可用、"Toggle mode"菜单项仅在触区归零时出现），"加入轮换"等于永远不可见。

@@ -30,6 +30,13 @@ jobs:
           luarocks install busted
           luarocks install luacheck
 
+      - name: Syntax sentinel (strict Lua 5.1 luac -p)
+        # Same compatibility sentinel as the runtime above: post-5.1 syntax
+        # (\x/\z escapes, goto, integer division) must fail here, not on
+        # device. luac ships with the same leafo/gh-actions-lua build.
+        run: |
+          find . -path ./.luarocks -prune -o -name '*.lua' -print0 | xargs -0 luac -p
+
       - name: Unit tests (busted)
         run: busted spec
 

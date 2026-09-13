@@ -1,10 +1,11 @@
 -- Unit tests for weread/ui/footer_indicator.lua: the glue that toggles
 -- KOReader's built-in ReaderFooter "wifi_status" item from the WeRead menu.
 -- KOReader's ReaderFooter is replaced by an in-memory double that records
--- the call sequence, and G_reader_settings / readerfooter.default_settings
--- are stubbed. Focus: state mutation, the refresh bookkeeping contract
--- (mirror of readerfooter.lua's own toggle callback), and the FileManager
--- (no-live-footer) store path.
+-- the call sequence, and G_reader_settings / readerfooter.default_settings /
+-- the device capability module are stubbed. Focus: state mutation, the
+-- refresh bookkeeping contract (mirror of readerfooter.lua's own toggle
+-- callback), the FileManager (no-live-footer) store path, and the computed
+-- mode position (device gates + custom order, v5.7.1 fix).
 package.preload["apps/reader/modules/readerfooter"] = function()
     return {
         default_settings = {
@@ -47,7 +48,33 @@ describe("footer_indicator", function()
 
     after_each(function()
         _G.G_reader_settings = nil
+        package.loaded["device"] = nil
+        package.preload["device"] = nil
     end)
+
+    -- Stub the KOReader device abstraction. K4 shape: wifi query + battery
+    -- available, no frontlight / natural light (mirrors device.lua v2026.07.1
+    -- Kindle base + Kindle4 block).
+    local function stub_device(opts)
+        opts = opts or {}
+        package.preload["device"] = function()
+            return {
+                hasFastWifiStatusQuery = function()
+                    return opts.wifi ~= false
+                end,
+                hasBattery = function()
+                    return opts.battery ~= false
+                end,
+                hasFrontlight = function()
+                    return opts.frontlight == true
+                end,
+                hasNaturalLight = function()
+                    return opts.natural_light == true
+                end,
+            }
+        end
+        package.loaded["device"] = nil
+    end
 
     -- ReaderFooter double. set_has_no_mode mirrors the real contract:
     -- returns the first enabled mode number, sets has_no_mode accordingly.
@@ -257,8 +284,78 @@ describe("footer_indicator", function()
         end)
     end)
 
+    describe("compute_mode_positions (v5.7.1 fix)", function()
+        it("drops device-gated items: frontlight-less K4 puts wifi_status at 10", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            local pos = FI.compute_mode_positions({})
+            assert.equals(0, pos.off)
+            assert.equals(1, pos.page_progress)
+            assert.equals(5, pos.battery)
+            assert.equals(9, pos.mem_usage)
+            assert.equals(10, pos.wifi_status)
+            assert.equals(11, pos.book_title)
+            assert.is_nil(pos.frontlight)
+            assert.is_nil(pos.frontlight_warmth)
+        end)
+
+        it("keeps MODE order (wifi at 11) on a frontlight-equipped device", function()
+            stub_device({ wifi = true, battery = true, frontlight = true, natural_light = true })
+            local pos = FI.compute_mode_positions({})
+            assert.equals(9, pos.frontlight)
+            assert.equals(10, pos.mem_usage)
+            assert.equals(11, pos.wifi_status)
+        end)
+
+        it("mirrors a saved custom order, then completes with the rest", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            local pos = FI.compute_mode_positions({
+                order = { [0] = "off", [1] = "wifi_status", [2] = "page_progress", [3] = "battery" },
+            })
+            assert.equals(0, pos.off)
+            assert.equals(1, pos.wifi_status)
+            assert.equals(2, pos.page_progress)
+            assert.equals(3, pos.battery)
+            -- completion fills the remaining ungated items in MODE order
+            assert.equals(4, pos.pages_left_book)
+            assert.equals(5, pos.time)
+            assert.equals(10, pos.mem_usage)
+        end)
+
+        it("skips gated items listed in a custom order", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            local pos = FI.compute_mode_positions({
+                order = { [0] = "off", [1] = "wifi_status", [2] = "frontlight", [3] = "page_progress" },
+            })
+            assert.equals(1, pos.wifi_status)
+            -- frontlight is device-gated away; page_progress takes slot 2
+            assert.equals(2, pos.page_progress)
+            assert.is_nil(pos.frontlight)
+        end)
+
+        it("falls back to the K4 shape when no device module exists", function()
+            -- no package.preload["device"]: pcall(require) fails, the
+            -- frontlight family is assumed absent
+            local pos = FI.compute_mode_positions({})
+            assert.equals(10, pos.wifi_status)
+        end)
+
+        it("treats a device probe error as unavailable capability", function()
+            package.preload["device"] = function()
+                return {
+                    hasFastWifiStatusQuery = function()
+                        error("hal9000")
+                    end,
+                }
+            end
+            package.loaded["device"] = nil
+            local pos = FI.compute_mode_positions({})
+            assert.is_nil(pos.wifi_status)
+        end)
+    end)
+
     describe("apply_to_store (no live footer)", function()
         it("mutates an existing footer table in place without crowding it", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
             local fs = { wifi_status = false, all_at_once = false, page_progress = true }
             store.data.footer = fs
             assert.is_true(FI.apply_to_store(store, true))
@@ -267,12 +364,14 @@ describe("footer_indicator", function()
             -- compact design: all_at_once must never be flipped (7 items are
             -- enabled by default; showing them all crowds the 800px bar)
             assert.is_false(fs.all_at_once)
-            -- single-mode contract: the persisted mode points at the wifi item
-            assert.equals(11, store.data.reader_footer_mode)
+            -- single-mode contract: the persisted mode is the COMPUTED wifi
+            -- position (10 on a frontlight-less K4), not the MODE value 11
+            assert.equals(10, store.data.reader_footer_mode)
             assert.equals(1, store.flushed)
         end)
 
         it("seeds a complete table from KOReader defaults when missing", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
             assert.is_true(FI.apply_to_store(store, true))
             local fs = store.data.footer
             assert.is_table(fs)
@@ -281,13 +380,25 @@ describe("footer_indicator", function()
             -- completeness: non-target keys must survive, not be nil'ed
             assert.equals(true, fs.page_progress)
             assert.equals("icons", fs.item_prefix)
-            assert.equals(11, store.data.reader_footer_mode)
+            assert.equals(10, store.data.reader_footer_mode)
             assert.equals(1, store.flushed)
         end)
 
-        it("restores the persisted mode on disable only when it points at wifi", function()
+        it("persists the custom-order wifi position when an order exists", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            store.data.footer = {
+                wifi_status = false,
+                page_progress = true,
+                order = { [0] = "off", [1] = "wifi_status", [2] = "page_progress", [3] = "battery" },
+            }
             assert.is_true(FI.apply_to_store(store, true))
-            assert.equals(11, store.data.reader_footer_mode)
+            assert.equals(1, store.data.reader_footer_mode)
+        end)
+
+        it("restores the persisted mode on disable only when it points at wifi", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            assert.is_true(FI.apply_to_store(store, true))
+            assert.equals(10, store.data.reader_footer_mode)
             assert.is_true(FI.apply_to_store(store, false))
             assert.is_false(store.data.footer.wifi_status)
             assert.equals(1, store.data.reader_footer_mode)
@@ -299,6 +410,7 @@ describe("footer_indicator", function()
         end)
 
         it("returns false instead of writing a partial table when defaults are gone", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
             package.loaded["apps/reader/modules/readerfooter"] = nil
             package.preload["apps/reader/modules/readerfooter"] = function()
                 return nil

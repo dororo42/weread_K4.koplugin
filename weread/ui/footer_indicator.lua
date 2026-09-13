@@ -9,22 +9,114 @@
 -- v2026.07.1 getMinibarOption callback, L1117-1174), restricted to the
 -- wifi_status option. Branch order and refresh semantics are kept identical
 -- so the footer's margin/generator/mode state ends up exactly where the
--- native toggle would have left it.
+-- native toggle would have left it. Host methods are probed before use
+-- (v5.7 hardening): a KOReader build without one of the expected hooks
+-- degrades to a conservative fallback instead of erroring.
 --
 -- Semantics note: the native icon reflects NetworkMgr:isWifiOn() (radio/link
 -- state), not Internet reachability (NetworkMgr:isOnline() does a blocking
 -- DNS lookup and must stay off the UI loop -- see ui/common.lua).
 local logger = require("weread.lib.logger")
 
--- MODE indexes from readerfooter.lua v2026.07.1 (module-local there; only
--- needed for the no-live-footer store path -- the reader path always reads
--- footer.mode_list.wifi_status off the live instance). The plugin targets a
--- pinned KOReader build, so these are stable; a mismatch would at worst show
--- a different single item until the next toggle.
-local WIFI_MODE = 11
-local PAGE_PROGRESS_MODE = 1
+-- MODE declaration order in readerfooter.lua v2026.07.1 (module-local there).
+-- The persisted "reader_footer_mode" is a POSITION inside the footer's
+-- mode_index (0-based; mode_index[0] = "off"), NOT the MODE constant value:
+-- device-gated items are dropped before the index is built (readerfooter.lua
+-- L557-569), so on a frontlight-less Kindle 4 wifi_status lands at position
+-- 10 even though MODE.wifi_status == 11. Users who arranged status-bar items
+-- ("Arrange items") get their saved "footer.order" layout instead. Both
+-- shapes are mirrored by compute_mode_positions(); no constant can encode
+-- this, so the position is always computed (v5.7 fix for the FM store path:
+-- the previous hardcoded 11 pointed at "book_title" on K4, leaving the icon
+-- invisible after an enable from the file manager).
+local MODE_ORDER = {
+    "off", "page_progress", "pages_left_book", "time", "pages_left",
+    "battery", "percentage", "book_time_to_read", "chapter_time_to_read",
+    "frontlight", "mem_usage", "wifi_status", "book_title", "book_chapter",
+    "bookmark_count", "chapter_progress", "frontlight_warmth", "custom_text",
+    "book_author", "page_turning_inverted", "dynamic_filler", "additional_content",
+}
+
+-- Device gates mirroring readerfooter.lua init (v2026.07.1 L557-569): the
+-- item is removed from MODE when the device capability probe returns false.
+local DEVICE_GATES = {
+    wifi_status = "hasFastWifiStatusQuery",
+    frontlight = "hasFrontlight",
+    frontlight_warmth = "hasNaturalLight",
+    battery = "hasBattery",
+}
+
+-- The plugin target is a frontlight-less Kindle; without a live device
+-- abstraction (unit tests, exotic hosts) only the frontlight family is
+-- assumed absent.
+local DEFAULT_UNSUPPORTED = { frontlight = true, frontlight_warmth = true }
 
 local M = {}
+
+-- Probe a device capability the same way readerfooter gates its MODE table.
+-- Outside KOReader (tests / exotic embeds) the K4-shaped assumption set is
+-- used; inside KOReader a missing or erroring probe is treated as
+-- UNSUPPORTED so the FM path never persists a mode position for an item the
+-- native footer might not build.
+function M.device_supports(capability)
+    local ok, Device = pcall(require, "device")
+    if not ok or type(Device) ~= "table" then
+        return not DEFAULT_UNSUPPORTED[capability]
+    end
+    local probe = Device[capability]
+    if type(probe) ~= "function" then
+        return false
+    end
+    local ok_probe, supported = pcall(probe, Device)
+    if not ok_probe then
+        return false
+    end
+    return supported == true
+end
+
+-- Mirror readerfooter.lua's set_mode_index (v2026.07.1): a saved custom
+-- order ("footer.order", index 0 = "off", written by the SortWidget) is used
+-- verbatim for the items it lists; remaining known items follow in ascending
+-- MODE order. Device-gated items are dropped in both paths. Returns a
+-- name -> 0-based position map.
+function M.compute_mode_positions(footer_settings)
+    local known = {}
+    for _, name in ipairs(MODE_ORDER) do
+        known[name] = true
+    end
+    local order = type(footer_settings) == "table"
+        and type(footer_settings.order) == "table"
+        and footer_settings.order or nil
+
+    local positions = {}
+    local count = 0
+    local function add(name)
+        if not known[name] or positions[name] ~= nil then
+            return
+        end
+        local gate = DEVICE_GATES[name]
+        if gate and not M.device_supports(gate) then
+            return
+        end
+        positions[name] = count
+        count = count + 1
+    end
+
+    if order then
+        -- #order is used exactly like the official loop (the table is
+        -- 0-based; both run in the same Lua, so # behaves identically).
+        for i = 0, #order do
+            local name = order[i]
+            if type(name) == "string" then
+                add(name)
+            end
+        end
+    end
+    for _, name in ipairs(MODE_ORDER) do
+        add(name)
+    end
+    return positions
+end
 
 local function get_store()
     local store = _G.G_reader_settings
@@ -139,7 +231,13 @@ function M.apply_to_footer(footer, enabled)
     -- (reclaim_height is never touched here, so its native branch is omitted.)
 
     if footer.settings.all_at_once then
-        should_update = footer:updateFooterTextGenerator()
+        if type(footer.updateFooterTextGenerator) == "function" then
+            should_update = footer:updateFooterTextGenerator()
+        else
+            -- degraded host: the state above is already consistent, force
+            -- the repaint through the generic path below
+            should_update = true
+        end
     elseif (footer.mode_list and footer.mode_list.wifi_status == footer.mode
                 and footer.settings.wifi_status == false)
             or (prev_has_no_mode ~= footer.has_no_mode) then
@@ -180,7 +278,12 @@ function M.apply_to_footer(footer, enabled)
     end
 
     if should_update or should_signal then
-        footer:refreshFooter(should_update, should_signal)
+        if type(footer.refreshFooter) == "function" then
+            footer:refreshFooter(should_update, should_signal)
+        elseif type(footer.onUpdateFooter) == "function" then
+            -- degraded host: plain repaint, no margin signalling
+            footer:onUpdateFooter(should_update)
+        end
     end
     if footer.rescheduleFooterAutoRefreshIfNeeded then
         footer:rescheduleFooterAutoRefreshIfNeeded()
@@ -222,14 +325,26 @@ function M.apply_to_store(store, enabled)
     -- Mirror the reader-context contract for the single-mode (default) K4
     -- layout: enable points the persisted mode at the wifi item so the icon
     -- is actually visible on next book open; disable restores page progress
-    -- (only when the persisted mode is the one we set). all_at_once is never
-    -- touched: flipping it would crowd the whole status bar (v5.7 compact
-    -- design; 7 items enabled by default on an 800px screen).
+    -- (only when the persisted mode is the one we set). The position is
+    -- COMPUTED (device gates + optional custom order), never hardcoded: the
+    -- previous constant 11 is the MODE value, but reader_footer_mode is a
+    -- 0-based mode_index position, and on a frontlight-less K4 wifi_status
+    -- sits at position 10 -- hardcoded 11 silently selected "book_title"
+    -- instead of the icon (v5.7 fix). all_at_once is never touched: flipping
+    -- it would crowd the whole status bar (7 items enabled by default on the
+    -- 800px screen).
     if store.saveSetting then
+        local positions = M.compute_mode_positions(fs)
+        local wifi_pos = positions and positions.wifi_status or nil
         if enabled then
-            store:saveSetting("reader_footer_mode", WIFI_MODE)
-        elseif store:readSetting("reader_footer_mode") == WIFI_MODE then
-            store:saveSetting("reader_footer_mode", PAGE_PROGRESS_MODE)
+            if wifi_pos then
+                store:saveSetting("reader_footer_mode", wifi_pos)
+            else
+                logger.warn("wifi_status unavailable on this device; reader_footer_mode left unchanged")
+            end
+        elseif wifi_pos ~= nil
+                and store:readSetting("reader_footer_mode") == wifi_pos then
+            store:saveSetting("reader_footer_mode", positions.page_progress or 1)
         end
     end
     M.flush_store()
