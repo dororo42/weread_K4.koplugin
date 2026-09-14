@@ -80,18 +80,20 @@ end
 -- MODE order. Device-gated items are dropped in both paths. Returns a
 -- name -> 0-based position map.
 function M.compute_mode_positions(footer_settings)
-    local known = {}
-    for _, name in ipairs(MODE_ORDER) do
-        known[name] = true
-    end
     local order = type(footer_settings) == "table"
         and type(footer_settings.order) == "table"
         and footer_settings.order or nil
 
     local positions = {}
     local count = 0
+    -- A name absent from MODE_ORDER (e.g. a future KOReader footer mode our
+    -- static mirror has not caught up with) is still placed when it appears in
+    -- a saved custom order: such names carry no device gate, so they are always
+    -- included. This keeps the persisted reader_footer_mode self-consistent
+    -- instead of silently dropping the item under KOReader MODE reordering
+    -- (v5.7.x robustness fallback, audit item 3).
     local function add(name)
-        if not known[name] or positions[name] ~= nil then
+        if type(name) ~= "string" or positions[name] ~= nil then
             return
         end
         local gate = DEVICE_GATES[name]

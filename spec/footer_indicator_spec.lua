@@ -332,6 +332,17 @@ describe("footer_indicator", function()
             assert.is_nil(pos.frontlight)
         end)
 
+        it("appends an unknown mode from a custom order (audit item 3 fallback)", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            local pos = FI.compute_mode_positions({
+                order = { [0] = "off", [1] = "wifi_status", [2] = "some_future_mode" },
+            })
+            -- an unrecognised mode is not dropped; it takes the next slot,
+            -- ungated, so the persisted reader_footer_mode stays self-consistent
+            assert.equals(1, pos.wifi_status)
+            assert.equals(2, pos["some_future_mode"])
+        end)
+
         it("falls back to the K4 shape when no device module exists", function()
             -- no package.preload["device"]: pcall(require) fails, the
             -- frontlight family is assumed absent
