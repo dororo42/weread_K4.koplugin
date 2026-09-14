@@ -34,8 +34,11 @@ jobs:
         # Same compatibility sentinel as the runtime above: post-5.1 syntax
         # (\x/\z escapes, goto, integer division) must fail here, not on
         # device. luac ships with the same leafo/gh-actions-lua build.
+        # git ls-files = exactly the tracked sources (no .luarocks, no
+        # spec fixtures), one path per line; luac -p parses each file.
         run: |
-          find . -path ./.luarocks -prune -o -name '*.lua' -print0 | xargs -0 luac -p
+          git ls-files -z '*.lua' | xargs -0 luac -p
+          echo "luac -p OK for $(git ls-files '*.lua' | wc -l) files"
 
       - name: Unit tests (busted)
         run: busted spec
