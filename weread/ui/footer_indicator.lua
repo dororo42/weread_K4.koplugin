@@ -61,7 +61,15 @@ local M = {}
 function M.device_supports(capability)
     local ok, Device = pcall(require, "device")
     if not ok or type(Device) ~= "table" then
-        return not DEFAULT_UNSUPPORTED[capability]
+        -- K4 fallback (no device module): compute_mode_positions passes
+        -- CAPABILITY names (hasFrontlight etc.), but DEFAULT_UNSUPPORTED is
+        -- keyed by MODE names; translate before the lookup, otherwise the
+        -- frontlight family is misjudged as supported and never dropped
+        -- (v5.7.1 CI fix: busted "falls back to the K4 shape" 11 != 10).
+        local CAP_TO_MODE = { hasFrontlight = "frontlight", hasNaturalLight = "frontlight_warmth" }
+        local mode = CAP_TO_MODE[capability] or capability
+        local unsupported = DEFAULT_UNSUPPORTED[mode]
+        return not unsupported
     end
     local probe = Device[capability]
     if type(probe) ~= "function" then
