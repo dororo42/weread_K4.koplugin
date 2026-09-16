@@ -12,59 +12,53 @@
 -- B5: an HTTP 200 with an empty uid must be classified as a captive portal
 -- (official "doRequestUid got empty UID (captive portal?)" borrow), not the
 -- generic invalid-UID failure.
-package.preload["weread.lib.content"] = function()
-    return {}
-end
-package.preload["weread.lib.protocol"] = function()
-    -- real semantics: succ == true or tonumber(succ) == 1
-    return {
-        urlencode = function(v) return tostring(v) end,
-        is_success_response = function(result, field)
-            if type(result) ~= "table" then return false end
-            local value = result[field or "succ"]
-            return value == true or tonumber(value) == 1
-        end,
-    }
-end
-package.preload["weread.lib.i18n"] = function()
-    return { tr = function(text) return text end }
-end
-package.preload["ffi/util"] = function()
-    return { template = function(text) return text end }
-end
+--
+-- NOTE: busted runs all specs in ONE Lua state. Earlier specs may have
+-- loaded weread.lib.protocol / weread.lib.logger / datastorage with their
+-- own stubs into package.loaded, so our stubs must OVERWRITE package.loaded
+-- entries (preload alone only wins on first require).
+package.loaded["weread.lib.content"] = {}
+package.loaded["weread.lib.protocol"] = {
+    urlencode = function(v) return tostring(v) end,
+    is_success_response = function(result, field)
+        if type(result) ~= "table" then return false end
+        local value = result[field or "succ"]
+        return value == true or tonumber(value) == 1
+    end,
+}
+package.loaded["weread.lib.i18n"] = { tr = function(text) return text end }
+package.loaded["ffi/util"] = { template = function(text) return text end }
 -- KOReader runtime libs required by client.lua / qr_login.lua at load time.
-package.preload["ltn12"] = function()
-    return { source = {}, sink = {}, chain = {} }
-end
-package.preload["socketutil"] = function()
-    return { set_timeout = function() end, reset_timeout = function() end, table_sink = function() return function() end end }
-end
-package.preload["socket"] = function()
-    return { sleep = function() end }
-end
-package.preload["socket.http"] = function()
-    return { request = function() end }
-end
-package.preload["weread.lib.logger"] = function()
+package.loaded["ltn12"] = { source = {}, sink = {}, chain = {} }
+package.loaded["socketutil"] = {
+    set_timeout = function() end,
+    reset_timeout = function() end,
+    table_sink = function() return function() end end,
+}
+package.loaded["socket"] = { sleep = function() end }
+package.loaded["socket.http"] = { request = function() end }
+package.loaded["weread.lib.logger"] = (function()
     local nillog = { info = function() end, warn = function() end, err = function() end }
     nillog.scoped = function() return { info = function() end, warn = function() end, err = function() end } end
     return nillog
-end
-package.preload["datastorage"] = function()
-    return { getFullDataDir = function() return "/tmp/weread_test_data" end, getSettingsDir = function() return "/tmp/weread_test_settings" end }
-end
-package.preload["device"] = function()
-    return {}
-end
-package.preload["ui/widget/inputdialog"] = function()
-    return {}
-end
-package.preload["ui/widget/qrmessage"] = function()
-    return {}
-end
-package.preload["ui/uimanager"] = function()
-    return { close = function() end, show = function() end, scheduleIn = function() end }
-end
+end)()
+package.loaded["datastorage"] = {
+    getFullDataDir = function() return "/tmp/weread_test_data" end,
+    getSettingsDir = function() return "/tmp/weread_test_settings" end,
+}
+package.loaded["device"] = {}
+package.loaded["ui/widget/inputdialog"] = {}
+package.loaded["ui/widget/qrmessage"] = {}
+package.loaded["ui/uimanager"] = {
+    close = function() end, show = function() end, scheduleIn = function() end,
+}
+-- drop any cached copies of the modules under test so they reload against
+-- the stubs above
+package.loaded["weread.lib.client"] = nil
+package.loaded["weread.lib.qr_login"] = nil
+package.loaded["weread.lib.read_report"] = nil
+package.loaded["weread.lib.cookie"] = nil
+package.loaded["weread.lib.plugin_util"] = nil
 
 local Client = require("weread.lib.client")
 local QRLogin = require("weread.lib.qr_login")
