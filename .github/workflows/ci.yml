@@ -62,7 +62,12 @@ jobs:
           if grep -qE "Total: 0 warnings / 0 errors" luacheck_output.txt; then
             echo "LINT GREEN"
           else
-            # surface only the actionable lines into the step failure message
-            grep -E "spec/remarkable|Total:" luacheck_output.txt || true
+            # surface every finding as a workflow ::error:: annotation
+            grep -E "^[a-zA-Z0-9_./-]+\.lua:[0-9]+:[0-9]+:" luacheck_output.txt | while read -r line; do
+              echo "::error::$line"
+            done
+            grep -E "Total:" luacheck_output.txt | while read -r line; do
+              echo "::error::$line"
+            done
             exit 1
           fi
