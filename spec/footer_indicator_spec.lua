@@ -194,10 +194,12 @@ describe("footer_indicator", function()
             -- (10 on a frontlight-less K4), not the MODE value 11
             assert.equals(10, footer.mode)
             assert.equals(10, store.data.reader_footer_mode)
-            -- native bookkeeping first, then the coexist repaint
+            -- native bookkeeping first, then the coexist repaint; the Plan A
+            -- block ends applyFooterMode -> refreshFooter(true, true) and
+            -- does NOT reschedule again
             assert.equals("updateFooterTextGenerator", footer.calls[2])
-            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
-            assert.equals("reschedule", footer.calls[#footer.calls])
+            assert.equals("applyFooterMode", footer.calls[#footer.calls - 1])
+            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls])
         end)
 
         it("enables from a no-mode footer and restores a mode (signal path)", function()
@@ -274,8 +276,9 @@ describe("footer_indicator", function()
             assert.is_table(store.data.footer_pre_wifiicon_backup)
             assert.equals(10, footer.mode)
             assert.equals(10, store.data.reader_footer_mode)
-            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
-            assert.equals("reschedule", footer.calls[#footer.calls])
+            -- Plan A block tail: applyFooterMode -> refreshFooter(true, true)
+            assert.equals("applyFooterMode", footer.calls[#footer.calls - 1])
+            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls])
         end)
 
         it("keeps the legacy single-mode takeover when a snapshot is impossible", function()
@@ -300,7 +303,6 @@ describe("footer_indicator", function()
         end)
 
         it("restores the original item mix and mode on disable (round trip)", function()
-            local original = { wifi_status = false, all_at_once = false, page_progress = true, time = true }
             local footer = make_footer({
                 settings = {
                     wifi_status = false, all_at_once = false,
@@ -336,8 +338,9 @@ describe("footer_indicator", function()
             -- re-points the persisted mode at the computed position 10
             assert.equals(10, footer.mode)
             assert.equals(10, store.data.reader_footer_mode)
-            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
-            assert.equals("reschedule", footer.calls[#footer.calls])
+            -- Plan A block tail: applyFooterMode -> refreshFooter(true, true)
+            assert.equals("applyFooterMode", footer.calls[#footer.calls - 1])
+            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls])
         end)
 
         it("does not repaint when a disabled non-current single mode is toggled", function()
