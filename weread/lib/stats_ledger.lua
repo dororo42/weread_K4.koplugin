@@ -80,11 +80,11 @@ function M:add(book_id, seconds, ts)
     if seconds > MAX_DAY_SECONDS then
         seconds = MAX_DAY_SECONDS
     end
-    local ledgers = ledgers(self)
-    local entry = ledgers[book_id]
+    local table_ref = ledgers(self)
+    local entry = table_ref[book_id]
     if type(entry) ~= "table" then
         entry = {}
-        ledgers[book_id] = entry
+        table_ref[book_id] = entry
     end
     local key = day_key(ts)
     local day_total = (tonumber(entry[key]) or 0) + seconds
@@ -105,9 +105,9 @@ end
 
 -- Sum across all books (server-side totalReadTime comparison baseline).
 function M:total_all()
-    local ledgers = ledgers(self)
+    local table_ref = ledgers(self)
     local total = 0
-    for _book_id, entry in pairs(ledgers) do
+    for _book_id, entry in pairs(table_ref) do
         total = total + total_of(entry)
     end
     return total
@@ -115,9 +115,9 @@ end
 
 -- { book_id = { day = seconds, ... } } shallow copy for read-only consumers.
 function M:snapshot()
-    local ledgers = ledgers(self)
+    local table_ref = ledgers(self)
     local out = {}
-    for book_id, entry in pairs(ledgers) do
+    for book_id, entry in pairs(table_ref) do
         if type(entry) == "table" then
             local copy = {}
             for day, seconds in pairs(entry) do
@@ -136,9 +136,9 @@ end
 function M:total_between_keys(from_key, to_key)
     from_key = tostring(from_key or "")
     to_key = tostring(to_key or math.huge)
-    local ledgers = ledgers(self)
+    local table_ref = ledgers(self)
     local total = 0
-    for _book_id, entry in pairs(ledgers) do
+    for _book_id, entry in pairs(table_ref) do
         if type(entry) == "table" then
             for day, seconds in pairs(entry) do
                 if #day == 8 and day >= from_key and day <= to_key then
