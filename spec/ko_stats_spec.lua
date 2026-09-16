@@ -6,30 +6,34 @@ local KoStats = require("weread.lib.ko_stats")
 
 -- Build a stub SQLite connection mirroring KOReader's ffi/sqlite3 surface:
 -- conn:prepare(sql) -> stmt; stmt:reset() -> stmt; stmt:resultset("i") -> rows;
--- conn:close() recorded.
+-- conn:close() recorded. Dot-syntax functions with explicit params keep
+-- luacheck quiet about implicit-self shadowing in nested stubs.
 local function new_stub_conn(rows, opts)
     opts = opts or {}
-    local conn = { closed = 0, prepared_sql = nil }
-    function conn:prepare(sql)
-        self.prepared_sql = sql
-        if opts.prepare_error then
-            error(opts.prepare_error)
-        end
-        local stmt = {}
-        function stmt:reset() return self end
-        function stmt:close() end
-        function stmt:resultset(_mode)
-            if opts.result_error then
-                error(opts.result_error)
+    local state = { closed = 0, prepared_sql = nil }
+    local conn
+    conn = {
+        prepare = function(_c, sql)
+            state.prepared_sql = sql
+            if opts.prepare_error then
+                error(opts.prepare_error)
             end
-            return rows
-        end
-        return stmt
-    end
-    function conn:close()
-        self.closed = self.closed + 1
-    end
-    return conn
+            local stmt = {}
+            stmt.reset = function(s) return s end
+            stmt.close = function() end
+            stmt.resultset = function(_s, _mode)
+                if opts.result_error then
+                    error(opts.result_error)
+                end
+                return rows
+            end
+            return stmt
+        end,
+        close = function()
+            state.closed = state.closed + 1
+        end,
+    }
+    return conn, state
 end
 
 describe("ko_stats.snapshot (module)", function()
@@ -49,7 +53,7 @@ describe("ko_stats.snapshot (module)", function()
     end)
 
     it("returns nil and still closes the connection when the query fails", function()
-        local conn = new_stub_conn(nil, { prepare_error = "no such table: book" })
+        local conn, state = new_stub_conn(nil, { prepare_error = "no such table: book" })
         local opened
         local snap = KoStats.snapshot({
             open_db = function(path)
@@ -60,11 +64,11 @@ describe("ko_stats.snapshot (module)", function()
         })
         assert.is_nil(snap)
         assert.equals("/tmp/statistics.sqlite3", opened)
-        assert.equals(1, conn.closed)
+        assert.equals(1, state.closed)
     end)
 
     it("sums total_read_time across books on the happy path", function()
-        local conn = new_stub_conn({ { 7500 }, }, {})
+        local conn, state = new_stub_conn({ { 7500 }, }, {})
         local snap = KoStats.snapshot({
             open_db = function() return conn end,
             db_path = "/tmp/statistics.sqlite3",
@@ -72,7 +76,7 @@ describe("ko_stats.snapshot (module)", function()
         assert.is_table(snap)
         assert.equals(7500, snap.total)
         -- read-only contract: exactly one close, after the query.
-        assert.equals(1, conn.closed)
+        assert.equals(1, state.closed)
     end)
 
     it("returns nil when the sum is NULL (statistics db never populated)", function()
