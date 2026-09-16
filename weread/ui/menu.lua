@@ -250,19 +250,6 @@ function M:getSettingsMenuItems()
             end,
         },
         {
-            text = _("Network status icon in status bar"),
-            help_text = _("Show a small Wi-Fi status icon in the reading status bar. In the default single-item bar the icon takes the one footer slot (progress bar unaffected); page numbers come back when it is disabled."),
-            keep_menu_open = true,
-            check_callback_updates_menu = true,
-            checked_func = function()
-                return FooterIndicator.read_enabled(self.ui)
-            end,
-            callback = self:safeCallback(_("Network status icon in status bar"),
-                function(touchmenu_instance)
-                    self:toggleFooterWifiIndicator(touchmenu_instance)
-                end),
-        },
-        {
             text = _("Download settings"),
             sub_item_table_func = function()
                 return {
@@ -505,6 +492,24 @@ function M:getSettingsMenuItems()
                 },
             }
         end,
+    })
+
+    -- K4 v6.0 (user preference): the wifi footer toggle sits at rank 5 —
+    -- after Account management — so the settings list leads with the
+    -- read/download items for key-navigation efficiency. Labelled "wifi状态"
+    -- via i18n.
+    table.insert(items, {
+        text = _("Network status icon in status bar"),
+        help_text = _("Show a small Wi-Fi status icon in the reading status bar. In the default single-item bar the icon takes the one footer slot (progress bar unaffected); page numbers come back when it is disabled."),
+        keep_menu_open = true,
+        check_callback_updates_menu = true,
+        checked_func = function()
+            return FooterIndicator.read_enabled(self.ui)
+        end,
+        callback = self:safeCallback(_("Network status icon in status bar"),
+            function(touchmenu_instance)
+                self:toggleFooterWifiIndicator(touchmenu_instance)
+            end),
     })
 
     return items

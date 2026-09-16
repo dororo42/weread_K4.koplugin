@@ -32,7 +32,9 @@ local zh = {
     ["Download target chapter"] = "下载目标章节",
     ["Download settings"] = "下载设置",
     -- K4 fork v5.7: built-in footer wifi status icon toggle (Option B glue).
-    ["Network status icon in status bar"] = "状态栏联网状态图标",
+    -- K4 v6.0 (user preference): menu label shortened to "wifi状态"; the
+    -- English key stays descriptive and the help_text keeps its own string.
+    ["Network status icon in status bar"] = "wifi状态",
     ["Show a small Wi-Fi status icon in the reading status bar. In the default single-item bar the icon takes the one footer slot (progress bar unaffected); page numbers come back when it is disabled."] = "在阅读页底部状态栏显示 Wi-Fi 连接/断开小图标。默认单显模式下图标占用状态栏唯一显示位（进度条不受影响），关闭后自动恢复页码；如需页码与图标同时显示，可在 KOReader 状态栏设置中自行开启「全部同时显示」。",
     ["Status bar setting saved. It takes effect the next time a book is opened."] = "状态栏设置已保存，下次打开书籍时生效。",
     ["Unable to update the status bar setting."] = "无法更新状态栏设置。",
