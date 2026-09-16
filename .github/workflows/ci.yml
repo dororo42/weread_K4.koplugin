@@ -45,4 +45,16 @@ jobs:
 
       - name: Lint (luacheck)
         # Explicit whitelist: never lint vendored rocks or hidden dirs.
-        run: luacheck weread spec tools main.lua _meta.lua
+        # Findings are surfaced as ::error:: check annotations (readable
+        # without admin log access) and the gate still fails on warnings.
+        run: |
+          set -o pipefail
+          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt || true
+          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
+          if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
+            echo "LINT GREEN"
+          else
+            FINDINGS=$(grep -E "\.lua:[0-9]+:[0-9]+:" luacheck_clean.txt | head -n 15 | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g')
+            echo "::error::LINT FINDINGS: $FINDINGS"
+            exit 1
+          fi
