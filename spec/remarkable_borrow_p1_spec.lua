@@ -16,44 +16,83 @@
 -- NOTE: busted runs all specs in ONE Lua state. Earlier specs may have
 -- loaded weread.lib.protocol / weread.lib.logger / datastorage with their
 -- own stubs into package.loaded, so our stubs must OVERWRITE package.loaded
--- entries (preload alone only wins on first require).
-package.loaded["weread.lib.content"] = {}
-package.loaded["weread.lib.protocol"] = {
-    urlencode = function(v) return tostring(v) end,
-    is_success_response = function(result, field)
-        if type(result) ~= "table" then return false end
-        local value = result[field or "succ"]
-        return value == true or tonumber(value) == 1
-    end,
-}
-package.loaded["weread.lib.i18n"] = { tr = function(text) return text end }
-package.loaded["ffi/util"] = { template = function(text) return text end }
--- KOReader runtime libs required by client.lua / qr_login.lua at load time.
-package.loaded["ltn12"] = { source = {}, sink = {}, chain = {} }
-package.loaded["socketutil"] = {
-    set_timeout = function() end,
-    reset_timeout = function() end,
-    table_sink = function() return function() end end,
-}
-package.loaded["socket"] = { sleep = function() end }
-package.loaded["socket.http"] = { request = function() end }
-package.loaded["weread.lib.logger"] = (function()
+-- entries (preload alone only wins on first require). The same factories
+-- are ALSO registered in package.preload so the reload below can re-derive
+-- them after other specs' teardowns.
+local function preload_stub(name, factory)
+    package.preload[name] = factory
+    package.loaded[name] = factory()
+end
+preload_stub("weread.lib.content", function() return {} end)
+preload_stub("weread.lib.protocol", function()
+    return {
+        urlencode = function(v) return tostring(v) end,
+        is_success_response = function(result, field)
+            if type(result) ~= "table" then return false end
+            local value = result[field or "succ"]
+            return value == true or tonumber(value) == 1
+        end,
+    }
+end)
+preload_stub("weread.lib.i18n", function() return { tr = function(text) return text end } end)
+preload_stub("ffi/util", function() return { template = function(text) return text end } end)
+preload_stub("ltn12", function() return { source = {}, sink = {}, chain = {} } end)
+preload_stub("socketutil", function()
+    return {
+        set_timeout = function() end,
+        reset_timeout = function() end,
+        table_sink = function() return function() end end,
+    }
+end)
+preload_stub("socket", function() return { sleep = function() end } end)
+preload_stub("socket.http", function() return { request = function() end } end)
+preload_stub("weread.lib.logger", function()
     local nillog = { info = function() end, warn = function() end, err = function() end }
     nillog.scoped = function() return { info = function() end, warn = function() end, err = function() end } end
     return nillog
-end)()
-package.loaded["datastorage"] = {
-    getFullDataDir = function() return "/tmp/weread_test_data" end,
-    getSettingsDir = function() return "/tmp/weread_test_settings" end,
-}
-package.loaded["device"] = {}
-package.loaded["ui/widget/inputdialog"] = {}
-package.loaded["ui/widget/qrmessage"] = {}
-package.loaded["ui/uimanager"] = {
-    close = function() end, show = function() end, scheduleIn = function() end,
-}
--- drop any cached copies of the modules under test so they reload against
+end)
+preload_stub("datastorage", function()
+    return {
+        getFullDataDir = function() return "/tmp/weread_test_data" end,
+        getSettingsDir = function() return "/tmp/weread_test_settings" end,
+    }
+end)
+-- qr_login captures this exact table at require time (local DataStorage =
+-- require(...)); keep the reference so tests can neutralize the fallback on
+-- the SAME instance instead of swapping in a fresh unreachable table.
+local __DS_STUB = package.loaded["datastorage"]
+preload_stub("device", function() return {} end)
+preload_stub("ui/widget/inputdialog", function() return {} end)
+preload_stub("ui/widget/qrmessage", function() return {} end)
+preload_stub("ui/uimanager", function()
+    return { close = function() end, show = function() end, scheduleIn = function() end }
+end)
+-- drop cached copies of the modules under test so they reload against
 -- the stubs above
+package.loaded["weread.lib.client"] = nil
+package.loaded["weread.lib.qr_login"] = nil
+package.loaded["weread.lib.read_report"] = nil
+package.loaded["weread.lib.cookie"] = nil
+package.loaded["weread.lib.plugin_util"] = nil
+
+-- busted runs all specs in ONE process: remember which entries this spec
+-- created so teardown can restore whatever an earlier spec had. We do NOT
+-- nil them here: requires below must resolve to THESE instances (qr_login
+-- captures the datastorage table at require time; re-running the preload
+-- factory would create a second instance the test could not reach).
+local __SAVED_LOADED = {}
+for _, name in ipairs({
+    "weread.lib.content", "weread.lib.protocol", "weread.lib.i18n",
+    "ffi/util", "ltn12", "socketutil", "socket", "socket.http",
+    "weread.lib.logger", "datastorage", "device",
+    "ui/widget/inputdialog", "ui/widget/qrmessage", "ui/uimanager",
+    "weread.lib.client", "weread.lib.qr_login", "weread.lib.read_report",
+    "weread.lib.cookie", "weread.lib.plugin_util",
+}) do
+    __SAVED_LOADED[name] = package.loaded[name]
+end
+-- modules under test must reload against our stubs (they may carry stale
+-- copies from earlier specs); preload factories stay registered
 package.loaded["weread.lib.client"] = nil
 package.loaded["weread.lib.qr_login"] = nil
 package.loaded["weread.lib.read_report"] = nil
@@ -82,6 +121,11 @@ local function new_client(overrides)
 end
 
 describe("B2 client.renew_cookie classification (reMarkable borrow)", function()
+    teardown(function()
+        for name, mod in pairs(__SAVED_LOADED) do
+            package.loaded[name] = mod
+        end
+    end)
     it("classifies succ=1 as replaced and persists cookies", function()
         local persisted = nil
         local client = new_client(function(c)
@@ -311,14 +355,16 @@ describe("B4 QRLogin device identity (reMarkable borrow, K4-scoped)", function()
         end
     end)
 
-    it("returns nil when no data dir is available (nil-safe)", function()
-        -- qr_login captured the stub table at require time; mutate it in
-        -- place so the helper cannot resolve a data dir
-        local ds = package.loaded["datastorage"]
-        local old_get = ds.getFullDataDir
-        ds.getFullDataDir = nil
+    it("returns nil when the resolved data dir is empty (nil-safe)", function()
+        -- Pure-logic branch: an empty settings table with no DataStorage
+        -- fallback resolves to the bare suffix, and get_device_identity must
+        -- return nil instead of touching the filesystem root. qr_login holds
+        -- the module instance captured at require time (__DS_STUB), so
+        -- neutralize THAT table.
+        local old_get = __DS_STUB.getFullDataDir
+        __DS_STUB.getFullDataDir = nil
         local identity = QRLogin.get_device_identity({})
-        ds.getFullDataDir = old_get
+        __DS_STUB.getFullDataDir = old_get
         assert.is_nil(identity)
     end)
 end)
