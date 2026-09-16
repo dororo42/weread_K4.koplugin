@@ -436,7 +436,7 @@ function ReadStatsView:buildLedgerCard()
     if type(ledger) ~= "table" or type(ledger.total) ~= "number" then
         return nil
     end
-    local d, f = self.data, self.fonts
+    local f = self.fonts
     local content = VerticalGroup:new{ align = "left", self:widthPin() }
     table.insert(content, self:cardTitle(_("Local reading ledger")))
 
