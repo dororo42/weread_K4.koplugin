@@ -46,7 +46,7 @@ jobs:
       - name: Lint (luacheck)
         run: |
           set -o pipefail
-          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt
+          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt || true
           sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
           if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
             echo "LINT GREEN"
