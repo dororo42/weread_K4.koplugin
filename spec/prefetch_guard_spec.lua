@@ -23,9 +23,14 @@ local __SPEC_STUB_NAMES = {
     "weread.lib.i18n", "weread.lib.plugin_util", "weread.lib.protocol",
     "ffi/xml", "util", "ui/widget/container/widgetcontainer",
 }
+-- Remember BOTH caches: busted collects every spec file's top-level code in
+-- ONE Lua state before running any test, so leaving our stubs (or our
+-- module-less holes) in package.preload/loaded would leak into the specs
+-- that run after this one (e.g. an empty "device" table silently gates
+-- wifi_status away in footer_indicator_spec).
 local __PREEXISTING = {}
 for _, name in ipairs(__SPEC_STUB_NAMES) do
-    __PREEXISTING[name] = package.loaded[name]
+    __PREEXISTING[name] = { loaded = package.loaded[name], preload = package.preload[name] }
 end
 local function preload_stub(name, factory)
     package.preload[name] = factory
@@ -77,8 +82,17 @@ package.loaded["weread.lib.downloader"] = nil
 
 local function __CLEAR()
     package.loaded["weread.lib.downloader"] = nil
-    for name, mod in pairs(__PREEXISTING) do
-        if mod ~= nil then package.loaded[name] = mod end
+    for name, saved in pairs(__PREEXISTING) do
+        if saved.loaded ~= nil then
+            package.loaded[name] = saved.loaded
+        else
+            package.loaded[name] = nil
+        end
+        if saved.preload ~= nil then
+            package.preload[name] = saved.preload
+        else
+            package.preload[name] = nil
+        end
     end
 end
 

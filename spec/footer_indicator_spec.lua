@@ -44,6 +44,22 @@ describe("footer_indicator", function()
             end,
         }
         _G.G_reader_settings = store
+        -- Default to the K4 device shape for every test: busted collects all
+        -- spec files in one Lua state first, so other files' top-level
+        -- "device" stubs may already be cached here. Depending on "no device
+        -- module" would make device_supports() see an empty table and gate
+        -- wifi_status away, flipping every position assertion. Tests that
+        -- need a different shape (or the moduleless fallback) override or
+        -- clear this stub explicitly.
+        package.preload["device"] = function()
+            return {
+                hasFastWifiStatusQuery = function() return true end,
+                hasBattery = function() return true end,
+                hasFrontlight = function() return false end,
+                hasNaturalLight = function() return false end,
+            }
+        end
+        package.loaded["device"] = nil
     end)
 
     after_each(function()
@@ -400,6 +416,10 @@ describe("footer_indicator", function()
         end)
 
         it("falls back to the K4 shape when no device module exists", function()
+            -- explicitly drop the default stub from before_each: the module
+            -- must be ABSENT for this fallback path
+            package.preload["device"] = nil
+            package.loaded["device"] = nil
             -- no package.preload["device"]: pcall(require) fails, the
             -- frontlight family is assumed absent
             local pos = FI.compute_mode_positions({})
