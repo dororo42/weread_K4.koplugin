@@ -165,14 +165,22 @@ describe("footer_indicator", function()
             assert.is_false(FI.apply_to_footer({}, true))
         end)
 
-        it("enables and refreshes in all_at_once mode", function()
+        it("enables with the coexist collapse and a pre-state snapshot", function()
             local footer = make_footer()
             assert.is_true(FI.apply_to_footer(footer, true))
             assert.is_true(footer.settings.wifi_status)
-            assert.equals("set_has_no_mode", footer.calls[1])
-            assert.is_true(#footer.calls >= 4)
+            -- Plan A coexist: page progress survives next to the icon, and
+            -- the user's pre-A item mix rides out in the backup key
+            assert.is_true(footer.settings.all_at_once)
+            assert.is_true(footer.settings.page_progress)
+            assert.is_table(store.data.footer_pre_wifiicon_backup)
+            -- the persisted mode points at the COMPUTED wifi position
+            -- (10 on a frontlight-less K4), not the MODE value 11
+            assert.equals(10, footer.mode)
+            assert.equals(10, store.data.reader_footer_mode)
+            -- native bookkeeping first, then the coexist repaint
             assert.equals("updateFooterTextGenerator", footer.calls[2])
-            assert.equals("refreshFooter:true:false", footer.calls[3])
+            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
             assert.equals("reschedule", footer.calls[#footer.calls])
         end)
 
@@ -184,15 +192,17 @@ describe("footer_indicator", function()
             })
             assert.is_true(FI.apply_to_footer(footer, true))
             assert.is_false(footer.has_no_mode)
-            assert.equals(1, footer.mode)
+            -- transition branch restores a displayable mode first, then the
+            -- coexist takeover re-points it at the computed wifi position
+            assert.equals(10, footer.mode)
             assert.is_true(footer.settings.wifi_status)
+            assert.is_table(store.data.footer_pre_wifiicon_backup)
             -- native order: set_has_no_mode, applyFooterMode + persist,
             -- updateFooterTextGenerator, refreshFooter(true, true), reschedule
             assert.equals("applyFooterMode", footer.calls[2])
             assert.equals("updateFooterTextGenerator", footer.calls[3])
             assert.equals("refreshFooter:true:true", footer.calls[4])
-            assert.equals("reschedule", footer.calls[5])
-            assert.equals(1, store.data.reader_footer_mode)
+            assert.equals(10, store.data.reader_footer_mode)
         end)
 
         it("collapses the footer when the last enabled item is disabled", function()
@@ -235,20 +245,66 @@ describe("footer_indicator", function()
             assert.equals("refreshFooter:true:false", footer.calls[#footer.calls - 1])
         end)
 
-        it("takes over the single footer slot on enable (compact design)", function()
+        it("collapses a single-mode footer to coexist (Plan A replaces the takeover)", function()
             local footer = make_footer({
                 settings = { wifi_status = false, all_at_once = false, page_progress = true },
                 mode = 1,
             })
             assert.is_true(FI.apply_to_footer(footer, true))
             assert.is_true(footer.settings.wifi_status)
-            -- K4 non-touch cannot cycle single modes; the icon must become
-            -- the displayed item itself, not an unreachable rotation entry
-            assert.equals(11, footer.mode)
-            assert.equals("applyFooterMode", footer.calls[2])
-            assert.equals(11, store.data.reader_footer_mode)
-            assert.equals("refreshFooter:true:false", footer.calls[#footer.calls - 1])
+            -- the v5.7 single-slot pass runs first (non-touch K4 cannot cycle),
+            -- then Plan A re-points the persisted mode at the computed spot
+            assert.is_true(footer.settings.all_at_once)
+            assert.is_table(store.data.footer_pre_wifiicon_backup)
+            assert.equals(10, footer.mode)
+            assert.equals(10, store.data.reader_footer_mode)
+            assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
             assert.equals("reschedule", footer.calls[#footer.calls])
+        end)
+
+        it("keeps the legacy single-mode takeover when a snapshot is impossible", function()
+            -- a store without saveSetting cannot hold a backup: collapsing
+            -- would be lossy, so the v5.7 single-mode contract must run
+            _G.G_reader_settings = {
+                data = {},
+                readSetting = function(self, key, default)
+                    local value = self.data[key]
+                    if value == nil then return default end
+                    return value
+                end,
+            }
+            local footer = make_footer({
+                settings = { wifi_status = false, all_at_once = false, page_progress = true },
+                mode = 1,
+            })
+            assert.is_true(FI.apply_to_footer(footer, true))
+            assert.is_false(footer.settings.all_at_once)
+            assert.equals(11, footer.mode)
+            assert.is_nil(store.data.footer_pre_wifiicon_backup)
+        end)
+
+        it("restores the original item mix and mode on disable (round trip)", function()
+            local original = { wifi_status = false, all_at_once = false, page_progress = true, time = true }
+            local footer = make_footer({
+                settings = {
+                    wifi_status = false, all_at_once = false,
+                    page_progress = true, time = true,
+                },
+                mode = 1,
+            })
+            store.data.footer = { wifi_status = false, all_at_once = false, page_progress = true, time = true }
+            assert.is_true(FI.apply_to_footer(footer, true))
+            assert.is_true(footer.settings.all_at_once) -- collapsed
+            assert.is_true(FI.apply_to_footer(footer, false))
+            -- verbatim restore on the live footer settings table
+            assert.is_false(footer.settings.wifi_status)
+            assert.is_false(footer.settings.all_at_once)
+            assert.is_true(footer.settings.time)
+            -- the mode pointer left the coexist wifi position
+            assert.equals(1, footer.mode)
+            -- backup consumed, store back to the pre-A table
+            assert.is_nil(store.data.footer_pre_wifiicon_backup)
+            assert.is_true(store.data.footer.time)
         end)
 
         it("enables from a no-mode footer in single mode via the transition branch", function()
@@ -260,10 +316,10 @@ describe("footer_indicator", function()
             assert.is_true(FI.apply_to_footer(footer, true))
             assert.is_false(footer.has_no_mode)
             -- wifi is the only enabled item, so the native first-enabled
-            -- restore lands on it (mode 11) with the signal path
-            assert.equals(11, footer.mode)
-            assert.equals("applyFooterMode", footer.calls[2])
-            assert.equals(11, store.data.reader_footer_mode)
+            -- restore lands on it (mode 11) before the coexist collapse
+            -- re-points the persisted mode at the computed position 10
+            assert.equals(10, footer.mode)
+            assert.equals(10, store.data.reader_footer_mode)
             assert.equals("refreshFooter:true:true", footer.calls[#footer.calls - 1])
             assert.equals("reschedule", footer.calls[#footer.calls])
         end)
@@ -365,34 +421,59 @@ describe("footer_indicator", function()
     end)
 
     describe("apply_to_store (no live footer)", function()
-        it("mutates an existing footer table in place without crowding it", function()
+        it("snapshots the pre-state and collapses to coexist items", function()
             stub_device({ wifi = true, battery = true, frontlight = false })
             local fs = { wifi_status = false, all_at_once = false, page_progress = true }
             store.data.footer = fs
             assert.is_true(FI.apply_to_store(store, true))
             assert.equals(fs, store.data.footer)
             assert.is_true(fs.wifi_status)
-            -- compact design: all_at_once must never be flipped (7 items are
-            -- enabled by default; showing them all crowds the 800px bar)
-            assert.is_false(fs.all_at_once)
+            -- Plan A coexist: all_at_once flips ON and the bar collapses to
+            -- page progress + icon (the v5.7 no-flip rule is superseded)
+            assert.is_true(fs.all_at_once)
+            -- the pre-A table rides out in the backup key
+            local backup = store.data.footer_pre_wifiicon_backup
+            assert.is_table(backup)
+            assert.is_false(backup.all_at_once)
             -- single-mode contract: the persisted mode is the COMPUTED wifi
             -- position (10 on a frontlight-less K4), not the MODE value 11
             assert.equals(10, store.data.reader_footer_mode)
             assert.equals(1, store.flushed)
         end)
 
-        it("seeds a complete table from KOReader defaults when missing", function()
+        it("seeds a complete table from KOReader defaults and backs it up", function()
             stub_device({ wifi = true, battery = true, frontlight = false })
             assert.is_true(FI.apply_to_store(store, true))
             local fs = store.data.footer
             assert.is_table(fs)
             assert.is_true(fs.wifi_status)
-            assert.is_false(fs.all_at_once)
-            -- completeness: non-target keys must survive, not be nil'ed
-            assert.equals(true, fs.page_progress)
+            assert.is_true(fs.all_at_once)
+            -- collapse evidence: default-on items are forced off, non-boolean
+            -- keys survive untouched
+            assert.is_false(fs.time)
             assert.equals("icons", fs.item_prefix)
+            -- the seeded defaults were persisted BEFORE the collapse, so the
+            -- backup holds them verbatim (restore guarantee for fresh users)
+            local backup = store.data.footer_pre_wifiicon_backup
+            assert.is_table(backup)
+            assert.is_false(backup.all_at_once)
+            assert.is_true(backup.time)
             assert.equals(10, store.data.reader_footer_mode)
             assert.equals(1, store.flushed)
+        end)
+
+        it("round-trips a seeded store: disable restores the KOReader defaults", function()
+            stub_device({ wifi = true, battery = true, frontlight = false })
+            assert.is_true(FI.apply_to_store(store, true))
+            assert.is_true(store.data.footer.all_at_once)
+            assert.is_true(FI.apply_to_store(store, false))
+            local fs = store.data.footer
+            assert.is_false(fs.wifi_status)
+            -- defaults came back, not the collapsed set
+            assert.is_false(fs.all_at_once)
+            assert.is_true(fs.time)
+            assert.equals(true, fs.page_progress)
+            assert.is_nil(store.data.footer_pre_wifiicon_backup)
         end)
 
         it("persists the custom-order wifi position when an order exists", function()

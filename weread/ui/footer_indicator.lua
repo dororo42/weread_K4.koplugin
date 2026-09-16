@@ -196,6 +196,73 @@ function M.flush_store()
     end
 end
 
+-- Backup key for the coexist mode (Plan A): the user's full footer settings
+-- table is snapshotted before we mutate items/all_at_once, and restored
+-- verbatim on disable. Stored under the global settings store, not the
+-- per-book one; deleted when no longer needed.
+local BACKUP_KEY = "footer_pre_wifiicon_backup"
+
+-- Items kept visible alongside the wifi icon in coexist mode. The K4 800px
+-- bar cannot fit the full default set, so Plan A collapses to essentials;
+-- battery/time are opt-in via COEXIST_EXTRA_ITEMS.
+local COEXIST_KEEP = { page_progress = true, wifi_status = true }
+local COEXIST_EXTRA_ITEMS = {}
+
+local function is_backup(store)
+    local t = store and store.readSetting and store:readSetting(BACKUP_KEY)
+    return type(t) == "table"
+end
+
+local function backup_footer_settings(store)
+    -- nil/malformed store (bare embeds, exotic hosts): no snapshot possible;
+    -- callers must treat "false" as "collapse is FORBIDDEN" so the v5.7
+    -- single-mode contract stays the safe fallback.
+    if type(store) ~= "table" or type(store.readSetting) ~= "function"
+            or type(store.saveSetting) ~= "function" then
+        return false
+    end
+    if is_backup(store) then
+        return false
+    end
+    local fs = store:readSetting("footer")
+    if type(fs) ~= "table" then
+        return false
+    end
+    store:saveSetting(BACKUP_KEY, M.deep_copy(fs))
+    return true
+end
+
+local function restore_footer_settings(store)
+    local backup = store:readSetting(BACKUP_KEY)
+    if type(backup) ~= "table" then
+        return false
+    end
+    store:saveSetting("footer", M.deep_copy(backup))
+    store:saveSetting(BACKUP_KEY, nil)
+    return true
+end
+
+-- Collapse an all_at_once item set down to the coexist essentials
+-- (page_progress + wifi_status + opted-in extras). Returns a mutated copy.
+-- MUST only be called after backup_footer_settings() returned true: a
+-- collapse without a snapshot is unrecoverable for the user's item mix.
+local function apply_coexist_items(fs)
+    for key, _ in pairs(fs) do
+        if COEXIST_KEEP[key] then
+            fs[key] = true
+        elseif type(fs[key]) == "boolean" then
+            fs[key] = false
+        end
+    end
+    fs.page_progress = true
+    fs.wifi_status = true
+    fs.all_at_once = true
+    for _, name in ipairs(COEXIST_EXTRA_ITEMS) do
+        fs[name] = true
+    end
+    return fs
+end
+
 -- Apply wifi_status on a live footer and run the native refresh bookkeeping.
 -- Returns true when the footer was touched.
 function M.apply_to_footer(footer, enabled)
@@ -203,6 +270,47 @@ function M.apply_to_footer(footer, enabled)
         return false
     end
     enabled = enabled == true
+    local plan_a_backup = false
+    -- Plan A coexist: on enable, snapshot once so disable can restore the
+    -- user's original item mix verbatim. The live footer.settings IS the
+    -- persisted "footer" table (KOReader mirrors it), but a user who never
+    -- touched the status bar has no "footer" key in the store: persist the
+    -- pre-state FIRST, then snapshot it -- collapsing an un-captured state
+    -- is forbidden (restore guarantee). No snapshot possible (bare store)?
+    -- plan_a_backup stays false and the v5.7 single-mode contract below
+    -- runs unchanged. On disable, restore the snapshot before the native
+    -- bookkeeping so it sees the user's original item mix.
+    if enabled then
+        if not is_backup(_G.G_reader_settings) then
+            local store = get_store()
+            local persisted = store and store:readSetting("footer") or nil
+            if store and type(store.saveSetting) == "function"
+                    and type(persisted) ~= "table" then
+                store:saveSetting("footer", M.deep_copy(footer.settings))
+            end
+            plan_a_backup = backup_footer_settings(store)
+        end
+    elseif is_backup(_G.G_reader_settings) then
+        restore_footer_settings(_G.G_reader_settings)
+        local restored = _G.G_reader_settings:readSetting("footer")
+        if type(restored) == "table" then
+            for key, value in pairs(restored) do
+                footer.settings[key] = type(value) == "table" and M.deep_copy(value) or value
+            end
+            -- The mode pointer may still sit on the coexist wifi position
+            -- set at enable time; the restored mix has wifi off, so re-point
+            -- it at page progress (the v5.7 disable contract) before the
+            -- native bookkeeping below renders with the restored table.
+            if not footer.settings.all_at_once then
+                local positions = M.compute_mode_positions(footer.settings)
+                local page_pos = positions and positions.page_progress
+                if page_pos and footer.applyFooterMode then
+                    footer:applyFooterMode(page_pos)
+                    M.save_reader_footer_mode(page_pos)
+                end
+            end
+        end
+    end
     footer.settings.wifi_status = enabled
 
     local should_signal = false
@@ -298,6 +406,27 @@ function M.apply_to_footer(footer, enabled)
     if footer.rescheduleFooterAutoRefreshIfNeeded then
         footer:rescheduleFooterAutoRefreshIfNeeded()
     end
+    if enabled and plan_a_backup then
+        -- Coexist now: collapse the item set to page progress + the icon (plus
+        -- opted-in extras) and switch to all_at_once, so page numbers survive.
+        apply_coexist_items(footer.settings)
+        if type(footer.updateFooterTextGenerator) == "function" then
+            footer:updateFooterTextGenerator()
+        end
+        local positions = M.compute_mode_positions(footer.settings)
+        local wifi_pos = positions and positions.wifi_status
+        if wifi_pos then
+            if footer.applyFooterMode then
+                footer:applyFooterMode(wifi_pos)
+            else
+                footer.mode = wifi_pos
+            end
+            M.save_reader_footer_mode(wifi_pos)
+        end
+        if type(footer.refreshFooter) == "function" then
+            footer:refreshFooter(true, true)
+        end
+    end
     M.flush_store()
     return true
 end
@@ -330,19 +459,42 @@ function M.apply_to_store(store, enabled)
         end
         fs = M.deep_copy(defaults)
     end
+    -- Plan A coexist on the store path (file manager / next-book-open):
+    -- snapshot once, collapse to page progress + icon; restore verbatim on
+    -- disable. fs may be a fresh seed table (KOReader defaults) that exists
+    -- nowhere yet: persist the PRE-state first, snapshot it, and only then
+    -- collapse -- otherwise a disable could never bring the user's items
+    -- back. A failed snapshot keeps the legacy single-mode contract (no
+    -- collapse), so enable is never a lossy operation.
+    if enabled then
+        if not is_backup(store) then
+            store:saveSetting("footer", M.deep_copy(fs))
+        end
+        if backup_footer_settings(store) then
+            apply_coexist_items(fs)
+        end
+    elseif is_backup(store) then
+        restore_footer_settings(store)
+        fs = store:readSetting("footer")
+        if type(fs) ~= "table" then
+            fs = {}
+        end
+    end
     fs.wifi_status = enabled
     store:saveSetting("footer", fs)
-    -- Mirror the reader-context contract for the single-mode (default) K4
-    -- layout: enable points the persisted mode at the wifi item so the icon
-    -- is actually visible on next book open; disable restores page progress
-    -- (only when the persisted mode is the one we set). The position is
-    -- COMPUTED (device gates + optional custom order), never hardcoded: the
+    -- Mirror the reader-context contract for the coexist layout (Plan A):
+    -- enable points the persisted mode at the wifi item so the icon shows up
+    -- next to page progress on next book open; disable restores the mode
+    -- only when it points at wifi (a mode the user set himself is kept).
+    -- all_at_once IS flipped now (Plan A coexist, see above) -- the v5.7
+    -- "never touch all_at_once" rule was superseded: the collapse keeps the
+    -- bar at page_progress + icon, and the pre-A item mix rides out in the
+    -- backup key. The position is COMPUTED (device gates + optional custom
+    -- order), never hardcoded: the
     -- previous constant 11 is the MODE value, but reader_footer_mode is a
     -- 0-based mode_index position, and on a frontlight-less K4 wifi_status
     -- sits at position 10 -- hardcoded 11 silently selected "book_title"
-    -- instead of the icon (v5.7 fix). all_at_once is never touched: flipping
-    -- it would crowd the whole status bar (7 items enabled by default on the
-    -- 800px screen).
+    -- instead of the icon (v5.7 fix).
     if store.saveSetting then
         local positions = M.compute_mode_positions(fs)
         local wifi_pos = positions and positions.wifi_status or nil
