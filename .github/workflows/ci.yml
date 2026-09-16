@@ -51,8 +51,8 @@ jobs:
           if grep -qE "0 warnings / 0 errors" luacheck_clean.txt; then
             echo "LINT GREEN"
           else
-            head -n 40 luacheck_clean.txt | while read -r line; do
-              echo "::error::$line"
-            done
+            # one single annotation with the whole output, newlines escaped
+            PAYLOAD=$(sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g' luacheck_clean.txt | head -c 3500)
+            echo "::error::LINT RED: $PAYLOAD"
             exit 1
           fi
