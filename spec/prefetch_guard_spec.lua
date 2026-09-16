@@ -189,7 +189,7 @@ describe("B13 prefetch failure guard (reMarkable borrow)", function()
         -- A fresh prefetch must NOT be suppressed; the guard resets the
         -- streak and start() proceeds into the state machine (which errors
         -- under these stubs -- that is fine, the guard already passed).
-        local reported, reason
+        local reason
         pcall(function()
             dl:start(
                 { book_id = "B1", title = "Book" },
@@ -197,8 +197,7 @@ describe("B13 prefetch failure guard (reMarkable borrow)", function()
                 "chapter",
                 {
                     prefetch = true,
-                    on_complete = function(ok, value)
-                        reported = ok
+                    on_complete = function(_ok, value)
                         reason = value
                     end,
                 })
