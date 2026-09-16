@@ -49,12 +49,12 @@ end
 
 local function ledgers(self)
     local cfg = read_config(self)
-    local ledgers = cfg.ledgers
-    if type(ledgers) ~= "table" then
-        ledgers = {}
-        cfg.ledgers = ledgers
+    local table_ref = cfg.ledgers
+    if type(table_ref) ~= "table" then
+        table_ref = {}
+        cfg.ledgers = table_ref
     end
-    return ledgers
+    return table_ref
 end
 
 local function total_of(entry)
