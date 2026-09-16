@@ -43,16 +43,16 @@ local function day_key(ts)
 end
 M.day_key = day_key
 
-local function config(self)
+local function read_config(self)
     return self.settings:get("read_report") or {}
 end
 
 local function ledgers(self)
-    local config = config(self)
-    local ledgers = config.ledgers
+    local cfg = read_config(self)
+    local ledgers = cfg.ledgers
     if type(ledgers) ~= "table" then
         ledgers = {}
-        config.ledgers = ledgers
+        cfg.ledgers = ledgers
     end
     return ledgers
 end
@@ -183,7 +183,7 @@ end
 
 function M:flush_now()
     self._flush_pending = false
-    self.settings:set("read_report", config(self))
+    self.settings:set("read_report", read_config(self))
     self.settings:flush()
 end
 

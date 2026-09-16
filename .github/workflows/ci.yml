@@ -44,22 +44,5 @@ jobs:
         run: busted spec
 
       - name: Lint (luacheck)
-        run: |
-          set -o pipefail
-          luacheck --version
-          echo "=== project config ==="
-          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt || true
-          echo "=== no config ==="
-          luacheck --no-config weread spec tools main.lua _meta.lua | tee luacheck_noconfig.txt || true
-          echo "=== spec only (project config) ==="
-          luacheck spec | tee luacheck_spec.txt || true
-          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
-          if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
-            echo "LINT GREEN"
-            exit 0
-          fi
-          # ONE packed annotation: only finding lines (path:line:col) from
-          # the project-config run, newline-escaped
-          FINDINGS=$(grep -E "\.lua:[0-9]+:[0-9]+:" luacheck_clean.txt | sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" | head -n 15 | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g')
-          echo "::error::FINDINGS: $FINDINGS"
-          exit 1
+        # Explicit whitelist: never lint vendored rocks or hidden dirs.
+        run: luacheck weread spec tools main.lua _meta.lua
