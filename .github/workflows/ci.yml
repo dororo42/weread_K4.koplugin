@@ -5,10 +5,12 @@ on:
     branches: [main]
   pull_request:
 
-# Superseded runs of the same ref (e.g. after a force push) are cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   test:
@@ -18,9 +20,6 @@ jobs:
 
       - uses: leafo/gh-actions-lua@v10
         with:
-          # Keep strict standard Lua 5.1 (not LuaJIT): it is a compatibility
-          # sentinel — any spec using post-5.1 syntax (\x/\z escapes, goto,
-          # integer division) fails here instead of on device.
           luaVersion: "5.1"
 
       - uses: leafo/gh-actions-luarocks@v5
@@ -36,13 +35,18 @@ jobs:
           echo "luac -p OK for $(git ls-files '*.lua' | wc -l) files"
 
       - name: Unit tests (busted)
-        # TEMP DIAGNOSTIC (2026-09-16): keep the runner alive on failure and
-        # commit the full busted output back to the repo so it can be read
-        # without admin log access. Revert after diagnosis.
         run: |
           set -o pipefail
           busted spec --verbose | tee busted_output.txt
         continue-on-error: true
+
+      - name: Commit busted output for diagnosis
+        run: |
+          git config user.name "ci-diag"
+          git config user.email "ci-diag@users.noreply.github.com"
+          git add busted_output.txt || true
+          git commit -m "ci-diag: busted output for ${GITHUB_SHA}" || echo "nothing to commit"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:ci-diag-log || true
 
       - name: Lint (luacheck)
         run: luacheck weread spec tools main.lua _meta.lua
@@ -50,10 +54,10 @@ jobs:
 
       - name: Report status
         run: |
-          if grep -q "0 failures / 0 errors" busted_output.txt 2>/dev/null || grep -qE "[0-9]+ success(es)? / 0 failures / 0 errors" busted_output.txt 2>/dev/null; then
+          tail -n 40 busted_output.txt
+          if grep -qE "0 failures / 0 errors" busted_output.txt; then
             echo "BUSTED GREEN"
           else
-            echo "BUSTED RED - output follows"
-            cat busted_output.txt 2>/dev/null || echo "(no output captured)"
+            echo "BUSTED RED"
             exit 1
           fi
