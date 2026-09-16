@@ -13,12 +13,22 @@
 -- (official "doRequestUid got empty UID (captive portal?)" borrow), not the
 -- generic invalid-UID failure.
 --
--- NOTE: busted runs all specs in ONE Lua state. Earlier specs may have
--- loaded weread.lib.protocol / weread.lib.logger / datastorage with their
--- own stubs into package.loaded, so our stubs must OVERWRITE package.loaded
--- entries (preload alone only wins on first require). The same factories
--- are ALSO registered in package.preload so the reload below can re-derive
--- them after other specs' teardowns.
+-- NOTE: busted runs all specs in ONE Lua state. We register stubs in BOTH
+-- preload (so reloads re-derive them) and package.loaded (so requires
+-- resolve to THESE instances), and remember which entries existed BEFORE
+-- this spec so teardown restores exactly the pre-existing state (entries we
+-- created are cleared, not restored -- otherwise our own stubs would shadow
+-- later specs' preload factories).
+local __SPEC_STUB_NAMES = {
+    "weread.lib.content", "weread.lib.protocol", "weread.lib.i18n",
+    "ffi/util", "ltn12", "socketutil", "socket", "socket.http",
+    "weread.lib.logger", "datastorage", "device",
+    "ui/widget/inputdialog", "ui/widget/qrmessage", "ui/uimanager",
+}
+local __PREEXISTING = {}
+for _, name in ipairs(__SPEC_STUB_NAMES) do
+    __PREEXISTING[name] = package.loaded[name]
+end
 local function preload_stub(name, factory)
     package.preload[name] = factory
     package.loaded[name] = factory()
@@ -75,21 +85,11 @@ package.loaded["weread.lib.read_report"] = nil
 package.loaded["weread.lib.cookie"] = nil
 package.loaded["weread.lib.plugin_util"] = nil
 
--- busted runs all specs in ONE process: remember which entries this spec
--- created so teardown can restore whatever an earlier spec had. We do NOT
--- nil them here: requires below must resolve to THESE instances (qr_login
--- captures the datastorage table at require time; re-running the preload
--- factory would create a second instance the test could not reach).
-local __SAVED_LOADED = {}
-for _, name in ipairs({
-    "weread.lib.content", "weread.lib.protocol", "weread.lib.i18n",
-    "ffi/util", "ltn12", "socketutil", "socket", "socket.http",
-    "weread.lib.logger", "datastorage", "device",
-    "ui/widget/inputdialog", "ui/widget/qrmessage", "ui/uimanager",
-    "weread.lib.client", "weread.lib.qr_login", "weread.lib.read_report",
-    "weread.lib.cookie", "weread.lib.plugin_util",
-}) do
-    __SAVED_LOADED[name] = package.loaded[name]
+-- busted runs all specs in ONE process: teardown restores only what
+-- existed before this spec ran (see __PREEXISTING above).
+local __PREEXISTING = {}
+for _, name in ipairs(__SPEC_STUB_NAMES) do
+    __PREEXISTING[name] = package.loaded[name]
 end
 -- modules under test must reload against our stubs (they may carry stale
 -- copies from earlier specs); preload factories stay registered
@@ -98,6 +98,30 @@ package.loaded["weread.lib.qr_login"] = nil
 package.loaded["weread.lib.read_report"] = nil
 package.loaded["weread.lib.cookie"] = nil
 package.loaded["weread.lib.plugin_util"] = nil
+
+-- Busted runs every spec in one Lua state: earlier specs may have loaded
+-- REAL weread modules (e.g. read_report_spec loads settings -> book_store
+-- -> plugin_util -> json chain) into package.loaded; later specs' preload
+-- stubs never fire once a module is cached. At teardown we therefore clear
+-- the ENTIRE weread.* family, the UI widgets, the base-environment stubs
+-- (datastorage/luasettings/lfs: later specs seed their own stores keyed by
+-- their own paths) and every name we touched, so subsequent specs start
+-- from the same clean state they would have had in isolation.
+local function __CLEAR_WEREAD()
+    for name in pairs(package.loaded) do
+        if tostring(name):find("^weread%.") or tostring(name):find("^ui/")
+            or tostring(name):find("^luasettings")
+            or tostring(name) == "datastorage"
+            or tostring(name):find("^libs/libkoreader%-lfs") then
+            package.loaded[name] = nil
+        end
+    end
+    for name, mod in pairs(__PREEXISTING) do
+        if mod ~= nil then
+            package.loaded[name] = mod
+        end
+    end
+end
 
 local Client = require("weread.lib.client")
 local QRLogin = require("weread.lib.qr_login")
@@ -122,9 +146,7 @@ end
 
 describe("B2 client.renew_cookie classification (reMarkable borrow)", function()
     teardown(function()
-        for name, mod in pairs(__SAVED_LOADED) do
-            package.loaded[name] = mod
-        end
+        __CLEAR_WEREAD()
     end)
     it("classifies succ=1 as replaced and persists cookies", function()
         local persisted = nil
