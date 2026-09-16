@@ -14,6 +14,12 @@
 
 local M = {}
 
+-- P1 (2026-09-17, three-way ledger reconciliation): optional read-only probe
+-- into KOReader's built-in statistics. The module is fully pcall-guarded and
+-- returns nil outside KOReader / when the statistics plugin never ran, so
+-- requiring it here is load-free in tests and on disabled setups.
+local KoStats = require("weread.lib.ko_stats")
+
 -- Supported statistic modes, in tab order.
 M.MODES = { "weekly", "monthly", "annually", "overall" }
 
@@ -252,6 +258,14 @@ function M.fetch(client, mode, base_time, ledger)
             }
         end)
         if ok_ledger and type(ledger_summary) == "table" then
+            -- P1: third row for three-way reconciliation. The probe is one
+            -- read-only SELECT against statistics.sqlite3, executed at most
+            -- once per stats-page open (this call site); nil -> row hidden.
+            local ok_ko, ko = pcall(KoStats.snapshot)
+            if ok_ko and type(ko) == "table"
+                and type(ko.total) == "number" then
+                ledger_summary.ko_total = ko.total
+            end
             data.local_ledger = ledger_summary
         end
     end

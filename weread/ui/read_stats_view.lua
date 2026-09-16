@@ -446,6 +446,31 @@ function ReadStatsView:buildLedgerCard()
     table.insert(content, VerticalSpan:new{ width = Size.padding.small })
     table.insert(content, self:kvLine(_("Accepted by server (period)"), server_text))
 
+    -- P1 (2026-09-17, three-way reconciliation): KOReader's built-in
+    -- statistics as the device-metric reference. Shown only when the optional
+    -- read-only probe succeeded (weread/lib/ko_stats.lua): statistics plugin
+    -- disabled or db absent -> row hidden, card degrades to the B1 layout.
+    -- Scope note: the probe sums ALL books (statistics.db has no weread
+    -- book_id) — the right granularity for attribution ("did the device-side
+    -- engine record anything at all"), not an exact weread-only figure.
+    if ledger.ko_total then
+        table.insert(content, VerticalSpan:new{ width = Size.padding.small })
+        table.insert(content, self:kvLine(
+            _("KOReader statistics (all books, device metric)"),
+            format_duration(ledger.ko_total)))
+    end
+
+    -- P2: metric-mismatch disclaimer. The numbers on this card run on
+    -- different engines (server aggregation vs report-tick ledger vs KOReader
+    -- page-dwell statistics), so they are NOT expected to agree; the card's
+    -- warning value is the gap's TREND, not its absolute size.
+    table.insert(content, VerticalSpan:new{ width = Size.padding.small })
+    table.insert(content, TextBoxWidget:new{
+        text = _("These times come from different engines (WeRead server vs device-side) and are not expected to match; watch the gap's trend rather than its exact size."),
+        face = f.small,
+        width = self.content_width,
+    })
+
     local delta = (ledger.total or 0) - (ledger.server_total or 0)
     if delta > 0 then
         table.insert(content, VerticalSpan:new{ width = Size.padding.small })

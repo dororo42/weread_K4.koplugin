@@ -65,6 +65,9 @@ local zh = {
     ["Booked on device"] = "设备已记账",
     ["Accepted by server (period)"] = "服务端已确认（本周期）",
     ["Device has %1 more booked reading time than the server shows. Unsent backlog is normally drained automatically; a gap that keeps growing means reports are not getting through."] = "设备本地记账比服务端多 %1。未发送的时长通常会在联网后自动补报；若差距持续增大，说明上报通道没有打通。",
+    -- P1/P2 (2026-09-17): three-way ledger reconciliation (KOReader stats row + metric disclaimer).
+    ["KOReader statistics (all books, device metric)"] = "KOReader 统计（全部书籍·设备口径）",
+    ["These times come from different engines (WeRead server vs device-side) and are not expected to match; watch the gap's trend rather than its exact size."] = "本卡三方时长来自不同引擎（微信读书服务端 / 设备侧），数值不一致属正常；请关注差距的趋势而非绝对大小。",
     -- B5 (2026-09-16): captive portal classification for an empty login UID.
     ["The network appears to require authentication (captive portal). Check the WiFi you are connected to."] = "当前网络似乎需要网页认证（强制门户）。请检查所连接的 WiFi。",
     ["Enter the four-digit verification code shown on your phone."] = "请输入手机上显示的四位验证码。",
