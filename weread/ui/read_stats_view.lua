@@ -428,6 +428,37 @@ end
 -- Assembly
 -- ---------------------------------------------------------------------------
 
+-- B1: local ledger card. Shows the device-side booked reading time next to
+-- the server period total; a big local surplus means reports are being
+-- swallowed (or the device reads far more offline than the server sees).
+function ReadStatsView:buildLedgerCard()
+    local ledger = self.data.local_ledger
+    if type(ledger) ~= "table" or type(ledger.total) ~= "number" then
+        return nil
+    end
+    local d, f = self.data, self.fonts
+    local content = VerticalGroup:new{ align = "left", self:widthPin() }
+    table.insert(content, self:cardTitle(_("Local reading ledger")))
+
+    local total_text = format_duration(ledger.total)
+    local server_text = format_duration(ledger.server_total or 0)
+    table.insert(content, self:kvLine(_("Booked on device"), total_text))
+    table.insert(content, VerticalSpan:new{ width = Size.padding.small })
+    table.insert(content, self:kvLine(_("Accepted by server (period)"), server_text))
+
+    local delta = (ledger.total or 0) - (ledger.server_total or 0)
+    if delta > 0 then
+        table.insert(content, VerticalSpan:new{ width = Size.padding.small })
+        table.insert(content, TextBoxWidget:new{
+            text = T(_("Device has %1 more booked reading time than the server shows. Unsent backlog is normally drained automatically; a gap that keeps growing means reports are not getting through."),
+                format_duration(delta)),
+            face = f.small,
+            width = self.content_width,
+        })
+    end
+    return self:makeCard(content)
+end
+
 function ReadStatsView:buildContent()
     local page = VerticalGroup:new{ align = "left" }
     local function add(card)
@@ -438,6 +469,7 @@ function ReadStatsView:buildContent()
         table.insert(page, card)
     end
     add(self:buildOverviewCard())
+    add(self:buildLedgerCard())
     add(self:buildChartCard())
     add(self:buildRankCard())
     add(self:buildPreferenceCard())

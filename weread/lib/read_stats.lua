@@ -230,10 +230,31 @@ end
 --   period_label
 --   allow_prev / allow_next : whether previous/next period navigation is possible
 --   prev_base_time / next_base_time : navigation targets (nil for "overall")
-function M.fetch(client, mode, base_time)
+--   local_ledger (optional, B1): { total, total_text } comparing the device
+--   ledger (booked locally, offline-inclusive) against the server period.
+function M.fetch(client, mode, base_time, ledger)
     mode = mode or "monthly"
     local raw = client:get_read_stats(mode, base_time)
     local data = M.normalize(raw, mode)
+    -- B1 (2026-09-16, reMarkable official-client borrow): local ledger probe.
+    -- The device ledger includes offline reading the server may never have
+    -- accepted (yet); a large positive local-vs-server gap is the "reports
+    -- are being swallowed" warning. Pure additive: absent ledger -> absent
+    -- field -> view hides the card.
+    if ledger then
+        local ok_ledger, ledger_summary = pcall(function()
+            local total = ledger:total_all()
+            -- Server-side totals for the same period come straight from the
+            -- normalized payload.
+            return {
+                total = total,
+                server_total = tonumber(raw and raw.totalReadTime) or 0,
+            }
+        end)
+        if ok_ledger and type(ledger_summary) == "table" then
+            data.local_ledger = ledger_summary
+        end
+    end
 
     if mode == "overall" then
         -- A single unbounded period: no navigation.

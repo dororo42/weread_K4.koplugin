@@ -276,7 +276,11 @@ function M:loadReadStats(mode, base_time, old_view)
     self:showBusy(_("Loading reading statistics..."))
     self:runOnlineTask(_("Reading statistics"), function()
         local ok, data = pcall(function()
-            return ReadStats.fetch(self.client, mode, base_time)
+            -- B1: pass the host's stats ledger (may be nil in early boot)
+            -- so the view can show the device-side booked total next to the
+            -- server's period total.
+            local ledger = self.read_report and self.read_report.ledger or nil
+            return ReadStats.fetch(self.client, mode, base_time, ledger)
         end)
         self:closeBusy()
         if not ok then

@@ -58,6 +58,11 @@ local zh = {
     ["The verification code has expired. Please try again."] = "验证码已失效，请重新扫码。",
     ["Incorrect verification code."] = "验证码不正确。",
     ["Unknown login response"] = "未知登录响应",
+    -- B1 (2026-09-16): local reading ledger card.
+    ["Local reading ledger"] = "本地阅读账本",
+    ["Booked on device"] = "设备已记账",
+    ["Accepted by server (period)"] = "服务端已确认（本周期）",
+    ["Device has %1 more booked reading time than the server shows. Unsent backlog is normally drained automatically; a gap that keeps growing means reports are not getting through."] = "设备本地记账比服务端多 %1。未发送的时长通常会在联网后自动补报；若差距持续增大，说明上报通道没有打通。",
     -- B5 (2026-09-16): captive portal classification for an empty login UID.
     ["The network appears to require authentication (captive portal). Check the WiFi you are connected to."] = "当前网络似乎需要网页认证（强制门户）。请检查所连接的 WiFi。",
     ["Enter the four-digit verification code shown on your phone."] = "请输入手机上显示的四位验证码。",

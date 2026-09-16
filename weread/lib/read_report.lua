@@ -1,6 +1,7 @@
 local Content = require("weread.lib.content")
 local WeRead = require("weread.lib.protocol")
 local PluginUtil = require("weread.lib.plugin_util")
+local StatsLedger = require("weread.lib.stats_ledger")
 
 local logger = require("weread.lib.logger").scoped("ReadReport")
 
@@ -266,6 +267,12 @@ function ReadReport:new(options)
         _context_stale = false,
         _context_stale_book = nil,
     }
+    -- B1 (2026-09-16, reMarkable official-client borrow): local per-day
+    -- reading-time ledger. Official client books reading time locally on
+    -- every accepted report ("account first, report second"); K4 books the
+    -- accepted seconds (watermark advance) and session seconds (offline).
+    object.ledger = StatsLedger:new(options.settings, options.scheduler,
+        options.now or os.time)
     return setmetatable(object, self)
 end
 
@@ -589,10 +596,32 @@ function ReadReport:stop(reason)
     -- On the next start() for this book, pending_backlog is re-attached in
     -- front of now, preserving offline reading time across close/reopen
     -- regardless of the gap, while the gap itself is never counted.
+    -- B1: book the un-sent session seconds as local offline reading time.
+    -- stop() runs on document close / suspend / book switch; the window
+    -- (start_or_watermark .. last_active_at) is real reading time regardless
+    -- of whether the report pipeline could confirm acceptance. The watermark
+    -- bookkeeping guarantees these seconds are still reported later; the
+    -- ledger keeps them visible offline in the meantime.
+    pcall(function()
+        if self.current_book_id and self.started_at then
+            local base = self.watermark or self.started_at
+            local session_seconds = math.max(0,
+                (self.last_active_at or self.now()) - base)
+            -- Cap at the reportable-session ceiling: anything the watermark
+            -- will later re-attach is booked here once; a fresh session
+            -- restarts from now, so this cannot double-book.
+            if session_seconds > 0 then
+                self.ledger:add(self.current_book_id,
+                    math.min(session_seconds, 24 * 3600), self.now())
+            end
+        end
+    end)
+    self.ledger:unschedule()
     self:_persist_watermark()
     -- Force flush on stop to ensure watermark is persisted (M-L9 fix)
-    if self._watermark_flush_pending then
+    if self._watermark_flush_pending or self.ledger._flush_pending then
         self._watermark_flush_pending = false
+        self.ledger._flush_pending = false
         pcall(function() self.settings:flush() end)
     end
     -- P0-1B: force any deferred report-context flush before teardown so a
@@ -1204,6 +1233,15 @@ function ReadReport:_apply_outcome(outcome)
         if self.watermark and outcome.reported_seconds then
             self.watermark = self.watermark + outcome.reported_seconds
             self:_persist_watermark()
+            -- B1: book the accepted seconds locally (per-book, per-day).
+            -- The official client does the same on every accepted report so
+            -- the local ledger mirrors what the server acknowledged.
+            pcall(function()
+                if self.current_book_id then
+                    self.ledger:add(self.current_book_id,
+                        outcome.reported_seconds, self.now())
+                end
+            end)
         end
         self:_record_success({ synckey = outcome.has_synckey and true or nil })
         return true
