@@ -44,30 +44,5 @@ jobs:
         run: busted spec
 
       - name: Lint (luacheck)
-        run: |
-          set -o pipefail
-          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt
-        continue-on-error: true
-
-      - name: Commit luacheck output for diagnosis
-        run: |
-          git config user.name "ci-diag"
-          git config user.email "ci-diag@users.noreply.github.com"
-          git add luacheck_output.txt || true
-          git commit -m "ci-diag: luacheck output for ${GITHUB_SHA}" || echo "nothing to commit"
-          git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:ci-diag-log || true
-
-      - name: Lint gate
-        run: |
-          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
-          if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
-            echo "LINT GREEN"
-          else
-            grep -E "\.lua:[0-9]+:[0-9]+:" luacheck_clean.txt | while read -r line; do
-              echo "::error::$line"
-            done
-            grep -E "Total:" luacheck_clean.txt | while read -r line; do
-              echo "::error::$line"
-            done
-            exit 1
-          fi
+        # Explicit whitelist: never lint vendored rocks or hidden dirs.
+        run: luacheck weread spec tools main.lua _meta.lua

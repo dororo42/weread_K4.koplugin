@@ -85,12 +85,6 @@ package.loaded["weread.lib.read_report"] = nil
 package.loaded["weread.lib.cookie"] = nil
 package.loaded["weread.lib.plugin_util"] = nil
 
--- busted runs all specs in ONE process: teardown restores only what
--- existed before this spec ran (see __PREEXISTING above).
-local __PREEXISTING = {}
-for _, name in ipairs(__SPEC_STUB_NAMES) do
-    __PREEXISTING[name] = package.loaded[name]
-end
 -- modules under test must reload against our stubs (they may carry stale
 -- copies from earlier specs); preload factories stay registered
 package.loaded["weread.lib.client"] = nil
@@ -413,7 +407,7 @@ describe("B5 captive portal classification (reMarkable borrow)", function()
                 return {}
             end,
         }, { data_dir = os.tmpname() })
-        local ok, err = pcall(function() return qr:_begin_protocol() end)
+        local ok = pcall(function() return qr:_begin_protocol() end)
         assert.is_false(ok)
         assert.equals("captive_portal", qr.last_login_error_kind)
     end)
