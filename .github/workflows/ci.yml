@@ -5,12 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Superseded runs of the same ref (e.g. after a force push) are cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: write
 
 jobs:
   test:
@@ -20,6 +18,9 @@ jobs:
 
       - uses: leafo/gh-actions-lua@v10
         with:
+          # Keep strict standard Lua 5.1 (not LuaJIT): it is a compatibility
+          # sentinel — any spec using post-5.1 syntax (\x/\z escapes, goto,
+          # integer division) fails here instead of on device.
           luaVersion: "5.1"
 
       - uses: leafo/gh-actions-luarocks@v5
@@ -30,34 +31,18 @@ jobs:
           luarocks install luacheck
 
       - name: Syntax sentinel (strict Lua 5.1 luac -p)
+        # Same compatibility sentinel as the runtime above: post-5.1 syntax
+        # (\x/\z escapes, goto, integer division) must fail here, not on
+        # device. luac ships with the same leafo/gh-actions-lua build.
+        # git ls-files = exactly the tracked sources (no .luarocks, no
+        # spec fixtures), one path per line; luac -p parses each file.
         run: |
           git ls-files -z '*.lua' | xargs -0 luac -p
           echo "luac -p OK for $(git ls-files '*.lua' | wc -l) files"
 
       - name: Unit tests (busted)
-        run: |
-          set -o pipefail
-          busted spec --verbose | tee busted_output.txt
-        continue-on-error: true
-
-      - name: Commit busted output for diagnosis
-        run: |
-          git config user.name "ci-diag"
-          git config user.email "ci-diag@users.noreply.github.com"
-          git add busted_output.txt || true
-          git commit -m "ci-diag: busted output for ${GITHUB_SHA}" || echo "nothing to commit"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:ci-diag-log || true
+        run: busted spec
 
       - name: Lint (luacheck)
+        # Explicit whitelist: never lint vendored rocks or hidden dirs.
         run: luacheck weread spec tools main.lua _meta.lua
-        continue-on-error: true
-
-      - name: Report status
-        run: |
-          tail -n 40 busted_output.txt
-          if grep -qE "0 failures / 0 errors" busted_output.txt; then
-            echo "BUSTED GREEN"
-          else
-            echo "BUSTED RED"
-            exit 1
-          fi
