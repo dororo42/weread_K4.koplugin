@@ -58,10 +58,8 @@ jobs:
             echo "LINT GREEN"
             exit 0
           fi
-          echo "::error::PROJ-CONFIG:"
-          head -n 10 luacheck_clean.txt | while IFS= read -r line; do echo "::error::$line"; done
-          echo "::error::NO-CONFIG:"
-          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_noconfig.txt | head -n 10 | while IFS= read -r line; do echo "::error::$line"; done
-          echo "::error::SPEC-ONLY:"
-          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_spec.txt | head -n 10 | while IFS= read -r line; do echo "::error::$line"; done
+          # ONE packed annotation: only finding lines (path:line:col) from
+          # the project-config run, newline-escaped
+          FINDINGS=$(grep -E "\.lua:[0-9]+:[0-9]+:" luacheck_clean.txt | sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" | head -n 15 | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g')
+          echo "::error::FINDINGS: $FINDINGS"
           exit 1
