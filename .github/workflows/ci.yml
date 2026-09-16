@@ -44,5 +44,15 @@ jobs:
         run: busted spec
 
       - name: Lint (luacheck)
-        # Explicit whitelist: never lint vendored rocks or hidden dirs.
-        run: luacheck weread spec tools main.lua _meta.lua
+        run: |
+          set -o pipefail
+          luacheck --ranges weread spec tools main.lua _meta.lua | tee luacheck_output.txt
+          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
+          if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
+            echo "LINT GREEN"
+          else
+            grep -E "\.lua:[0-9]+:[0-9]+:" luacheck_clean.txt | while read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
