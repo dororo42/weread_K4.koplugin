@@ -292,8 +292,16 @@ describe("B4 QRLogin device identity (reMarkable borrow, K4-scoped)", function()
     end
 
     it("generates a stable id persisted across calls", function()
+        -- os.tmpname returns a FILE path; turn it into a real directory so
+        -- the identity file can be written and re-read (portable: cmd
+        -- builtin on Windows, mkdir binary on the Linux CI).
         local tmp = os.tmpname()
-        os.remove(tmp)  -- want the directory path only; identity file appends a suffix
+        os.remove(tmp)
+        if package.config:sub(1, 1) == "\\" then
+            os.execute('mkdir "' .. tmp .. '" 2>nul')
+        else
+            os.execute('mkdir "' .. tmp .. '" 2>/dev/null')
+        end
         local settings = fresh_settings(tmp)
         local first = QRLogin.get_device_identity(settings)
         assert.is_not_nil(first)
@@ -301,6 +309,12 @@ describe("B4 QRLogin device identity (reMarkable borrow, K4-scoped)", function()
         local second = QRLogin.get_device_identity(settings)
         assert.equals(first.id, second.id)
         assert.equals("Kindle K4 - weread_K4", first.name)
+        pcall(os.remove, tmp .. "/weread_device_id")
+        if package.config:sub(1, 1) == "\\" then
+            pcall(function() os.execute('rmdir "' .. tmp .. '" 2>nul') end)
+        else
+            pcall(os.remove, tmp)
+        end
     end)
 
     it("returns nil when no data dir is available (nil-safe)", function()
