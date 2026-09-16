@@ -47,14 +47,21 @@ jobs:
         run: |
           set -o pipefail
           luacheck --version
-          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt
+          echo "=== project config ==="
+          luacheck weread spec tools main.lua _meta.lua | tee luacheck_output.txt || true
+          echo "=== no config ==="
+          luacheck --no-config weread spec tools main.lua _meta.lua | tee luacheck_noconfig.txt || true
+          echo "=== spec only (project config) ==="
+          luacheck spec | tee luacheck_spec.txt || true
           sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
-          if grep -qE "0 warnings / 0 errors" luacheck_clean.txt; then
+          if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
             echo "LINT GREEN"
             exit 0
           fi
-          # Pack the head of the clean output into ::error:: annotations
-          head -n 8 luacheck_clean.txt | while IFS= read -r line; do
-            echo "::error::$line"
-          done
+          echo "::error::PROJ-CONFIG:"
+          head -n 10 luacheck_clean.txt | while IFS= read -r line; do echo "::error::$line"; done
+          echo "::error::NO-CONFIG:"
+          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_noconfig.txt | head -n 10 | while IFS= read -r line; do echo "::error::$line"; done
+          echo "::error::SPEC-ONLY:"
+          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_spec.txt | head -n 10 | while IFS= read -r line; do echo "::error::$line"; done
           exit 1
