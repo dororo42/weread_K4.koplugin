@@ -472,18 +472,102 @@ function Client:get_binary(url, opts)
     error(http_error(self, code, text, resp_headers))
 end
 
-function Client:renew_cookie()
-    local result, code, resp_headers = self:post_json("https://weread.qq.com/web/login/renewal", {
-        rq = "%2Fweb%2Fbook%2Fread",
-        ql = false,
-    }, {
-        -- Do not persist renewal cookies until the response explicitly confirms
-        -- success; failed renewals must leave the current credential set intact.
-        persist_response_cookies = false,
-    })
-    if not WeRead.is_success_response(result) then
-        error("Cookie renewal response did not include succ=1")
+-- B2 (2026-09-16, reMarkable official-client borrow): classify a renewal
+-- attempt instead of collapsing it into succ / error. The official client
+-- distinguishes four states and only the truly-expired one clears the
+-- session; K4 keeps its own (already race-protected) flow but now knows WHY
+-- a renewal failed:
+--   replaced  – succ=1; new credentials merged (SESSION_REPLACED)
+--   stale     – server rejected (succ!=1 / errcode) but HTTP OK; the current
+--               credentials stay valid (official STALE_SESSION_RESPONSE:
+--               "-2013 with a replacement session key" is this class); the
+--               caller should back off without clearing anything
+--   expired   – HTTP 401/403, or a server error message that names the
+--               session/login; the official SESSION_EXPIRED class: the
+--               caller should prompt re-login, not silently retry
+--   network   – transport-level failure (pcall error: timeout/DNS/reset);
+--               official SESSION_RENEWAL_FAILED: credentials unknown, keep
+--               them and retry later
+-- The classification is attached to the result table as _renewal_outcome and
+-- the function keeps returning (result, code, headers) for compatibility;
+-- the rejection error now carries the status word as well.
+local function classify_renewal_error(text)
+    text = tostring(text or ""):lower()
+    if text:find("invalid session", 1, true) or text:find("session expired", 1, true)
+        or text:find("please log in", 1, true) or text:find("not logged in", 1, true)
+        or text:find("login expired", 1, true) then
+        return "expired"
     end
+    return "stale"
+end
+
+function Client:renew_cookie()
+    local outcome = { status = "network", http_ok = false }
+    local ok, result, code, resp_headers = pcall(function()
+        return self:post_json("https://weread.qq.com/web/login/renewal", {
+            rq = "%2Fweb%2Fbook%2Fread",
+            ql = false,
+        }, {
+            -- Do not persist renewal cookies until the response explicitly confirms
+            -- success; failed renewals must leave the current credential set intact.
+            persist_response_cookies = false,
+        })
+    end)
+    if not ok then
+        -- post_json raises "HTTP <code>, ..." for HTTP-level rejections and
+        -- bare transport text (timeout / DNS / reset) otherwise.
+        local err_text = tostring(result)
+        local http_code = tonumber(err_text:match("^HTTP (%d%d%d)"))
+        if http_code == 401 or http_code == 403 then
+            -- Official SESSION_EXPIRED shape: the server refused the
+            -- credentials outright; re-login required.
+            outcome.status = "expired"
+            error("Cookie renewal rejected (" .. outcome.status .. "): " .. err_text)
+        elseif http_code then
+            -- Other HTTP-level errors: server-side rejection without session
+            -- certainty; keep the current credentials and back off.
+            outcome.status = classify_renewal_error(err_text)
+            error("Cookie renewal rejected (" .. outcome.status .. "): " .. err_text)
+        end
+        -- Transport-level failure: timeout / DNS / connection reset. The
+        -- current credentials are neither confirmed valid nor invalid.
+        outcome.status = "network"
+        error("Cookie renewal network failure: " .. err_text)
+    end
+    outcome.http_ok = code and code >= 200 and code < 300 or false
+    if WeRead.is_success_response(result) then
+        outcome.status = "replaced"
+    else
+        local err_code = result and (result.errCode or result.errcode or result.code) or nil
+        local err_message = result and (result.errMsg or result.errmsg or result.message or result.msg) or nil
+        -- Official STALE vs EXPIRED split for an HTTP-OK rejection: a -2013
+        -- WITH a replacement session key is STALE (store the new key first,
+        -- keep the session, back off); without one it is EXPIRED.
+        local set_cookie = header_value(resp_headers, "set-cookie")
+        local has_new_skey = type(set_cookie) == "string"
+            and set_cookie:lower():find("wr_skey=", 1, true) ~= nil
+        if has_new_skey then
+            outcome.status = "stale"
+            -- Official STALE_SESSION_RESPONSE: store the replacement key
+            -- first ("with a replacement session key"), then treat the tick
+            -- as rejected -- the next attempt runs with the fresh key.
+            pcall(function()
+                self.settings:update_auth({
+                    cookies = Cookie.merge_set_cookie(
+                        self.settings:get("cookies", {}),
+                        set_cookie
+                    ),
+                }, { replace_cookies = true })
+            end)
+        else
+            outcome.status = "expired"
+        end
+        result._renewal_outcome = outcome
+        error("Cookie renewal rejected (" .. outcome.status .. "): "
+            .. "errCode=" .. tostring(err_code) .. " "
+            .. tostring(err_message or "no message"))
+    end
+    result._renewal_outcome = outcome
     local updates = {}
     local set_cookie = header_value(resp_headers, "set-cookie")
     if set_cookie then

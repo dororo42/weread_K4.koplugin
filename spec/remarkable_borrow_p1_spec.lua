@@ -1,0 +1,340 @@
+-- Unit tests for the reMarkable-borrow P1 batch (B2 renewal classification,
+-- B4 device identity, B5 captive portal classification).
+--
+-- B2: client.renew_cookie must classify failures into replaced / stale /
+-- expired / network (official -2013 state machine borrow) and read_report
+-- must map them to renewal_* error kinds, only treating "expired" as
+-- re-login-required.
+--
+-- B4: QRLogin.get_device_identity must generate a stable uuid-style id once
+-- and persist it (official deviceId/deviceName borrow, K4-scoped).
+--
+-- B5: an HTTP 200 with an empty uid must be classified as a captive portal
+-- (official "doRequestUid got empty UID (captive portal?)" borrow), not the
+-- generic invalid-UID failure.
+package.preload["weread.lib.content"] = function()
+    return {}
+end
+package.preload["weread.lib.protocol"] = function()
+    -- real semantics: succ == true or tonumber(succ) == 1
+    return {
+        urlencode = function(v) return tostring(v) end,
+        is_success_response = function(result, field)
+            if type(result) ~= "table" then return false end
+            local value = result[field or "succ"]
+            return value == true or tonumber(value) == 1
+        end,
+    }
+end
+package.preload["weread.lib.i18n"] = function()
+    return { tr = function(text) return text end }
+end
+package.preload["ffi/util"] = function()
+    return { template = function(text) return text end }
+end
+-- KOReader runtime libs required by client.lua / qr_login.lua at load time.
+package.preload["ltn12"] = function()
+    return { source = {}, sink = {}, chain = {} }
+end
+package.preload["socketutil"] = function()
+    return { set_timeout = function() end, reset_timeout = function() end, table_sink = function() return function() end end }
+end
+package.preload["socket"] = function()
+    return { sleep = function() end }
+end
+package.preload["socket.http"] = function()
+    return { request = function() end }
+end
+package.preload["weread.lib.logger"] = function()
+    local nillog = { info = function() end, warn = function() end, err = function() end }
+    nillog.scoped = function() return { info = function() end, warn = function() end, err = function() end } end
+    return nillog
+end
+package.preload["datastorage"] = function()
+    return { getFullDataDir = function() return "/tmp/weread_test_data" end, getSettingsDir = function() return "/tmp/weread_test_settings" end }
+end
+package.preload["device"] = function()
+    return {}
+end
+package.preload["ui/widget/inputdialog"] = function()
+    return {}
+end
+package.preload["ui/widget/qrmessage"] = function()
+    return {}
+end
+package.preload["ui/uimanager"] = function()
+    return { close = function() end, show = function() end, scheduleIn = function() end }
+end
+
+local Client = require("weread.lib.client")
+local QRLogin = require("weread.lib.qr_login")
+
+-- --------------------------------------------------------------------
+-- Client:renew_cookie classification (B2)
+-- --------------------------------------------------------------------
+
+local function new_client(overrides)
+    local client = Client:new({
+        get = function(_self, key, default)
+            if key == "cookies" then return {} end
+            return default
+        end,
+        set = function() end,
+        flush = function() end,
+        update_auth = function() end,
+    })
+    if overrides then overrides(client) end
+    return client
+end
+
+describe("B2 client.renew_cookie classification (reMarkable borrow)", function()
+    it("classifies succ=1 as replaced and persists cookies", function()
+        local persisted = nil
+        local client = new_client(function(c)
+            c.post_json = function(_self, _url, _data, _opts)
+                return { succ = true, synckey = 1 }, 200, { ["set-cookie"] = "wr_skey=new; Path=/" }
+            end
+            c.settings.update_auth = function(_s, updates)
+                persisted = updates
+            end
+        end)
+        local result, code = client:renew_cookie()
+        assert.equals(200, code)
+        assert.equals("replaced", result._renewal_outcome.status)
+        assert.is_true(result._renewal_outcome.http_ok)
+        assert.is_not_nil(persisted)
+        assert.is_not_nil(persisted.cookies)
+    end)
+
+    it("classifies HTTP 401 as expired", function()
+        local client = new_client(function(c)
+            c.post_json = function()
+                error("HTTP 401", 0)
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("expired", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+
+    it("treats an HTTP-OK rejection without a new skey as expired (official EXPIRED)", function()
+        -- Official split: a bare rejection (no replacement key in the
+        -- response) is SESSION_EXPIRED; K4 keeps the credentials on disk but
+        -- reports the session as dead.
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = false, errCode = -2013, errMsg = "invalid session" }, 200, {}
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("expired", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+
+    it("classifies a transport failure as network", function()
+        local client = new_client(function(c)
+            c.post_json = function()
+                error("timeout", 0)
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        -- error() prepends position info; match on the tail of the message
+        assert.is_not_nil(tostring(err):find("Cookie renewal network failure", 1, true))
+        -- no "rejected" marker in network failures
+        assert.is_nil(tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+
+    it("classifies a non-401/403 HTTP error via its message", function()
+        local client = new_client(function(c)
+            c.post_json = function()
+                error("HTTP 500, content_type=application/json", 0)
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        -- generic server error without session wording stays "stale"
+        assert.equals("stale", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+
+    it("stores the replacement skey and returns stale when -2013 carries a new key (official STALE)", function()
+        local stored = nil
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = false, errCode = -2013 }, 200,
+                    { ["set-cookie"] = "wr_skey=BRANDNEW; Path=/; Domain=.weread.qq.com" }
+            end
+            c.settings.update_auth = function(_s, updates)
+                stored = updates
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("stale", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+        assert.is_not_nil(stored)
+        assert.is_not_nil(stored.cookies and stored.cookies.wr_skey == "BRANDNEW")
+    end)
+
+    it("treats an HTTP-OK rejection without a new skey as expired (official EXPIRED)", function()
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = false, errCode = -2013 }, 200, {}
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("expired", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+end)
+
+-- --------------------------------------------------------------------
+-- ReadReport: renewal failure -> error_kind mapping (B2)
+-- --------------------------------------------------------------------
+
+package.preload["weread.lib.logger"] = function()
+    return {
+        info = function() end,
+        warn = function() end,
+        err = function() end,
+        scoped = function() return { info = function() end, warn = function() end, err = function() end } end,
+    }
+end
+local ReadReport = require("weread.lib.read_report")
+
+local function new_report()
+    local scheduler = {
+        scheduleIn = function() end,
+        unschedule = function() end,
+    }
+    local report = ReadReport:new{
+        settings = {
+            get = function(_self, key, default)
+                if key == "read_report" then return { enabled = true, mode = "manual", book_id = "B1", interval_seconds = 30 } end
+                return default
+            end,
+            set = function() end,
+            flush = function() end,
+            is_cookie_configured = function() return true end,
+        },
+        client = {},
+        scheduler = scheduler,
+        get_document = function() return {} end,
+        detect_book = function() return "B1" end,
+        is_online = function() return true end,
+        now = function() return 1000000 end,
+    }
+    return report
+end
+
+describe("B2 ReadReport renewal error kinds (reMarkable borrow)", function()
+    local function outcome_with_renewal(status, message)
+        -- mirror the real _run_pipeline outcome shape: the pipeline maps
+        -- renewal_status -> error_kind before _apply_outcome sees it
+        return {
+            accepted = false,
+            renew_attempted = true,
+            renewal_status = status,
+            error_kind = "renewal_" .. status,
+            error = message or ("read report cookie renewal failed (" .. status .. "): test"),
+        }
+    end
+
+    it("maps network status to renewal_network and keeps the session", function()
+        local report = new_report()
+        local outcome = outcome_with_renewal("network")
+        report:_apply_outcome(outcome)
+        assert.equals("renewal_network", report.last_error_kind)
+        assert.equals("network", report.last_renewal_status)
+    end)
+
+    it("maps stale status to renewal_stale without demanding re-login", function()
+        local report = new_report()
+        local outcome = outcome_with_renewal("stale")
+        report:_apply_outcome(outcome)
+        assert.equals("renewal_stale", report.last_error_kind)
+        assert.equals("stale", report.last_renewal_status)
+    end)
+
+    it("maps expired status to renewal_expired (re-login required)", function()
+        local report = new_report()
+        local outcome = outcome_with_renewal("expired")
+        report:_apply_outcome(outcome)
+        assert.equals("renewal_expired", report.last_error_kind)
+        assert.equals("expired", report.last_renewal_status)
+    end)
+
+    it("records replaced on a successful renewal outcome", function()
+        local report = new_report()
+        report:_apply_outcome({
+            accepted = true,
+            reported_seconds = 30,
+            renewal_status = "replaced",
+        })
+        assert.equals("replaced", report.last_renewal_status)
+        assert.is_nil(report.last_error)
+    end)
+
+    it("status() exposes last_renewal_status", function()
+        local report = new_report()
+        report.last_renewal_status = "stale"
+        local st = report:status()
+        assert.equals("stale", st.last_renewal_status)
+    end)
+end)
+
+-- --------------------------------------------------------------------
+-- B4: device identity stability
+-- --------------------------------------------------------------------
+
+describe("B4 QRLogin device identity (reMarkable borrow, K4-scoped)", function()
+    local function fresh_settings(tmpdir)
+        return { data_dir = tmpdir }
+    end
+
+    it("generates a stable id persisted across calls", function()
+        local tmp = os.tmpname()
+        os.remove(tmp)  -- want the directory path only; identity file appends a suffix
+        local settings = fresh_settings(tmp)
+        local first = QRLogin.get_device_identity(settings)
+        assert.is_not_nil(first)
+        assert.is_not_nil(first.id:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%x%x%x%x%-%x%x%x%x%x%x%x%x%-%x%x%x%x%x%x%x%x$"))
+        local second = QRLogin.get_device_identity(settings)
+        assert.equals(first.id, second.id)
+        assert.equals("Kindle K4 - weread_K4", first.name)
+    end)
+
+    it("returns nil when no data dir is available (nil-safe)", function()
+        -- qr_login captured the stub table at require time; mutate it in
+        -- place so the helper cannot resolve a data dir
+        local ds = package.loaded["datastorage"]
+        local old_get = ds.getFullDataDir
+        ds.getFullDataDir = nil
+        local identity = QRLogin.get_device_identity({})
+        ds.getFullDataDir = old_get
+        assert.is_nil(identity)
+    end)
+end)
+
+-- --------------------------------------------------------------------
+-- B5: captive portal classification via _begin_protocol
+-- --------------------------------------------------------------------
+
+describe("B5 captive portal classification (reMarkable borrow)", function()
+    it("marks an HTTP 200 empty-uid response as captive portal", function()
+        local qr = QRLogin:new({}, {
+            request_follow = function(_self, opts)
+                return "page", 200, {}
+            end,
+            request = function(_self, opts)
+                -- portal hijack: 200 OK, JSON body without uid
+                return "{}", 200, {}
+            end,
+            decode_http_json = function(_self, text)
+                return {}
+            end,
+        }, { data_dir = os.tmpname() })
+        local ok, err = pcall(function() return qr:_begin_protocol() end)
+        assert.is_false(ok)
+        assert.equals("captive_portal", qr.last_login_error_kind)
+    end)
+end)

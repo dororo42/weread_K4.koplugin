@@ -58,6 +58,8 @@ local zh = {
     ["The verification code has expired. Please try again."] = "验证码已失效，请重新扫码。",
     ["Incorrect verification code."] = "验证码不正确。",
     ["Unknown login response"] = "未知登录响应",
+    -- B5 (2026-09-16): captive portal classification for an empty login UID.
+    ["The network appears to require authentication (captive portal). Check the WiFi you are connected to."] = "当前网络似乎需要网页认证（强制门户）。请检查所连接的 WiFi。",
     ["Enter the four-digit verification code shown on your phone."] = "请输入手机上显示的四位验证码。",
     ["Verification code required"] = "需要验证码",
     ["Verify"] = "验证",

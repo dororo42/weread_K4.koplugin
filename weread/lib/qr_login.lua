@@ -1,4 +1,5 @@
 local Cookie = require("weread.lib.cookie")
+local DataStorage = require("datastorage")
 local Device = require("device")
 local I18n = require("weread.lib.i18n")
 local InputDialog = require("ui/widget/inputdialog")
@@ -24,6 +25,56 @@ local POLL_TOTAL_TIMEOUT_SECONDS = 8
 
 local QRLogin = {}
 QRLogin.__index = QRLogin
+
+-- B4 (2026-09-16, reMarkable official-client borrow): the official client
+-- registers a stable device identity at login (deviceId / deviceType /
+-- deviceName; WEREAD_DEVICE_NAME overridable) so the account's device list
+-- shows a recognizable name and the user can revoke it. K4 mirrors that with
+-- a stable, honest device name plus a random device id persisted once.
+local DEVICE_ID_FILE_SUFFIX = "/weread_device_id"
+
+-- Lazy device-id bootstrap: the id is generated once and stored in the
+-- plugin data dir; the name is fixed and honest (no official-client
+-- impersonation -- K4's web fingerprint must stay self-consistent).
+function QRLogin._device_id_file(settings)
+    local data_dir = settings.data_dir
+    if not data_dir and DataStorage and DataStorage.getFullDataDir then
+        data_dir = DataStorage.getFullDataDir(DataStorage)
+        if type(data_dir) == "string" and data_dir ~= "" then
+            data_dir = data_dir .. "/weread"
+        end
+    end
+    return tostring(data_dir or "") .. DEVICE_ID_FILE_SUFFIX
+end
+
+function QRLogin.get_device_identity(settings)
+    local file = QRLogin._device_id_file(settings)
+    if file == DEVICE_ID_FILE_SUFFIX then
+        return nil
+    end
+    local fh = io.open(file, "r")
+    if fh then
+        local existing = fh:read("*l")
+        fh:close()
+        if existing and existing ~= "" then
+            return { id = existing, name = "Kindle K4 - weread_K4" }
+        end
+    end
+    -- Math.random is enough for a non-security device label; seed from time.
+    math.randomseed(os.time())
+    local parts = {}
+    for _i = 1, 4 do
+        parts[#parts + 1] = string.format("%08x", math.random(0, 0x7fffffff))
+    end
+    local device_id = table.concat(parts, "-")
+    local wfh = io.open(file, "w")
+    if wfh then
+        wfh:write(device_id, "\n")
+        wfh:close()
+    end
+    return { id = device_id, name = "Kindle K4 - weread_K4" }
+end
+
 
 local function header_value(headers, name)
     if type(headers) ~= "table" or type(name) ~= "string" then
@@ -159,8 +210,16 @@ function QRLogin:_begin_protocol()
     }, "getLoginUid")
     login_cookies = merge_response_cookies(login_cookies, response_headers)
     if type(data.uid) ~= "string" or data.uid == "" then
-        error("WeRead did not return a valid login UID")
+        -- B5 (2026-09-16, reMarkable official-client borrow): the official
+        -- client treats "HTTP 200 but empty uid" as a captive portal hit
+        -- ("doRequestUid got empty UID (captive portal?)"). The JSON body of
+        -- a hijacked portal response is missing uid, so an empty uid here is
+        -- the same signature. K4 users on phone hotspots / public WiFi hit
+        -- this; a specific message beats the generic one.
+        self.last_login_error_kind = "captive_portal"
+        error("The network appears to require authentication (captive portal). Check the WiFi you are connected to.")
     end
+    self.last_login_error_kind = nil
 
     self.login_cookies = login_cookies
     return data.uid
@@ -285,11 +344,19 @@ function QRLogin:_complete_protocol(login_result, generation)
         error("QR login was cancelled")
     end
 
+    -- B4 (2026-09-16, reMarkable official-client borrow): keep a stable,
+    -- honest device identity in the account record for diagnostics (the
+    -- official client registers deviceId/deviceName at login; K4's Skill-API
+    -- flow has no /weblogin call to attach them to, so they live in the
+    -- account metadata instead).
+    local device_identity = QRLogin.get_device_identity(self.settings)
     local account = {
         name = type(user_info.name) == "string" and user_info.name or "",
         user_vid = web_login_vid,
         login_method = "qr",
         login_time = os.time(),
+        device_id = device_identity and device_identity.id or "",
+        device_name = device_identity and device_identity.name or "",
     }
     self.settings:update_auth({
         cookies = cookies,

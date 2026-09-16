@@ -4,6 +4,8 @@ local Cookie = require("weread.lib.cookie")
 local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
 
+local logger_ok, logger = pcall(require, "weread.lib.logger")
+
 local Settings = {}
 Settings.__index = Settings
 Settings.AUTH_SCHEMA_VERSION = 1
@@ -335,8 +337,60 @@ function Settings:remove_book(book_id)
     return true
 end
 
+-- B11 (2026-09-16, reMarkable official-client borrow): persist the settings
+-- file loss-resistant. KOReader's LuaSettings writes the file in place; a
+-- power loss mid-write leaves a truncated weread.lua = login state gone, and
+-- possibly a config the loader refuses to parse. The official reMarkable
+-- client solves the same problem on the same flash class with temp+rename
+-- ("atomically persist auth session"). We cannot rename from inside
+-- LuaSettings, so we do the next best thing: snapshot the file before the
+-- framework write, verify it survived (present + non-empty) after, and
+-- restore the snapshot when the write failed. On KOReader builds whose
+-- LuaSettings already swaps files internally this degrades to two
+-- lfs.attributes checks. Restores never resurrect a file that did not exist
+-- before (first-run case). Every historical call site already wraps flush()
+-- in pcall, so re-raising after a restore keeps the failure observable
+-- without changing call-site behavior.
 function Settings:flush()
-    self.store:flush()
+    local file = self.settings_file
+    local backup, backup_exists
+    if type(file) == "string" and file ~= "" and lfs.attributes(file, "mode") then
+        local fh = io.open(file, "rb")
+        if fh then
+            backup = fh:read("*a")
+            fh:close()
+            backup_exists = true
+        end
+    end
+    local ok, err = pcall(function() self.store:flush() end)
+    if ok then
+        local mode = type(file) == "string" and lfs.attributes(file, "mode") or nil
+        if backup_exists and not mode then
+            ok = false
+            err = "settings file vanished after flush"
+        elseif backup_exists and mode then
+            local fh = io.open(file, "rb")
+            local content = fh and fh:read("*a") or nil
+            if fh then fh:close() end
+            if content == nil or content == "" then
+                ok = false
+                err = "settings file empty after flush"
+            end
+        end
+    end
+    if not ok then
+        if logger_ok and logger and logger.warn then
+            logger.warn("settings flush failed, restoring previous state:", tostring(err))
+        end
+        if backup_exists and backup then
+            local wfh = io.open(file, "wb")
+            if wfh then
+                wfh:write(backup)
+                wfh:close()
+            end
+        end
+        error("weread settings flush failed: " .. tostring(err), 2)
+    end
 end
 
 function Settings:update_auth(credentials, options)

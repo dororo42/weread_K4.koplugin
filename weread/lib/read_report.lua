@@ -345,6 +345,7 @@ function ReadReport:status()
         last_time = self.last_time,
         last_error = self.last_error,
         last_error_kind = self.last_error_kind,
+        last_renewal_status = self.last_renewal_status,
         stop_reason = self.stop_reason,
         target_book_id = self.current_book_id,
         target_book_title = self.current_book_title,
@@ -1187,6 +1188,12 @@ function ReadReport:_apply_outcome(outcome)
     if outcome.renew_attempted then
         self.last_renew_attempt = self.now()
     end
+    -- B2: remember the last renewal classification (replaced on success;
+    -- network/stale/expired on failure) so the UI can distinguish "link is
+    -- down" from "scan QR to log in again" without re-deriving it.
+    if outcome.renewal_status then
+        self.last_renewal_status = outcome.renewal_status
+    end
     if outcome.accepted then
         -- Advance the watermark by the amount the server just accepted. The
         -- remaining (now - watermark) backlog is drained by the next ticks.
@@ -1378,13 +1385,41 @@ function ReadReport:_run_pipeline(book_id, opts)
         return self.client:renew_cookie()
     end)
     if not renew_ok or not WeRead.is_success_response(renew_result) then
+        -- B2 (2026-09-16, reMarkable official-client borrow): classify the
+        -- renewal failure the way the official client's -2013 state machine
+        -- does. Only the truly-expired class may demand a re-login; network
+        -- and stale rejections keep the current credentials (the official
+        -- STALE_SESSION_RESPONSE path stores whatever came back and backs
+        -- off; a transport failure leaves credentials unknown-but-kept).
+        -- renew_cookie raises on rejection, so the classified status rides
+        -- in the error message ("Cookie renewal rejected (stale|expired):");
+        -- a bare pcall failure (no such marker) is a transport failure.
+        local renew_status = "network"
+        if renew_ok and type(renew_result) == "table"
+            and type(renew_result._renewal_outcome) == "table"
+            and renew_result._renewal_outcome.status then
+            renew_status = renew_result._renewal_outcome.status
+        elseif not renew_ok then
+            renew_status = tostring(renew_result):match(
+                "Cookie renewal rejected %((%a+)%)") or "network"
+        end
+        outcome.renewal_status = renew_status
         outcome.error = failure .. "; renewal=" .. (renew_ok
             and response_summary(self.client, renew_result)
             or tostring(renew_result))
-        outcome.error_kind = "authentication"
-        outcome.error_prefix = "read report cookie renewal failed:"
+        if renew_status == "expired" then
+            outcome.error_kind = "renewal_expired"
+            outcome.error_prefix = "read report cookie renewal rejected (session expired, re-login required):"
+        elseif renew_status == "stale" then
+            outcome.error_kind = "renewal_stale"
+            outcome.error_prefix = "read report cookie renewal rejected (kept current session):"
+        else
+            outcome.error_kind = "renewal_network"
+            outcome.error_prefix = "read report cookie renewal failed (network, kept current session):"
+        end
         return outcome
     end
+    outcome.renewal_status = "replaced"
 
     local final_context_ok, final_book = pcall(function()
         return self:ensure_context(book_id, true)

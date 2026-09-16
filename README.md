@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v5.7）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v5.7.1）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -119,6 +119,27 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v5.7.1（2026-09-16）· reMarkable 官方客户端借鉴（网络通信 P1 批次）
+
+> 依据《K4_remarkable官方v1.0.0_网络通信与时长统计借鉴评估 v2》（项目根目录）。本轮为 P1 批次（B11/B2/B4/B5/B12）；P0 项 B1（本地时长账本）另行实施；B3（JSON 直报降级通道）按报告约束在真机抓包验证前不实施。
+
+- **B11 · settings 落盘抗损加固**：`Settings:flush()` 在框架写入前快照 `weread.lua`，写入后校验文件存在且非空，失败时恢复快照并告警（官方 auth.json temp+rename 原子写同款目标；LuaSettings 原地写遇掉电会截断配置=登录态丢失）。对已内置原子替换的 KOReader 构建自动退化为两次属性检查。历史上全部 flush 调用点已在 pcall 内，失败重抛不改变调用方行为。
+- **B2 · 会话续期分级（官方 -2013 状态机借鉴）**：`client.renew_cookie` 失败不再一律当"认证失败"——按官方四态分类 `replaced / stale（HTTP OK 但 succ!=1，凭据仍有效，保留不误清）/ expired（401/403 或会话类错误，需要重新扫码）/ network（传输层失败，凭据未知但保留）`，通过 `result._renewal_outcome` 与 `outcome.renewal_status` 带出；`read_report` 据此把 error_kind 细化为 `renewal_network / renewal_stale / renewal_expired`，`上报状态` 暴露 `last_renewal_status`。K4 既有的 auth fingerprint 竞态防护与 10 分钟续期冷却保持不变。
+- **B5 · captive portal 显式判定（官方空 uid 判定借鉴）**：getLoginUid 返回 HTTP 200 但 uid 为空时（portal 劫持响应的典型签名，官方 "doRequestUid got empty UID (captive portal?)" 同款），扫码登录给出专门提示"当前网络似乎需要网页认证（强制门户）"并标记 `last_login_error_kind=captive_portal`；手机热点/公共 WiFi 场景不再误报为通用登录失败。i18n 已配中文词条。
+- **B4 · 登录设备身份留档（官方 deviceId/deviceName 借鉴，K4 适用面收敛）**：首次生成稳定 uuid `device_id`（持久化 `<dataDir>/weread/weread_device_id`）与固定名 `Kindle K4 - weread_K4`，扫码登录成功后写入 account 记录（`device_id/device_name` 字段，诊断用途）。注：K4 走 Skill API 登录流，无 /weblogin 等价请求可提交设备三元组，故不做服务端设备注册；设备名如实申报，不伪装官方客户端。
+- **B12 · TLS SECLEVEL 坑位档案**（见下方「移植坑位档案」节）。
+- **知识档案 · 原生通道与 web 通道不可混用**：官方 reMarkable 客户端使用原生 UA `WeRead/1.0.0 WRBrand/remarkable wr_eink` + /weblogin 颁发的 accessToken/refreshToken，不走 web 端 s/sg 签名；K4 的 web 签名通道（Chrome UA，web_app_id 由 UA 派生）与之是两条自洽通道，不可混用。若未来 web 签名被服务端风控，"设备登录通道"是官方认证过的备用路线（K4 qr_login 已拿到 accessToken/refreshToken，改造有起点；需真机验证 /weblogin 对第三方客户端的行为）。
+
+### 移植坑位档案（B12 · TLS SECLEVEL）
+
+官方包 `payload/config/openssl.cnf` 内的实测排查记录，摘录归档：
+
+- **现象**：`weread.qq.com`（登录/扫码域名）握手直接失败 `alert 40 (handshake_failure)`；同一网络下 `i.weread.qq.com` / `wo4.weread.qq.com` 完全正常——表现为"部分域名连不上"而非网络故障，极易误判为设备网络问题。
+- **根因**：`weread.qq.com` 只支持 TLSv1.2（`-tls1_3` 得 alert 70），且其接受的密码套件 `ECDHE-RSA-AES128-GCM-SHA256` 在 OpenSSL 3.x 默认 `SECLEVEL=2` 客户端策略下被排除。
+- **官方解法**：应用级 `OPENSSL_CONF` 指向自带 cnf，`CipherString = DEFAULT@SECLEVEL=1`（仍要求 ECDHE + AEAD + 合法证书链）；不改 `/etc/ssl/openssl.cnf` 全局（会被 OTA 覆盖且降低整机安全等级）。
+- **K4 适用性**：Kindle K4 固件时代的 OpenSSL 默认接受老套件，当前无此问题。触发条件（对号入座）：未来把插件移植到 OpenSSL 3 构建的 KOReader（新设备/新版固件）且出现"登录域名握手失败但 API 域名正常"。KOReader 侧可用 `ssl.wrap(params)` 的 protocol/ciphers 参数或启动环境变量解决，同样不要动全局。
+
 
 ### v5.7 补遗（2026-09-14）· FM 模式位置修复 + 健壮性加固（审计驱动）
 
