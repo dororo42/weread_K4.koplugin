@@ -323,7 +323,10 @@ function M:maybePrefetchNextChapter(book_id)
                 or value == "replaced" or value == "manual_download"
                 or value == "setting_disabled" or value == "prefetch_not_applicable"
                 or value == "prefetch_context_missing" or value == "no_next_chapter"
-                or value == "next_chapter_cached" then
+                or value == "next_chapter_cached"
+                -- B13 (2026-09-16): suppressed during the consecutive-failure
+                -- cooldown is a deliberate skip, not a failure to surface.
+                or value == "prefetch_cooling_down" then
                 logger.info("ended without completion:",
                     "book_id=", tostring(book_id),
                     "chapter_uid=", next_uid,

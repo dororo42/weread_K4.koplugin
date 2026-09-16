@@ -952,7 +952,7 @@ function Content.rewrite_image_sources(xhtml, src_map)
     return xhtml
 end
 
-function Content.download_remote_images(client, xhtml, used_names, progress)
+function Content.download_remote_images(client, xhtml, used_names, progress, opts)
     local assets = {}
     used_names = used_names or {}
     used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
@@ -990,7 +990,10 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
             return "src=" .. quote .. "../" .. cached_href .. quote
         end
         local ok, data = pcall(function()
-            return client:get_binary(url, { referer = "https://weread.qq.com/" })
+            return client:get_binary(url, {
+                referer = "https://weread.qq.com/",
+                timeout = opts and opts.timeout,
+            })
         end)
         if not ok or not data or #data == 0 then
             return "src=" .. quote .. src .. quote
@@ -1013,7 +1016,13 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
     return body, assets
 end
 
-function Content.download_chapter_assets(client, book, chapter, used_names)
+-- B9 (2026-09-16, reMarkable official-client borrow): background prefetch
+-- requests accept a per-call opts.timeout so the Downloader can relax the
+-- transport timeout for data-plane fetches (chapter shards, chapter image
+-- archives, inline images). Control-plane requests (reader state, css,
+-- catalog) keep the client default on purpose: they must fail fast in the
+-- foreground, and prefetch restarts them cheaply on the next attempt.
+function Content.download_chapter_assets(client, book, chapter, used_names, opts)
     if not chapter or not chapter.tar or chapter.tar == "" then
         return {}, {}
     end
@@ -1026,7 +1035,10 @@ function Content.download_chapter_assets(client, book, chapter, used_names)
     elseif tar_url:match("^/") then
         tar_url = "https://weread.qq.com" .. tar_url
     end
-    local raw = client:get_binary(tar_url, { referer = referer })
+    local raw = client:get_binary(tar_url, {
+        referer = referer,
+        timeout = opts and opts.timeout,
+    })
     local assets = {}
     local src_map = {}
     for entry_index, entry in ipairs(tar_entries(raw)) do
@@ -1108,7 +1120,7 @@ function Content.fetch_catalog(client, book)
     return chapters
 end
 
-function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint)
+function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint, opts)
     if not book.psvts then
         Content.ensure_reader_state(client, book)
     end
@@ -1132,6 +1144,8 @@ function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint)
             ["Referer"] = chapter_url,
         },
         body = client:json_encode(params),
+        -- B9: optional relaxed timeout for background prefetch (nil = default).
+        timeout = opts and opts.timeout,
     })
     if not code or code < 200 or code >= 300 then
         error(endpoint .. " failed: HTTP " .. tostring(code or "unknown"))
@@ -1156,26 +1170,26 @@ function Content.txt_to_xhtml(text)
         .. '<body>\n' .. table.concat(parts, "\n") .. '\n</body></html>'
 end
 
-function Content.fetch_txt_as_xhtml(client, settings, book, chapter)
-    local t0 = Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/t_0")
-    local ok_t1, t1 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/t_1")
+function Content.fetch_txt_as_xhtml(client, settings, book, chapter, opts)
+    local t0 = Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/t_0", opts)
+    local ok_t1, t1 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/t_1", opts)
     if not ok_t1 then t1 = "" end
     local plain = Content.decode_content_shards(t0, t1, "")
     return Content.txt_to_xhtml(plain)
 end
 
-function Content.fetch_chapter_xhtml(client, settings, book, chapter)
+function Content.fetch_chapter_xhtml(client, settings, book, chapter, opts)
     Content.refresh_reader_state(client, book, chapter)
 
     if book._content_format == "txt" then
-        return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
+        return Content.fetch_txt_as_xhtml(client, settings, book, chapter, opts)
     end
 
-    local ok, e0 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/e_0")
+    local ok, e0 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/e_0", opts)
 
     if ok and e0:sub(1, 1) == "{" and e0:find('"bookId"', 1, true) then
         book._content_format = "txt"
-        return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
+        return Content.fetch_txt_as_xhtml(client, settings, book, chapter, opts)
     end
 
     if not ok then
@@ -1185,8 +1199,8 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
     book._content_format = "epub"
     return Content.decode_content_shards(
         e0,
-        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_1"),
-        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_3")
+        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_1", opts),
+        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_3", opts)
     )
 end
 
@@ -1309,27 +1323,29 @@ end
 
 -- K4 fork: underlines/thoughts removed; the downloader path is the sole caller
 -- of fetch_single_chapter_source (annotation batching no longer applies).
-function Content.fetch_single_chapter_source(client, settings, book, chapter, state)
+function Content.fetch_single_chapter_source(client, settings, book, chapter, state, opts)
     state = state or {}
-    local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter, opts)
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
     end
     return xhtml
 end
 
-function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state)
+function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state, opts)
     state = state or {}
     local chapter_assets = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then
         state.used_asset_names = state.used_asset_names or {}
-        local tar_assets, src_map = Content.download_chapter_assets(client, book, chapter, state.used_asset_names)
+        local tar_assets, src_map = Content.download_chapter_assets(
+            client, book, chapter, state.used_asset_names, opts)
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)
         end
         xhtml = Content.rewrite_image_sources(xhtml, src_map)
-        local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, state.used_asset_names)
+        local inline_xhtml, inline_assets = Content.download_remote_images(
+            client, xhtml, state.used_asset_names, nil, opts)
         xhtml = inline_xhtml
         for _, asset in ipairs(inline_assets) do
             table.insert(chapter_assets, asset)

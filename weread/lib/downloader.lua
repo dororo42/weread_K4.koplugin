@@ -55,6 +55,39 @@ end
 -- to trade the standby guarantee for that cost, or on non-Kindle ports.
 local LIPC_STANDBY_GUARD_ENABLED = true
 
+-- B13 (2026-09-16, reMarkable official-client borrow): the official client
+-- stops its auto-cache after repeated batch failures ("Auto cache stopped
+-- after 3 attempts"). K4 prefetches are single-chapter jobs fired on every
+-- page turn, so a dead network produces one doomed job per page flip (each
+-- with shard retries) — wasted battery and a burst of hopeless requests.
+-- After PREFETCH_FAILURE_LIMIT consecutive *real* prefetch failures for the
+-- same book, suppress automatic prefetch for the cooldown window. Manual
+-- downloads never go through this guard: user-initiated work must always
+-- give complete feedback. A cancelled/superseded job is not a failure.
+local PREFETCH_FAILURE_LIMIT = 3
+local PREFETCH_FAILURE_COOLDOWN_SECONDS = 300
+
+-- B9 (2026-09-16, reMarkable official-client borrow): data-plane timeout for
+-- background prefetch. Foreground requests keep the client default (8s) with
+-- its degrade ladder — weak-network UI protection comes first — but a
+-- background chapter prefetch has no UI to protect and benefits from a
+-- patient single attempt (fewer wasted retries on slow CDNs).
+local PREFETCH_REQUEST_TIMEOUT = 30
+
+-- Completion reasons that mean "the job was superseded, not broken" (B13).
+local PREFETCH_NON_FAILURE_REASONS = {
+    cancelled = true,
+    replaced = true,
+    manual_download = true,
+    document_closed = true,
+    setting_disabled = true,
+    prefetch_not_applicable = true,
+    prefetch_context_missing = true,
+    no_next_chapter = true,
+    next_chapter_cached = true,
+    prefetch_cooling_down = true,
+}
+
 local function preventOsStandby()
     if LIPC_STANDBY_GUARD_ENABLED and Device:isKindle() then
         os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 1")
@@ -121,6 +154,33 @@ end
 function Downloader:_notifyCompletion(dl, ok, value)
     if not dl or dl.completion_notified then return end
     dl.completion_notified = true
+    -- B13: every completion path funnels through here, so the prefetch
+    -- failure streak is booked exactly once per job. Cancellations and
+    -- supersessions do not count as failures; a success (or a manual job,
+    -- which bypasses the guard entirely) resets the streak.
+    if dl.prefetch then
+        local book_id = tostring(dl.book and (dl.book.book_id or dl.book.bookId) or "")
+        if ok then
+            if self._prefetch_fail_book == book_id then
+                self._prefetch_fail_streak = 0
+                self._prefetch_fail_until = nil
+            end
+        elseif not PREFETCH_NON_FAILURE_REASONS[tostring(value or "")] then
+            if self._prefetch_fail_book ~= book_id then
+                self._prefetch_fail_book = book_id
+                self._prefetch_fail_streak = 0
+            end
+            self._prefetch_fail_streak = (self._prefetch_fail_streak or 0) + 1
+            if self._prefetch_fail_streak >= PREFETCH_FAILURE_LIMIT then
+                self._prefetch_fail_until = os.time() + PREFETCH_FAILURE_COOLDOWN_SECONDS
+                logger.warn("prefetch auto-cache paused after consecutive failures:",
+                    "book_id=", book_id,
+                    "streak=", tostring(self._prefetch_fail_streak),
+                    "last_reason=", tostring(value or ""),
+                    "cooldown_seconds=", tostring(PREFETCH_FAILURE_COOLDOWN_SECONDS))
+            end
+        end
+    end
     if type(dl.on_complete) ~= "function" then return end
     local called, err = pcall(dl.on_complete, ok == true, value)
     if not called then
@@ -320,6 +380,39 @@ function Downloader:start(book, chapters, suffix, options)
             pcall(options.on_complete, false, "authentication_required")
         end
         return false
+    end
+
+    -- B13: after repeated consecutive prefetch failures for this book, skip
+    -- automatic prefetch attempts until the cooldown expires. Manual
+    -- downloads (options.prefetch == false) are never suppressed. When the
+    -- cooldown has fully expired, give the automatic path a fresh streak —
+    -- the network may have recovered.
+    if options.prefetch then
+        local book_id = tostring(book and (book.book_id or book.bookId) or "")
+        local now = os.time()
+        if self._prefetch_fail_book ~= book_id then
+            self._prefetch_fail_book = book_id
+            self._prefetch_fail_streak = 0
+            self._prefetch_fail_until = nil
+        end
+        if self._prefetch_fail_streak >= PREFETCH_FAILURE_LIMIT
+            and now < (self._prefetch_fail_until or 0) then
+            logger.warn("prefetch suppressed during failure cooldown:",
+                "book_id=", book_id,
+                "streak=", tostring(self._prefetch_fail_streak),
+                "cooldown_remaining=", tostring((self._prefetch_fail_until or 0) - now))
+            if type(options.on_complete) == "function" then
+                pcall(options.on_complete, false, "prefetch_cooling_down")
+            end
+            return false
+        end
+        if self._prefetch_fail_streak >= PREFETCH_FAILURE_LIMIT
+            and now >= (self._prefetch_fail_until or 0) then
+            self._prefetch_fail_streak = 0
+            self._prefetch_fail_until = nil
+            logger.info("prefetch failure cooldown expired; streak reset:",
+                "book_id=", book_id)
+        end
     end
 
     local scheduled = self._scheduled_start
@@ -908,8 +1001,11 @@ function Downloader:_finishChapter(dl)
         stage_text, dl.index - 0.1)
     local started = time.now()
     local ok, xhtml, chapter_assets = pcall(function()
+        -- B9: pass the relaxed prefetch timeout through to the image
+        -- fetches as well (chapter archive + inline remote images).
+        local prefetch_opts = dl.prefetch and { timeout = PREFETCH_REQUEST_TIMEOUT } or nil
         return Content.finalize_single_chapter_content(
-            self.client, self.settings, dl.book, chapter, dl.current.xhtml, dl.state
+            self.client, self.settings, dl.book, chapter, dl.current.xhtml, dl.state, prefetch_opts
         )
     end)
     self:_perf(dl, "images_and_finalize", started, "ok=", tostring(ok))
@@ -1245,8 +1341,11 @@ function Downloader:_step(dl)
         dl.index - 1)
     local started = time.now()
     local ok, xhtml = pcall(function()
+        -- B9: background prefetch relaxes the data-plane timeout (control
+        -- plane — reader state, css — keeps the 8s default).
+        local prefetch_opts = dl.prefetch and { timeout = PREFETCH_REQUEST_TIMEOUT } or nil
         return Content.fetch_single_chapter_source(
-            self.client, self.settings, dl.book, chapter, dl.state
+            self.client, self.settings, dl.book, chapter, dl.state, prefetch_opts
         )
     end)
     self:_perf(dl, "chapter_source", started, "ok=", tostring(ok))
