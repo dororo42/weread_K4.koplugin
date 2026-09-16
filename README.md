@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v5.7.2）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v6.0）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -107,7 +107,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v5.6）          （菜单末尾）
+└── 关于（v0.6.0-k4-v6.0）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -116,63 +116,49 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 离线时长已持久化：关书、重启、挂起唤醒后不丢失，联网后自动补报。上报状态可在 `阅读时间上报 → 上报状态` 查看。
 
-本地另有按书按天的**阅读时长账本**（v5.7.2 起，官方客户端同款"先记账后上报"）：阅读统计页的「本地阅读账本」卡片展示设备已记账时长与同周期服务端确认时长，两者差距持续增大即"上报未打通"预警。
+本地另有按书按天的**阅读时长账本**（v6.0 起，官方客户端同款"先记账后上报"）：阅读统计页的「本地阅读账本」卡片展示设备已记账时长与同周期服务端确认时长，两者差距持续增大即"上报未打通"预警。
 
 ---
 
 ## 版本变更日志
 
-### v5.7.2（2026-09-16）· reMarkable 官方客户端借鉴（时长统计 P0：本地阅读账本）
+### v6.0（2026-09-16）· reMarkable 官方客户端借鉴批次（P0+P1 全量落地）
 
-> 对应《K4_remarkable官方v1.0.0_网络通信与时长统计借鉴评估 v2》P0 项 B1。官方客户端在本地 SQLite `reading_progress.reading_time` 按书持久化阅读时长（开书即记账、上报失败不影响账目），服务端心跳之外始终有一份可离线展示、可对账的记录；K4 此前只有服务端视角的 watermark。
+> 依据《K4_remarkable官方v1.0.0_网络通信与时长统计借鉴评估》v2/v3（项目根目录）。v5.7.1（P1 批次）与 v5.7.2（P0 项 B1）两个版本的变更合并收录于此，细节见评估报告。B3（JSON 直报降级通道）按约束在真机抓包验证前不实施。
 
-- **B1 · 本地阅读时长账本**：新增 `weread/lib/stats_ledger.lua`（纯 Lua 按天账本，`read_report.ledgers[book_id] = { [YYYYMMDD] = 秒 }`，经 settings 落盘、B11 原子 flush 抗损，合并 flush 节奏与 watermark 一致——每 30s 至多一次写盘，无 SQLite 每 tick 开销）。
-- **记账时机（对齐官方"先记账后上报"）**：
-  1. **服务端确认即记账**——每次上报被接受（watermark 前进 `reported_seconds`）时，把该秒数记入当日账（`_apply_outcome`）；
-  2. **离线会话即记账**——`stop()`（关书/挂起/切书）时，把本会话未发送的阅读时长（`last_active_at - watermark`，≤24h 封顶）记入当日账；watermark 机制保证这些秒数随后仍会被补报，账本只是让它们在离线期间可见。
-- **统计页对账卡**：阅读统计页新增「本地阅读账本」卡片（Overview 之后）——"设备已记账" vs "服务端已确认（本周期）"，本地多出的部分给出解释文案：未发送积压通常联网后自动补报，差距持续增大即上报被吞预警。数据经 `ReadStats.fetch(..., ledger)` 注入，无账本（如未登录）时卡片自动隐藏。
-- **测试**：`spec/stats_ledger_spec.lua`（记账/封顶/按日聚合/跨书求和/快照只读/flush 调度/apply_outcome 记账联动）。
+**时长统计**
+- **B1 · 本地阅读时长账本**：新增 `weread/lib/stats_ledger.lua`——按书按天记账（`read_report.ledgers[book_id] = { [YYYYMMDD] = 秒 }`），服务端确认即记账、离线会话也记账（对齐官方"先记账后上报"）；经 settings 落盘（B11 原子 flush 抗损），合并 flush 节奏与 watermark 一致（每 30s 至多一次写盘）。阅读统计页新增「本地阅读账本」对账卡：本地 vs 服务端差距持续增大即上报被吞预警。测试 `spec/stats_ledger_spec.lua`。
 
+**稳健性**
+- **B11 · settings 落盘抗损**：`Settings:flush()` 写前快照 `weread.lua`、写后校验、失败恢复快照并告警（官方 auth.json temp+rename 同款目标；LuaSettings 原地写遇掉电会截断配置）。
+- **B2 · 会话续期四态分级**（官方 -2013 状态机借鉴）：`renew_cookie` 失败不再一律当认证失败——`replaced / stale / expired / network` 四态分流，网络失败与临时被拒不清凭据；既有 auth fingerprint 竞态防护与 10 分钟续期冷却不变。
+- **B13 · 预取失败连击熔断**（官方 "Auto cache stopped after 3 attempts" 借鉴）：同一本书连续 3 次自动预取真实失败后，抑制自动预取 5 分钟（`prefetch_cooling_down` 静默跳过，不刷 doomed 请求不耗电）；取消/被替换不计失败，成功即清零，冷却期满自动重获机会。人工下载完全不受影响。
 
-### v5.7.1（2026-09-16）· reMarkable 官方客户端借鉴（网络通信 P1 批次）
+**登录诊断**
+- **B5 · captive portal 判定**：getLoginUid 返回 200 但 uid 为空时提示"当前网络似乎需要网页认证（强制门户）"，不再误报为通用登录失败。
+- **B4 · 设备身份留档**（K4 收敛版）：稳定 uuid `device_id` + 固定名 `Kindle K4 - weread_K4` 写入 account 记录（诊断用途）；如实申报、不伪装官方客户端，不做服务端设备注册。
 
-> 依据《K4_remarkable官方v1.0.0_网络通信与时长统计借鉴评估 v2》（项目根目录）。本轮为 P1 批次（B11/B2/B4/B5/B12）；P0 项 B1（本地时长账本）另行实施；B3（JSON 直报降级通道）按报告约束在真机抓包验证前不实施。
+**后台效率**
+- **B9 · 分通道超时**：后台预取的数据面请求（章节分片、图片包、内联图片）超时放宽至 30s，前台请求保持 8s 默认与弱网降级链——预取无 UI 可保护，耐心单次尝试减少弱网误失败；控制面请求（reader state、css、目录）保持 8s 快败快重试。
 
-- **B11 · settings 落盘抗损加固**：`Settings:flush()` 在框架写入前快照 `weread.lua`，写入后校验文件存在且非空，失败时恢复快照并告警（官方 auth.json temp+rename 原子写同款目标；LuaSettings 原地写遇掉电会截断配置=登录态丢失）。对已内置原子替换的 KOReader 构建自动退化为两次属性检查。历史上全部 flush 调用点已在 pcall 内，失败重抛不改变调用方行为。
-- **B2 · 会话续期分级（官方 -2013 状态机借鉴）**：`client.renew_cookie` 失败不再一律当"认证失败"——按官方四态分类 `replaced / stale（HTTP OK 但 succ!=1，凭据仍有效，保留不误清）/ expired（401/403 或会话类错误，需要重新扫码）/ network（传输层失败，凭据未知但保留）`，通过 `result._renewal_outcome` 与 `outcome.renewal_status` 带出；`read_report` 据此把 error_kind 细化为 `renewal_network / renewal_stale / renewal_expired`，`上报状态` 暴露 `last_renewal_status`。K4 既有的 auth fingerprint 竞态防护与 10 分钟续期冷却保持不变。
-- **B5 · captive portal 显式判定（官方空 uid 判定借鉴）**：getLoginUid 返回 HTTP 200 但 uid 为空时（portal 劫持响应的典型签名，官方 "doRequestUid got empty UID (captive portal?)" 同款），扫码登录给出专门提示"当前网络似乎需要网页认证（强制门户）"并标记 `last_login_error_kind=captive_portal`；手机热点/公共 WiFi 场景不再误报为通用登录失败。i18n 已配中文词条。
-- **B4 · 登录设备身份留档（官方 deviceId/deviceName 借鉴，K4 适用面收敛）**：首次生成稳定 uuid `device_id`（持久化 `<dataDir>/weread/weread_device_id`）与固定名 `Kindle K4 - weread_K4`，扫码登录成功后写入 account 记录（`device_id/device_name` 字段，诊断用途）。注：K4 走 Skill API 登录流，无 /weblogin 等价请求可提交设备三元组，故不做服务端设备注册；设备名如实申报，不伪装官方客户端。
-- **B12 · TLS SECLEVEL 坑位档案**（见下方「移植坑位档案」节）。
-- **知识档案 · 原生通道与 web 通道不可混用**：官方 reMarkable 客户端使用原生 UA `WeRead/1.0.0 WRBrand/remarkable wr_eink` + /weblogin 颁发的 accessToken/refreshToken，不走 web 端 s/sg 签名；K4 的 web 签名通道（Chrome UA，web_app_id 由 UA 派生）与之是两条自洽通道，不可混用。若未来 web 签名被服务端风控，"设备登录通道"是官方认证过的备用路线（K4 qr_login 已拿到 accessToken/refreshToken，改造有起点；需真机验证 /weblogin 对第三方客户端的行为）。
+**状态栏联网图标（v5.7 方案 A 落地）**
+- **页码+图标共存**：启用联网图标时自动切 `all_at_once` 并把显示项收敛为「页码 + WiFi 图标」（`COEXIST_EXTRA_ITEMS` 可选附加电池/时间），页码不再被图标挤掉；启用前把原 footer 设置整体备份到 `footer_pre_wifiicon_backup`，禁用时逐键还原（含 `all_at_once`）并同步活 footer 与模式指针。v5.7 定稿"绝不触碰 all_at_once"规则随本项废止。
+- **核实修复（3 处）**：种子路径（用户从无 footer 表）先落盘原始态再快照，否则禁用后无法还原、原始项丢失；`G_reader_settings` 为 nil 时不崩溃（退回 v5.7 单显契约）；禁用还原后模式指针重置回页码位置，不再滞留收敛期的 wifi 位置。备份不可用（store 异常）时保持 v5.7 单显直切——启用永不产生不可还原的有损变更。测试 `spec/footer_indicator_spec.lua`（10 用例：共存收敛/往返还原/退化/种子备份还原）。
 
-### 移植坑位档案（B12 · TLS SECLEVEL）
-
-官方包 `payload/config/openssl.cnf` 内的实测排查记录，摘录归档：
-
-- **现象**：`weread.qq.com`（登录/扫码域名）握手直接失败 `alert 40 (handshake_failure)`；同一网络下 `i.weread.qq.com` / `wo4.weread.qq.com` 完全正常——表现为"部分域名连不上"而非网络故障，极易误判为设备网络问题。
-- **根因**：`weread.qq.com` 只支持 TLSv1.2（`-tls1_3` 得 alert 70），且其接受的密码套件 `ECDHE-RSA-AES128-GCM-SHA256` 在 OpenSSL 3.x 默认 `SECLEVEL=2` 客户端策略下被排除。
-- **官方解法**：应用级 `OPENSSL_CONF` 指向自带 cnf，`CipherString = DEFAULT@SECLEVEL=1`（仍要求 ECDHE + AEAD + 合法证书链）；不改 `/etc/ssl/openssl.cnf` 全局（会被 OTA 覆盖且降低整机安全等级）。
-- **K4 适用性**：Kindle K4 固件时代的 OpenSSL 默认接受老套件，当前无此问题。触发条件（对号入座）：未来把插件移植到 OpenSSL 3 构建的 KOReader（新设备/新版固件）且出现"登录域名握手失败但 API 域名正常"。KOReader 侧可用 `ssl.wrap(params)` 的 protocol/ciphers 参数或启动环境变量解决，同样不要动全局。
+**知识档案（移植坑位）**
+- **B12 · TLS SECLEVEL 坑位**：`weread.qq.com` 仅支持 TLSv1.2 且其套件被 OpenSSL 3.x 默认 `SECLEVEL=2` 排除 → 握手 alert 40，表现为"登录域名连不上但 API 域名正常"（非网络故障）。解法：应用级 `OPENSSL_CONF` 指向 `CipherString = DEFAULT@SECLEVEL=1`（仍要求 ECDHE+AEAD+合法证书链），不动全局。K4 老 OpenSSL 当前无此问题；触发条件=移植到 OpenSSL 3 构建的 KOReader。完整排查记录见评估报告 v2。
+- **B14 · SQLite 嵌入式配置**：官方元库实测 `PRAGMA foreign_keys=ON; busy_timeout=5000; journal_mode=DELETE`——嵌入式闪存上 DELETE 回滚日志比 WAL 更简单可靠（无 -wal/-shm 附属文件、断电恢复路径短）。K4 未来启用 library_db 或任何 SQLite 场景时的安全默认值。
+- **通道不混用**：官方原生 UA `WeRead/1.0.0 WRBrand/remarkable wr_eink` + accessToken 通道与 K4 的 web 签名通道（Chrome UA，web_app_id 由 UA 派生）是两条自洽通道；若 web 签名被风控，"设备登录通道"（/weblogin + accessToken）是官方认证过的备用路线（qr_login 已拿到 token，需真机验证）。
 
 
-### v5.7 补遗（2026-09-14）· FM 模式位置修复 + 健壮性加固（审计驱动）
+### v5.7（2026-09-13 ~ 09-14）· 状态栏联网状态图标（复用 KOReader 内置项）
 
-- **FM 存储路径修复（P0）**：`footer_indicator.apply_to_store` 此前硬编码 `reader_footer_mode = 11`（MODE 常量值），但官方 `reader_footer_mode` 语义是 **mode_index 的 0 基位置**，且设备门控会先行剔除不支持的项——无前光的 K4 上 `wifi_status` 实际位置是 **10**，硬编码 11 会在文件管理器场景启用后静默指向 `book_title`（图标不显示）。现改为**运行时计算位置**：镜像官方 `set_mode_index` 逻辑（设备能力门控 `hasFastWifiStatusQuery`/`hasFrontlight`/`hasNaturalLight`/`hasBattery` + 可选自定义排序 `footer.order`），无自定义排序时 K4 得 10、有前光设备得 11、自定义排序按保存顺序。
-- **接口探测加固（新报告「中」项）**：`apply_to_footer` 对 `updateFooterTextGenerator`/`refreshFooter` 增加存在性探测，缺失时降级走 `onUpdateFooter` 通用重绘；`device_supports` 对探测错误保守判为不支持，不再假设可用。
-- **CI 语法哨兵**：新增 `luac -p`（严格 Lua 5.1）全量语法检查步骤，与既有 busted/luacheck 并列。
-- **README**：上游版本号同步 v1.3.0 → v1.4.0（脚注双修复已随 v5.6 对齐）。
-- **测试**：`footer_indicator_spec` 新增 7 用例（设备门控位置计算 ×2 / 自定义排序镜像 / 门控项跳过 / 无 device 模块回退 / 探测错误保守化 / FM 路径持久化计算值 / 自定义排序持久化 / 既有断言修正为计算值）。
+- **功能**：设置菜单新增「状态栏联网状态图标」开关，阅读页底部显示 Wi-Fi 连接/断开小图标（KOReader ReaderFooter 内置 `wifi_status` 项，K4 门控 `hasFastWifiStatusQuery` 源码级验证通过，默认关闭）；语义=Wi-Fi 射频/链路状态（`isWifiOn` 非阻塞查询），**不等于**互联网可达。
+- **实现**：新增 `weread/ui/footer_indicator.lua` 胶水层，逐分支对齐内置开关的刷新簿记（零 patch、零自绘控件）；FM 场景写全局设置（完整种子表，绝不写半截）下次开书生效；即时 flush 防掉电丢失。
+- **稳健性（09-14 补遗）**：FM 路径 `reader_footer_mode` 改为运行时计算位置（设备门控 + 自定义排序镜像，无前光 K4=10，修复硬编码 11 静默指向 book_title）；footer 宿主方法存在性探测缺失时降级重绘；CI 新增 `luac -p` 全量语法哨兵。
+- **测试**：`spec/footer_indicator_spec.lua`（簿记契约/单显切换/塌缩恢复/FM 降级/flush 容错；v6.0 起覆盖方案 A 共存/备份还原/退化路径）。
 
-### v5.7（2026-09-13）· 状态栏联网状态图标（复用 KOReader 内置项，紧凑设计）
-
-
-- **新功能**：设置菜单新增「状态栏联网状态图标」开关，开启后阅读页底部状态栏显示 Wi-Fi 连接/断开小图标（KOReader ReaderFooter 内置 `wifi_status` 项，v2026.07.1 源码级验证 K4 门控 `hasFastWifiStatusQuery=yes` 通过，默认关闭）。
-- **紧凑设计（v5.7 定稿）**：**绝不触碰 `all_at_once`**——默认单显模式下 7 个状态项全亮会挤爆 800px 状态栏。改为：开启时把单显模式**直接切到 wifi 图标**（状态栏只剩一个小图标+进度条，最小视觉足迹；关闭时自动切回页码，对称可逆）。依据：K4 非触摸无法轮换单显模式（footer 触区不可用、"Toggle mode"菜单项仅在触区归零时出现），"加入轮换"等于永远不可见。
-- **实现（零 patch、零自绘控件）**：新增 `weread/ui/footer_indicator.lua` 胶水层，逐分支对齐内置开关的刷新簿记（`set_has_no_mode` → `applyFooterMode`/`updateFooterTextGenerator` → `refreshFooter` → `rescheduleFooterAutoRefreshIfNeeded`），并即时 `flush` 全局设置防掉电丢失。
-- **文件管理器降级路径**：FM 无实时 footer，写全局 `G_reader_settings`（缺表时以 `readerfooter.default_settings` 完整种子，绝不写半截表；同步写 `reader_footer_mode` 使下次开书图标直接可见），开书生效并弹提示。
-- **语义边界**：图标反映 Wi-Fi 射频/链路状态（`NetworkMgr:isWifiOn`，sysfs 级非阻塞查询），**不等于**互联网可达（`isOnline` 需阻塞 DNS，与阅读循环互斥）；被动断网的图标刷新滞后 ≤1 分钟或一次翻页。
-- 手动等价路径：KOReader 顶部菜单 → 设置 → 状态栏 → 状态栏项目 → 勾选「Wi-Fi 状态」；如需页码与图标同时显示，可自行开启「全部同时显示」。
-- **测试**：新增 `spec/footer_indicator_spec.lua`（21 用例：刷新簿记契约含 MODE 顺序桩、单显切换/塌缩/恢复/过渡分支、FM 存储降级与 mode 持久化、缺省值种子、flush 容错），全套 spec 与 luacheck 通过。
+> v5.7 定稿的"绝不触碰 `all_at_once` 单显直切"设计已被 **v6.0 方案 A（页码+图标共存 + 备份还原）取代**，见上方 v6.0 节；设计细节与取舍记录存档于《K4_v5.7_网络提醒现状核实与改进方案_20260915.md》。
 
 ### v5.6（2026-09-05）· 脚注双缺陷修复 + 公众号图片流式（对齐上游 v1.4.0）
 
@@ -251,7 +237,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
   - 弱网超时降级：连续失败后单请求超时 8s→4s，恢复后自动还原
   - 目录写入 SQLite 延迟出 tick 关键路径；tick 耗时打点日志
 
-### v4.0（2026-08，当前版本）
+### v4.0（2026-08）
 
 从 v3.5 升级的核心内容：**下载机制加固（方案 1-5）+ 设备识别调整 + 阅读上报保守化 + SQLite 离线索引**。
 
