@@ -55,13 +55,14 @@ jobs:
           git config user.email "ci-diag@users.noreply.github.com"
           git add luacheck_output.txt || true
           git commit -m "ci-diag: luacheck output for ${GITHUB_SHA}" || echo "nothing to commit"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:ci-diag-log || true
+          git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:ci-diag-log || true
 
       - name: Lint gate
         run: |
           if grep -qE "Total: 0 warnings / 0 errors" luacheck_output.txt; then
             echo "LINT GREEN"
           else
-            cat luacheck_output.txt
+            # surface only the actionable lines into the step failure message
+            grep -E "spec/remarkable|Total:" luacheck_output.txt || true
             exit 1
           fi
