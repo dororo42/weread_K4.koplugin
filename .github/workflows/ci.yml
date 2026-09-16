@@ -59,14 +59,14 @@ jobs:
 
       - name: Lint gate
         run: |
-          if grep -qE "Total: 0 warnings / 0 errors" luacheck_output.txt; then
+          sed -r "s/\x1B\[[0-9;]*[A-Za-z]//g" luacheck_output.txt > luacheck_clean.txt
+          if grep -qE "Total: 0 warnings / 0 errors" luacheck_clean.txt; then
             echo "LINT GREEN"
           else
-            # surface every finding as a workflow ::error:: annotation
-            grep -E "^[a-zA-Z0-9_./-]+\.lua:[0-9]+:[0-9]+:" luacheck_output.txt | while read -r line; do
+            grep -E "\.lua:[0-9]+:[0-9]+:" luacheck_clean.txt | while read -r line; do
               echo "::error::$line"
             done
-            grep -E "Total:" luacheck_output.txt | while read -r line; do
+            grep -E "Total:" luacheck_clean.txt | while read -r line; do
               echo "::error::$line"
             done
             exit 1
