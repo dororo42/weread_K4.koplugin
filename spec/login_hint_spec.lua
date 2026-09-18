@@ -167,7 +167,12 @@ describe("login_hint", function()
             -- ReaderUI closed; hide runs from a fresh context (no footer).
             assert.is_true(LH.hide(nil))
             assert.is_nil(store.data.footer_weread_login_hint_backup)
-            assert.equals("HINT", store.data.reader_footer_custom_text)
+            -- The G layer is restored to its pre-episode shape even without
+            -- a live footer: the user never customized the text, so the key
+            -- is deleted (matching ReaderFooter:init's default fallback).
+            -- The stale instance attribute on the dead footer object is
+            -- irrelevant; the next ReaderUI rebuilds it from the G layer.
+            assert.is_nil(store.data.reader_footer_custom_text)
         end)
     end)
 
