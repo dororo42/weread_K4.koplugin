@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v6.0）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v6.5）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -108,7 +108,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v6.0）          （菜单末尾）
+└── 关于（v0.6.0-k4-v6.5）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -122,6 +122,24 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v6.5（2026-09-18）· 崩溃日志分析驱动批次（P0/P1/P2 全量落地）
+
+> 依据《K4_崩溃日志分析与优化方向_20260917》：崩溃日志显示 -2012 会话过期 42 连败全程无提示、IPv6 解析失败单次自愈、上报埋点单位名不副实。全部改动走三道门禁（luac -p / luacheck / busted）。
+
+**传输层稳健性**
+- **P0-A · IPv4 DNS 防御 + 一次性重试**：新增 `weread/lib/ipv4_dns.lua`——补丁 `socket.dns.toip` 仅保留 A 记录（K4 无 IPv6 协议栈，AAAA 字面量会 EAFNOSUPPORT）；`Client:request()` 仅对解析类错误重试 1 次。pcall 全程守护、异常回退原实现，零依赖可测。
+
+**时长上报**
+- **P0-B · tick 埋点修正**：耗时打点改 `time.to_ms` 真实毫秒、slow 阈值 `time.s(1)`、失败才打 warn——旧埋点日均 105 条噪音归零，后续 UI 卡顿监控数据可信。
+- **P2-F · 连败熔断**：transport/auth 连续 6 次失败后暂停自动上报（静默跳过、300s 重探），网络恢复 / 扫码重登 / 重启 / 上报成功四路自动复位——42 连败盲试风暴收敛为「6 次试探 + 明确提示 + 事件驱动恢复」。
+- **P1-C · 会话过期显式化**：-2012/-2013 归为 `auth` 类错误，锁存 `session_expired` 后一次性提示（4s toast + 上报状态行「登录已过期请重新扫码登录」），不再伪装成网络问题；footer 图标「需登录」态留待后续版本。
+
+**进度同步**
+- **P1-D · stale fallback 语义修正**：pull 遇 API 错误体（succ=0/errCode）如实记为通道失败（`gateway errCode=-2012 ...`），不再降级伪装成 `positions_match`；有已验证缓存时记 `pull_failed_using_cached`（行为不变：不上传、不覆盖，仅日志与 UI 语义对齐事实）。
+
+**测试与 CI**
+- 新增 `spec/ipv4_dns_spec.lua`（4 组）与 read_report 10 个用例（P1-C 5 + P2-F 5）；busted 142 → **145 用例全绿**、luacheck 0 警告、luac -p 55 文件（中途修掉新测试 3 处 `report.status()` 点调用，`05a6689`）。
 
 ### v6.0（2026-09-16）· reMarkable 官方客户端借鉴批次（P0+P1 全量落地）
 
@@ -378,7 +396,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v5.6 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v6.5 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |
@@ -406,4 +424,4 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 - 单元测试：`luarocks install busted && busted spec`；静态检查：`luarocks install luacheck && luacheck weread spec tools main.lua _meta.lua`。
 - CI（`.github/workflows/ci.yml`）使用**标准 Lua 5.1** 作为兼容性哨兵：新增 `spec/*.lua` 必须遵守 Lua 5.1 语法子集（禁止 `\x`/`\z` 转义、`goto`、整除 `//` 等新语法），本地 LuaJIT/5.3+ 不报错的问题会在 CI 拦下。
 - 依赖以 `luarocks install --tree .luarocks` 安装或依赖 CI 的排除配置；`.luarocks/`、`.luacheck_cache` 已在 `.gitignore` 中。
-- **设备部署不需要 `spec/` 与 `.luacheckrc`**：KOReader 只加载 `main.lua` + `_meta.lua` + `weread/`。发布包（`weread_K4.koplugin_v5.6.zip`）已按运行时清单打包。
+- **设备部署不需要 `spec/` 与 `.luacheckrc`**：KOReader 只加载 `main.lua` + `_meta.lua` + `weread/`。发布包（`weread_K4.koplugin-v6.5.zip`）已按运行时清单打包。
