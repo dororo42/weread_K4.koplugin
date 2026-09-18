@@ -208,6 +208,29 @@ local BACKUP_KEY = "footer_pre_wifiicon_backup"
 local COEXIST_KEEP = { page_progress = true, wifi_status = true }
 local COEXIST_EXTRA_ITEMS = {}
 
+-- R-3 (2026-09-19, review): the login-expired hint (login_hint.lua) injects
+-- into the SAME footer table via its own backup key. The two injectors must
+-- not clobber each other: while a hint episode is active, the Plan A
+-- collapse keeps custom_text enabled and every restore path re-asserts the
+-- hint afterwards. Lazy require — login_hint requires this module at its
+-- own top level, so a top-level require here would be a load-order cycle.
+local function login_hint_active()
+    local ok, lh = pcall(require, "weread/ui/login_hint")
+    if ok and type(lh) == "table" and type(lh.is_active) == "function" then
+        return lh.is_active() == true
+    end
+    return false
+end
+
+-- Re-assert an active hint on a live footer after a wholesale restore.
+-- Never raises; the require failure path simply skips the reassertion.
+local function login_hint_reassert(footer)
+    local ok, lh = pcall(require, "weread/ui/login_hint")
+    if ok and type(lh) == "table" and type(lh.reassert) == "function" then
+        pcall(lh.reassert, footer)
+    end
+end
+
 local function is_backup(store)
     local t = store and store.readSetting and store:readSetting(BACKUP_KEY)
     return type(t) == "table"
@@ -257,6 +280,11 @@ local function apply_coexist_items(fs)
     fs.page_progress = true
     fs.wifi_status = true
     fs.all_at_once = true
+    -- R-3: an active login-expired hint survives the collapse (it is exactly
+    -- the kind of signal that must not be silenced by an unrelated toggle).
+    if login_hint_active() then
+        fs.custom_text = true
+    end
     for _, name in ipairs(COEXIST_EXTRA_ITEMS) do
         fs[name] = true
     end
@@ -309,6 +337,12 @@ function M.apply_to_footer(footer, enabled)
                     M.save_reader_footer_mode(page_pos)
                 end
             end
+        end
+        -- R-3: the wholesale restore above can have wiped an active
+        -- login-expired hint; re-assert it from the hint's own backup before
+        -- the refresh bookkeeping below renders the bar.
+        if login_hint_active() then
+            login_hint_reassert(footer)
         end
     end
     footer.settings.wifi_status = enabled
@@ -478,6 +512,11 @@ function M.apply_to_store(store, enabled)
         fs = store:readSetting("footer")
         if type(fs) ~= "table" then
             fs = {}
+        end
+        -- R-3: keep an active login-expired hint visible after the restore
+        -- (the persisted G-layer text belongs to the hint and is untouched).
+        if login_hint_active() then
+            fs.custom_text = true
         end
     end
     fs.wifi_status = enabled

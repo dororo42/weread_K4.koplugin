@@ -306,7 +306,6 @@ function Client:request(opts)
 
     local req_opts = merge_req_opts({
         method = body and "POST" or "GET",
-        source = body and ltn12.source.string(body) or nil,
         headers = headers,
     }, opts)
     -- Redirects are handled explicitly by request_follow so credentials can be
@@ -321,7 +320,12 @@ function Client:request(opts)
     -- getaddrinfo. Timeouts are deliberately NOT retried here: a second
     -- 8s wait would double the worst-case UI freeze. Connect-phase failures
     -- write no body bytes, so re-creating the default sink keeps the retry
-    -- side-effect-free; user-provided sinks are reused as-is.
+    -- side-effect-free; user-provided sinks are reused as-is. R-6
+    -- (2026-09-19, review): the string source is rebuilt per attempt as well
+    -- — it was safe only under the implicit assumption that resolution
+    -- errors strike before any body byte is pulled; rebuilding removes that
+    -- assumption, so future retry-pattern additions cannot send an empty
+    -- body from an exhausted source.
     local results
     for attempt = 1, 2 do
         local sink_to_use = opts.sink
@@ -330,6 +334,7 @@ function Client:request(opts)
             sink_to_use = socketutil.table_sink(response)
         end
         req_opts.sink = sink_to_use
+        req_opts.source = body and ltn12.source.string(body) or nil
         results = { pcall(http.request, req_opts) }
         socketutil:reset_timeout()
         if results[1] then

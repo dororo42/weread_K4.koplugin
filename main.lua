@@ -23,7 +23,7 @@ local WeReadPlugin = WidgetContainer:extend{
     is_doc_only = false,
     -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
     -- self.version is what the in-plugin "About" dialog displays).
-    version = "0.6.0-k4-v6.5",
+    version = "0.6.0-k4-v7.0",
 }
 
 function WeReadPlugin:onNetworkConnected()

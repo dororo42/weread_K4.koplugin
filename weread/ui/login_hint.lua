@@ -158,4 +158,30 @@ function M.hide(ui)
     return true
 end
 
+-- R-3 (2026-09-19, review): the other footer injector (footer_indicator's
+-- Plan A backup) restores the footer table WHOLESALE on disable, which can
+-- wipe this hint's injection while the episode is still active. Call this
+-- after any such restore: re-asserts the hint keys. The display text comes
+-- from the persisted G-layer key (login_hint.show keeps it current for the
+-- whole episode), NOT from the pre-episode backup. No-op unless a hint
+-- episode is active; never raises.
+function M.reassert(footer)
+    local store = get_store()
+    local backup = read(store, BACKUP_KEY)
+    if type(backup) ~= "table" then
+        return false
+    end
+    if type(footer) ~= "table" or type(footer.settings) ~= "table" then
+        return false
+    end
+    local text = read(store, G_TEXT_KEY)
+    footer.settings.custom_text = true
+    if type(text) == "string" and text ~= "" then
+        footer.custom_text = text
+    end
+    footer.custom_text_repetitions = 1
+    M._repaint(footer)
+    return true
+end
+
 return M

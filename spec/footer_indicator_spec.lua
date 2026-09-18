@@ -582,4 +582,90 @@ describe("footer_indicator", function()
             assert.is_true(FI.apply_to_store(bare, true))
         end)
     end)
+
+    -- R-3 (2026-09-19, review): the login-expired hint (login_hint.lua)
+    -- injects into the same footer table via its own backup key. The two
+    -- injectors must not clobber each other: the collapse keeps an active
+    -- hint visible and every restore path re-asserts it afterwards.
+    describe("login_hint interplay (R-3)", function()
+        local function seed_hint(store)
+            -- matches what login_hint.show() leaves behind: the episode
+            -- backup AND the G-layer text keys carrying the display text
+            store.data.footer_weread_login_hint_backup = {
+                enabled = false, text = "HINT", repetitions = 1,
+                g_text = "HINT", g_repetitions = 1,
+            }
+            store.data.reader_footer_custom_text = "HINT"
+            store.data.reader_footer_custom_text_repetitions = 1
+        end
+
+        it("keeps an active hint enabled through the coexist collapse", function()
+            seed_hint(store)
+            local mixed = {
+                wifi_status = false, all_at_once = false,
+                page_progress = true, custom_text = true, time = true,
+            }
+            local footer = make_footer({ settings = FI.deep_copy(mixed), mode = 1 })
+            store.data.footer = FI.deep_copy(mixed)
+            assert.is_true(FI.apply_to_footer(footer, true))
+            assert.is_true(footer.settings.all_at_once) -- collapsed
+            assert.is_true(footer.settings.wifi_status)
+            -- the hint survived the collapse (page progress + icon + hint)
+            assert.is_true(footer.settings.custom_text)
+        end)
+
+        it("re-asserts an active hint after the disable restore", function()
+            seed_hint(store)
+            local footer = make_footer({
+                settings = {
+                    wifi_status = true, all_at_once = true,
+                    page_progress = true, custom_text = true,
+                },
+                mode = 10,
+            })
+            store.data.footer = {
+                wifi_status = false, all_at_once = false,
+                page_progress = true, custom_text = false, time = true,
+            }
+            store.data.footer_pre_wifiicon_backup = FI.deep_copy(store.data.footer)
+            assert.is_true(FI.apply_to_footer(footer, false))
+            -- verbatim restore happened...
+            assert.is_false(footer.settings.wifi_status)
+            assert.is_false(footer.settings.all_at_once)
+            assert.is_true(footer.settings.time)
+            -- ...and the hint was re-asserted from its own backup
+            assert.is_true(footer.settings.custom_text)
+            assert.equals("HINT", footer.custom_text)
+        end)
+
+        it("leaves custom_text alone when no hint episode is active", function()
+            local footer = make_footer({
+                settings = {
+                    wifi_status = true, all_at_once = true,
+                    page_progress = true, custom_text = true,
+                },
+                mode = 10,
+            })
+            store.data.footer = {
+                wifi_status = false, all_at_once = false,
+                page_progress = true, custom_text = false,
+            }
+            store.data.footer_pre_wifiicon_backup = FI.deep_copy(store.data.footer)
+            assert.is_true(FI.apply_to_footer(footer, false))
+            assert.is_false(footer.settings.custom_text)
+        end)
+
+        it("apply_to_store disable keeps an active hint in the restored table", function()
+            seed_hint(store)
+            store.data.footer = {
+                wifi_status = false, all_at_once = false,
+                page_progress = true, custom_text = false,
+            }
+            store.data.footer_pre_wifiicon_backup = FI.deep_copy(store.data.footer)
+            assert.is_true(FI.apply_to_store(store, false))
+            assert.is_false(store.data.footer.wifi_status)
+            assert.is_true(store.data.footer.custom_text)
+            assert.is_nil(store.data.footer_pre_wifiicon_backup)
+        end)
+    end)
 end)

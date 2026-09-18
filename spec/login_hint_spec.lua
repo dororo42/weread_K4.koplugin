@@ -186,4 +186,35 @@ describe("login_hint", function()
             assert.is_false(LH.is_active())
         end)
     end)
+
+    -- R-3 (2026-09-19, review): footer_indicator's Plan A restore can wipe
+    -- the hint injection while the episode is still active; reassert()
+    -- re-applies the hint keys from our own backup.
+    describe("reassert", function()
+        it("is a no-op without an active episode", function()
+            local footer = make_footer()
+            assert.is_false(LH.reassert(footer))
+            assert.is_false(footer.settings.custom_text)
+            assert.equals("KOReader", footer.custom_text)
+        end)
+
+        it("re-asserts the hint after another injector wiped it", function()
+            local footer = make_footer()
+            LH.show(make_ui(footer), "HINT")
+            -- simulate footer_indicator's wholesale restore: hint keys wiped
+            -- on the live footer, episode backup still present
+            footer.settings.custom_text = false
+            footer.custom_text = "KOReader"
+            assert.is_true(LH.reassert(footer))
+            assert.is_true(footer.settings.custom_text)
+            assert.equals("HINT", footer.custom_text)
+            assert.equals(1, footer.custom_text_repetitions)
+            assert.is_true(footer.repaint_count() >= 2) -- show + reassert
+        end)
+
+        it("tolerates a missing footer", function()
+            LH.show(make_ui(make_footer()), "HINT")
+            assert.is_false(LH.reassert(nil))
+        end)
+    end)
 end)

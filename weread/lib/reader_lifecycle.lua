@@ -488,10 +488,16 @@ function M:getChapterInfoFromFile(book, file_path)
     return nil, nil, is_full_book
 end
 
-function M:onFlushSettings()
+-- R-1 (2026-09-19, review): guard with the same failure-isolation wrapper as
+-- every other on* entry. OnFlushSettings fires at reader exit/periodic flush
+-- time — exactly when a settings flush is most likely to fail (disk full,
+-- power loss) — and since B11 the flush raises after a failed write to keep
+-- the failure observable. Unguarded, that error would propagate into
+-- KOReader's event chain and could abort the teardown.
+M.onFlushSettings = guarded("onFlushSettings", function(self)
     if self.settings then
         self.settings:flush()
     end
-end
+end)
 
 return M

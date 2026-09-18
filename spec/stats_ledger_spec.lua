@@ -167,6 +167,60 @@ describe("StatsLedger booking (B1, reMarkable borrow)", function()
 end)
 
 -- --------------------------------------------------------------------
+-- R-2 (2026-09-19, review): bounded day-key retention
+-- --------------------------------------------------------------------
+
+describe("StatsLedger pruning (R-2)", function()
+    it("drops day keys older than the retention window on booking", function()
+        -- arbitrary fixed instant (2026-09-19 UTC-ish); day keys derived from
+        -- it so the assertions stay timezone-independent
+        local now_ts = 1790000000
+        local ledger, harness = new_ledger(now_ts)
+        local old_ts = now_ts - 120 * 86400     -- far beyond 90d retention
+        local recent_ts = now_ts - 86400
+        local old_day = os.date("!%Y%m%d", old_ts)
+        local recent_day = os.date("!%Y%m%d", recent_ts)
+        -- booking into a beyond-retention day is pruned in the same add()
+        ledger:add("B1", 100, old_ts)
+        assert.is_nil(harness.config.ledgers.B1[old_day])
+        -- recent bookings survive the prune
+        ledger:add("B1", 50, recent_ts)
+        assert.equals(50, harness.config.ledgers.B1[recent_day])
+        assert.equals(50, ledger:total("B1"))
+    end)
+
+    it("prune(keep_days) honours an explicit window and leaves malformed keys alone", function()
+        local now_ts = 1790000000
+        local ledger, harness = new_ledger(now_ts)
+        harness.config.ledgers = {
+            B1 = { ["20200101"] = 5, ["20260701"] = 7, junk = 3, [42] = 9 },
+        }
+        -- "20200101" is far beyond 90 days before the fixed instant;
+        -- "20260701" (~80 days) stays; malformed keys are not this
+        -- module's call and remain untouched.
+        local removed = ledger:prune()
+        assert.equals(1, removed)
+        assert.is_nil(harness.config.ledgers.B1["20200101"])
+        assert.equals(7, harness.config.ledgers.B1["20260701"])
+        assert.equals(3, harness.config.ledgers.B1.junk)
+        assert.equals(9, harness.config.ledgers.B1[42])
+    end)
+
+    it("prunes at most once per UTC day key", function()
+        local now_ts = 1790000000
+        local ledger = new_ledger(now_ts)
+        local ts = now_ts - 86400
+        ledger:add("B1", 10, ts)
+        local pruned_at = ledger._prune_day
+        assert.equals(os.date("!%Y%m%d", ts), pruned_at)
+        -- a second booking into the same day does not re-run the prune
+        ledger:add("B1", 10, ts)
+        assert.equals(pruned_at, ledger._prune_day)
+        assert.equals(20, ledger:total("B1"))
+    end)
+end)
+
+-- --------------------------------------------------------------------
 -- ReadReport integration: booking on accepted outcome + offline session
 -- --------------------------------------------------------------------
 

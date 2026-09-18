@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v6.5）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v7.0）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -108,7 +108,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v6.5）          （菜单末尾）
+└── 关于（v0.6.0-k4-v7.0）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -122,6 +122,20 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v7.0（2026-09-19）· 综合评估风险修复批次
+
+**稳健性**
+- **`onFlushSettings` 失败隔离（R-1）**：B11 落盘加固使 `Settings:flush()` 在写失败（磁盘满/掉电）时抛错以保可观测，而 `onFlushSettings` 是全项目唯一未加 `guarded()` 包装的 on\* 事件入口——KOReader 退出/定期触发时异常可能穿透事件链、中断关闭流程。已与全部 on\* 入口统一失败隔离。
+- **页脚双注入器互感知（R-3）**：登录过期提示（login_hint）与页脚 wifi 图标（Plan A）此前各自快照/恢复同一张 footer 表，交叠启用/禁用可能互相覆盖提示或图标状态。现 Plan A 坍缩保留激活中的提示条、两条恢复路径在整表还原后重断言提示（惰性 require 规避模块加载环）。
+- **HTTP 重试 body source 每轮重建（R-6）**：解析类错误（EAFNOSUPPORT 等）的一次性重试此前依赖"错误必先于 body 传输"的隐含前提，现显式每轮重建 source，未来扩充重试模式不可能发出空 body。
+
+**维护性**
+- **阅读账本日键修剪（R-2）**：B1 本地账本此前按 UTC 日累积、永不清理，跨年使用会无界增长（放大设置文件体积与 B11 落盘开销）。新增 90 天保留窗（`prune`），每 UTC 日至多触发一次；时钟异常（负 time_t 等 `os.date` 失败场景）自动跳过、绝不影响记账。
+- **README**：「开发与测试」节补全局副作用声明——插件加载时的 IPv4 优先 DNS patch（`weread/lib/ipv4_dns.lua`）对整个 KOReader 进程生效，异常自动回退原实现。
+
+**测试**
+- 新增 10 个用例：账本修剪 3（保留窗/显式窗+畸形键/每日一次）、提示重断言 3、页脚互感知 4（坍缩保提示/disable 重断言/无提示回归/store 路径）。全套 **177 用例**，Lua 5.4 / Lua 5.1 双 runtime 全绿（CI 同步）。
 
 ### v6.5（2026-09-18）· 崩溃日志分析驱动批次（P0/P1/P2 全量落地）
 
@@ -400,7 +414,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v6.5 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v7.0 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |
@@ -427,5 +441,6 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 - 单元测试：`luarocks install busted && busted spec`；静态检查：`luarocks install luacheck && luacheck weread spec tools main.lua _meta.lua`。
 - CI（`.github/workflows/ci.yml`）使用**标准 Lua 5.1** 作为兼容性哨兵：新增 `spec/*.lua` 必须遵守 Lua 5.1 语法子集（禁止 `\x`/`\z` 转义、`goto`、整除 `//` 等新语法），本地 LuaJIT/5.3+ 不报错的问题会在 CI 拦下。
+- **全局副作用声明**：插件加载时会把 `socket.dns.toip` patch 为 IPv4 优先解析（`weread/lib/ipv4_dns.lua`，K4 无 IPv6 栈下的 EAFNOSUPPORT 防御）——该 patch 对**整个 KOReader 进程**生效，其他插件的 HTTP 请求同样走 A 记录优先；任何异常自动回退原实现。
 - 依赖以 `luarocks install --tree .luarocks` 安装或依赖 CI 的排除配置；`.luarocks/`、`.luacheck_cache` 已在 `.gitignore` 中。
 - **设备部署不需要 `spec/` 与 `.luacheckrc`**：KOReader 只加载 `main.lua` + `_meta.lua` + `weread/`。发布包（`weread_K4.koplugin-v6.5.zip`）已按运行时清单打包。

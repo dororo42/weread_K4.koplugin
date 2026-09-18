@@ -25,6 +25,13 @@ M.__index = M
 
 local MAX_DAY_SECONDS = 24 * 3600
 
+-- R-2 (2026-09-19, review): day keys used to accumulate forever — one key
+-- per book per UTC day, growing weread.lua (and every B11 flush) without
+-- bound. Keep a bounded window: anything older than RETENTION_DAYS is
+-- pruned. The reconciliation card reads periods of at most a few weeks, and
+-- the all-time totals keep their meaning (90 days of trailing history).
+local RETENTION_DAYS = 90
+
 function M:new(settings, scheduler, now)
     assert(settings, "stats ledger settings are required")
     return setmetatable({
@@ -35,6 +42,8 @@ function M:new(settings, scheduler, now)
         _flush_pending = false,
         _flush_scheduled = false,
         _flush_fn = nil,
+        -- R-2: last UTC day a prune ran (prune runs at most once per day)
+        _prune_day = nil,
     }, self)
 end
 
@@ -92,8 +101,44 @@ function M:add(book_id, seconds, ts)
         day_total = MAX_DAY_SECONDS
     end
     entry[key] = day_total
+    -- R-2: prune old day keys at most once per UTC day (cheap bounded walk).
+    if self._prune_day ~= key then
+        self._prune_day = key
+        self:prune()
+    end
     self:_schedule_flush()
     return day_total
+end
+
+-- R-2 (2026-09-19, review): drop day keys older than keep_days (default
+-- RETENTION_DAYS). Day keys are UTC YYYYMMDD strings, so lexicographic
+-- order equals chronological order. Returns the number of removed keys.
+-- Malformed keys (not 8 chars) are left untouched: they are invisible to
+-- every query and dropping unknown shapes is not this module's call.
+function M:prune(keep_days)
+    keep_days = tonumber(keep_days) or RETENTION_DAYS
+    -- R-2 hardening (2026-09-19): a negative or failed os.date (clock far in
+    -- the past, e.g. 1970 test fixtures, or a 5.1 CRT returning nil for
+    -- negative time_t) must never break booking — pruning is best-effort.
+    local cutoff = day_key(self.now() - keep_days * 86400)
+    if type(cutoff) ~= "string" or #cutoff ~= 8 then
+        return 0
+    end
+    local removed = 0
+    for _book_id, entry in pairs(ledgers(self)) do
+        if type(entry) == "table" then
+            for day in pairs(entry) do
+                if type(day) == "string" and #day == 8 and day < cutoff then
+                    entry[day] = nil
+                    removed = removed + 1
+                end
+            end
+        end
+    end
+    if removed > 0 then
+        self:_schedule_flush()
+    end
+    return removed
 end
 
 -- Total seconds booked for one book (or nil when the book has no ledger).
