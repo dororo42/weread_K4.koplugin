@@ -62,6 +62,8 @@ local zh = {
     ["WeRead session expired: please re-login (scan the QR code)"] = "微信读书登录已过期，请重新扫码登录",
     ["Session expired: please re-login (scan the QR code)"] = "登录已过期：请重新扫码登录",
     ["Reporting paused after repeated failures; it resumes on network recovery or re-login."] = "连续失败已暂停上报，网络恢复或重新登录后自动继续（阅读时长不会丢失）。",
+    -- P1-C §六·3 (2026-09-18): short footer hint text (static display form).
+    ["WeRead login expired"] = "微信读书登录已过期",
     ["Incorrect verification code."] = "验证码不正确。",
     ["Unknown login response"] = "未知登录响应",
     -- B1 (2026-09-16): local reading ledger card.

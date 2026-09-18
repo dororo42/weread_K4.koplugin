@@ -16,7 +16,6 @@ local BUSY_RETRY_LIMIT = 10
 local PULL_RETRY_DELAY_SECONDS = 15
 local PULL_MAX_RETRIES = 3
 local SAME_THRESHOLD_PERCENT = 2
-local SOURCE_CONFLICT_THRESHOLD_PERCENT = 2
 -- Coalescing window for settings:flush() from _persist. Short enough that a
 -- crash loses at most one interval of progress state; long enough to avoid a
 -- flash write per progress update.
@@ -293,6 +292,18 @@ function ProgressSync:_fetch_remote(book_id, chapters)
     -- not "no progress found". Normalizing it used to degrade the reason to
     -- a generic progress_not_found, hiding exactly the session state the
     -- user needs to see. Return a legible "errCode=..." reason instead.
+    -- B6 gateway-first pull (2026-09-18, §六·2): with an API key configured
+    -- the pull rides the /api/agent/gateway forwarder (Bearer, cookie-free)
+    -- EXCLUSIVELY on success. The previous parallel two-probe (gateway + web
+    -- cookie request) kept firing the web request even when the gateway
+    -- answered: with an expired cookie session that second request was a
+    -- guaranteed -2012 -- noise in the logs, an extra radio round-trip on a
+    -- 2G-RAM device, and the very "pull channel (pure cookie) session
+    -- expired" signature the 2026-09-16 capture showed. The web channel
+    -- stays as a FALLBACK for hosts without an API key and for gateway
+    -- transport failures. With a single answering source, cross-source
+    -- conflict detection (PositionMapper.choose_remote) has nothing to
+    -- compare and is no longer invoked from this path.
     local function api_error_reason(result)
         if type(result) ~= "table" then
             return nil
@@ -329,6 +340,10 @@ function ProgressSync:_fetch_remote(book_id, chapters)
         else
             gateway_error = "gateway " .. tostring(result)
         end
+        if gateway then
+            -- Primary channel answered: stop here, no web probe at all.
+            return gateway
+        end
     end
     if self.settings:is_cookie_configured() then
         local ok, result = pcall(
@@ -345,15 +360,12 @@ function ProgressSync:_fetch_remote(book_id, chapters)
             web_error = "web " .. tostring(result)
         end
     end
-    local selected = PositionMapper.choose_remote(
-        web,
-        gateway,
-        SOURCE_CONFLICT_THRESHOLD_PERCENT
-    )
-    if not selected then
-        return nil, gateway_error or web_error or "remote_unavailable"
+    if web then
+        -- Fallback path only (gateway never answered): no cross-source
+        -- conflict is detectable, so return the web result directly.
+        return web
     end
-    return selected
+    return nil, gateway_error or web_error or "remote_unavailable"
 end
 
 function ProgressSync:_apply_remote(remote, context, options)

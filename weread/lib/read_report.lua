@@ -275,6 +275,10 @@ function ReadReport:new(options)
         -- P1-C: one-shot host callback, pcall-guarded at the call site,
         -- fired when the session turns expired (not on every failure).
         on_session_expired = options.on_session_expired,
+        -- P1-C §六·3 (2026-09-18): edge-triggered counterpart, fired when an
+        -- accepted report clears a latched session_expired (drives the
+        -- footer login-hint teardown in main.lua).
+        on_session_restored = options.on_session_restored,
         now = options.now or os.time,
         session_id = tostring({}) .. ":" .. tostring((options.now or os.time)()),
         -- K4：禁用子进程 fork（fork 导致 UI 卡顿 0.5-3s），全部上传走
@@ -519,7 +523,13 @@ function ReadReport:_record_success(result)
     self.consecutive_failures = 0
     -- P2-F/P1-C: an accepted report proves session and link are healthy.
     self.failure_streak_paused = false
+    local was_session_expired = self.session_expired == true
     self.session_expired = false
+    if was_session_expired and type(self.on_session_restored) == "function" then
+        -- P1-C §六·3: edge-triggered restore — only on the expired->healthy
+        -- transition, so the footer hint teardown fires exactly once.
+        pcall(self.on_session_restored)
+    end
     self.state = "active"
     if recovered or self.count == 1 or self.count % 20 == 0 then
         log("info", "read report success:",

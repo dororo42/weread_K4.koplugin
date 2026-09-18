@@ -14,6 +14,7 @@ local ProgressSyncDialog = require("weread.ui.progress_sync_dialog")
 local QRLogin = require("weread.lib.qr_login")
 local ReadReport = require("weread.lib.read_report")
 local Settings = require("weread.lib.settings")
+local LoginHint = require("weread/ui/login_hint")
 
 local _ = PluginUtil.tr
 
@@ -22,7 +23,7 @@ local WeReadPlugin = WidgetContainer:extend{
     is_doc_only = false,
     -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
     -- self.version is what the in-plugin "About" dialog displays).
-    version = "0.6.0-k4-v6.0",
+    version = "0.6.0-k4-v6.5",
 }
 
 function WeReadPlugin:onNetworkConnected()
@@ -107,6 +108,17 @@ function WeReadPlugin:init()
             self:showTransientInfo(
                 _("WeRead session expired: please re-login (scan the QR code)"),
                 4)
+            -- P1-C §六·3: persistent footer hint ("常显"形态) while the
+            -- session stays expired. Degrades to a no-op outside a live
+            -- all_at_once footer (single-mode K4 footer would hide page
+            -- progress; toast + status line still cover that case).
+            pcall(LoginHint.show, self.ui,
+                _("WeRead login expired"))
+        end,
+        -- P1-C §六·3 counterpart: an accepted report proves the session is
+        -- healthy again — tear the footer hint down exactly once.
+        on_session_restored = function()
+            pcall(LoginHint.hide, self.ui)
         end,
         -- The report tick runs on the UI loop; use the link-state check here
         -- because NetworkMgr:isOnline() does a blocking DNS lookup.

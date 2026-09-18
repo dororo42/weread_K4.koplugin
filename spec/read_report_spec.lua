@@ -225,6 +225,49 @@ describe("ReadReport session-expiry surfacing (P1-C)", function()
     end)
 end)
 
+-- P1-C §六·3 (2026-09-18): edge-triggered session-restore callback that
+-- drives the footer login-hint teardown (main.lua on_session_restored).
+describe("ReadReport session-restore callback (P1-C §六·3)", function()
+    it("fires exactly once on the expired -> healthy transition", function()
+        local report = new_report()
+        local fired = 0
+        report.on_session_restored = function() fired = fired + 1 end
+        report:_set_error("errCode=-2012", "auth", "x:")
+        assert.is_true(report.session_expired)
+        report:_record_success({ synckey = true })
+        assert.equals(1, fired)
+        assert.is_false(report.session_expired)
+    end)
+
+    it("does not fire when the session was never expired", function()
+        local report = new_report()
+        local fired = 0
+        report.on_session_restored = function() fired = fired + 1 end
+        report:_record_success({ synckey = true })
+        assert.equals(0, fired)
+    end)
+
+    it("does not fire again on subsequent successes within one episode", function()
+        local report = new_report()
+        local fired = 0
+        report.on_session_restored = function() fired = fired + 1 end
+        report:_set_error("errCode=-2012", "auth", "x:")
+        report:_record_success({ synckey = true })
+        report:_record_success({ synckey = true })
+        assert.equals(1, fired)
+    end)
+
+    it("survives a callback error (pcall-guarded at the call site)", function()
+        local report = new_report()
+        report.on_session_restored = function() error("host teardown boom") end
+        report:_set_error("errCode=-2012", "auth", "x:")
+        assert.has_no_errors(function()
+            report:_record_success({ synckey = true })
+        end)
+        assert.is_false(report.session_expired)
+    end)
+end)
+
 -- P2-F (2026-09-18, crash-report E1): failure-streak circuit breaker.
 describe("ReadReport failure-streak breaker (P2-F)", function()
     it("pauses after 6 consecutive transport/auth failures", function()

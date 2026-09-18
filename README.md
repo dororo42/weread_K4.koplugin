@@ -138,6 +138,10 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 **进度同步**
 - **P1-D · stale fallback 语义修正**：pull 遇 API 错误体（succ=0/errCode）如实记为通道失败（`gateway errCode=-2012 ...`），不再降级伪装成 `positions_match`；有已验证缓存时记 `pull_failed_using_cached`（行为不变：不上传、不覆盖，仅日志与 UI 语义对齐事实）。
 
+**§六·2/§六·3 增补（2026-09-18 晚，版本仍为 v6.5）**
+- **pull 通道 gateway 化收尾（§六·2）**：`_fetch_remote` 串行化——配置了 API Key（扫码登录必得）时 pull **只走** `/api/agent/gateway`（Bearer 免 cookie）且成功即返，纯 cookie 的 web 通道降级为「无 Key 主机 / 网关传输失败」时的兜底。cookie 会话过期时不再有必败的 web 双发请求（-2012 噪音与多余射频往返清零）。gateway 化主干自上游 v0.6.0 既有，本步是通道策略的结构收尾。
+- **footer「需登录」静态常显（§六·3）**：新增 `weread/ui/login_hint.lua`——会话过期时复用 KOReader 原生 footer `custom_text` 项常显「微信读书登录已过期」（静态形态；闪烁因 E-ink 刷新成本否决，进菜单查看即既有状态行）；首个成功上报（`on_session_restored` 边沿）自动撤销。注入前快照 footer 状态到 `G_reader_settings`（断电不可卡死提示态），撤销时逐字恢复；单模式 footer（K4 无触摸）拒绝注入以免顶掉页码，回退 toast + 状态行提示。新增 `spec/login_hint_spec.lua`（10 用例）与 `spec/progress_sync_spec.lua`（7 用例）。
+
 **测试与 CI**
 - 新增 `spec/ipv4_dns_spec.lua`（4 组）与 read_report 10 个用例（P1-C 5 + P2-F 5）；busted 142 → **145 用例全绿**、luacheck 0 警告、luac -p 55 文件（中途修掉新测试 3 处 `report.status()` 点调用，`05a6689`）。
 
