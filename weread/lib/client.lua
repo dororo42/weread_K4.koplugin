@@ -5,6 +5,27 @@ local http = require("socket.http")
 local Cookie = require("weread.lib.cookie")
 local WeRead = require("weread.lib.protocol")
 
+-- P0-A (2026-09-18, crash-report E3): force IPv4-first DNS resolution at
+-- module load so every request path (read/getProgress/gateway/download)
+-- inherits it once. The K4 has no IPv6 stack while weread.qq.com has AAAA
+-- records; the patch is pcall-guarded and falls back to the stock resolver
+-- on any unexpected shape (it must never introduce a new failure mode).
+-- The module handle is kept for is_resolution_error() in Client:request().
+local ipv4_dns
+do
+    local ok_ipv4, module = pcall(require, "weread.lib.ipv4_dns")
+    if ok_ipv4 and module then
+        ipv4_dns = module
+        local ok_patch, patch_err = pcall(function()
+            local socket = require("socket")
+            return ipv4_dns.apply(socket)
+        end)
+        if not ok_patch then
+            logger.warn("IPv4 DNS patch skipped:", tostring(patch_err))
+        end
+    end
+end
+
 local ok_json, json = pcall(require, "json")
 if not ok_json then
     ok_json, json = pcall(require, "rapidjson")
@@ -283,16 +304,9 @@ function Client:request(opts)
     end
     socketutil:set_timeout(block_timeout, total_timeout)
 
-    local sink_to_use = opts.sink
-    if not sink_to_use then
-        response = {}
-        sink_to_use = socketutil.table_sink(response)
-    end
-
     local req_opts = merge_req_opts({
         method = body and "POST" or "GET",
         source = body and ltn12.source.string(body) or nil,
-        sink = sink_to_use,
         headers = headers,
     }, opts)
     -- Redirects are handled explicitly by request_follow so credentials can be
@@ -301,8 +315,40 @@ function Client:request(opts)
     local diagnostic_api = req_opts.diagnostic_api
     req_opts.diagnostic_api = nil
 
-    local results = { pcall(http.request, req_opts) }
-    socketutil:reset_timeout()
+    -- P0-A (2026-09-18, crash-report E3): resolution-class transport errors
+    -- (IPv6 literal on an AF_INET socket, fast DNS failures) are transient
+    -- ordering artifacts — a single retry re-runs resolution with a fresh
+    -- getaddrinfo. Timeouts are deliberately NOT retried here: a second
+    -- 8s wait would double the worst-case UI freeze. Connect-phase failures
+    -- write no body bytes, so re-creating the default sink keeps the retry
+    -- side-effect-free; user-provided sinks are reused as-is.
+    local results
+    for attempt = 1, 2 do
+        local sink_to_use = opts.sink
+        if not sink_to_use then
+            response = {}
+            sink_to_use = socketutil.table_sink(response)
+        end
+        req_opts.sink = sink_to_use
+        results = { pcall(http.request, req_opts) }
+        socketutil:reset_timeout()
+        if results[1] then
+            break
+        end
+        local retryable = attempt == 1 and ipv4_dns
+            and ipv4_dns.is_resolution_error(results[2])
+        if not retryable then
+            break
+        end
+        logger.warn(
+            "HTTP transport retry after resolution error:",
+            "method=", tostring(req_opts.method),
+            "url=", tostring(req_opts.url),
+            "api=", tostring(diagnostic_api or "unknown"),
+            "attempt=", tostring(attempt),
+            "error=", tostring(results[2])
+        )
+    end
     if not results[1] then
         logger.err(
             "HTTP transport failed:",

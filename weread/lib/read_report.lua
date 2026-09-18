@@ -39,6 +39,28 @@ local FAILURE_DEGRADE_DEEP_TIMEOUT = 2
 -- page turns. Reading time is never lost — the watermark covers the gap.
 local WEAK_NETWORK_FAILURE_THRESHOLD = 4
 local WEAK_NETWORK_TICK_SECONDS = 120
+-- P2-F (2026-09-18, crash-report E1): stop automatic retries after this
+-- many consecutive failures of the paused classes (session/link problems
+-- that no amount of blind retrying can fix). 6 failures ≈ 12 minutes at
+-- the S-12 120s cadence — 2026-09-17 saw 42 failures ≈ 84 minutes with
+-- zero user-visible signal. The streak is cleared by reset_failure_streak
+-- (network recovery / re-login) or a fresh start(); the watermark keeps
+-- every unsent second, so pausing never loses reading time.
+local FAILURE_STREAK_LIMIT = 6
+-- Failure kinds that qualify for the breaker: everything session- or
+-- link-shaped. Pure "server" rejections (context/token churn the next
+-- ensure_context rebuild can fix) and internal kinds stay out.
+local FAILURE_STREAK_PAUSE_KINDS = {
+    transport = true,
+    auth = true,
+    authentication = true,
+    renewal_network = true,
+    renewal_expired = true,
+}
+-- While paused, the tick still fires at this slow cadence so a reset
+-- condition (event callback already handled; re-login) is noticed promptly
+-- without sending anything.
+local FAILURE_STREAK_RECHECK_SECONDS = 300
 -- P2 (2026-08-26): tick cost instrumentation. time.now() (ms) so on-device
 -- logs can quantify UI-loop freezes per tick (failed ticks and slow ticks).
 local ok_time, time = pcall(require, "ui/time")
@@ -135,6 +157,28 @@ local function response_body(result)
     return result
 end
 
+-- P1-C (2026-09-18, crash-report E1/E2): session-level server rejections.
+-- WeRead answers with errCode -2012 ("登录超时") / -2013 when the web
+-- session is gone; classifying them as "auth" (instead of the generic
+-- "server") is what powers the failure-streak breaker (P2-F) and the
+-- expired-session surfacing instead of an 84-minute silent retry blind
+-- alley.
+local AUTH_ERROR_CODES = {
+    ["-2012"] = true,
+    ["2012"] = true,
+    ["-2013"] = true,
+    ["2013"] = true,
+}
+
+local function is_auth_error_body(result)
+    local body = response_body(result)
+    if type(body) ~= "table" then
+        return false
+    end
+    local code = body.errCode or body.errcode or body.errorCode
+    return AUTH_ERROR_CODES[tostring(code)] == true
+end
+
 local function table_keys(value)
     if type(value) ~= "table" then
         return ""
@@ -228,6 +272,9 @@ function ReadReport:new(options)
         detect_book = options.detect_book,
         position_provider = options.position_provider,
         is_online = options.is_online or function() return true end,
+        -- P1-C: one-shot host callback, pcall-guarded at the call site,
+        -- fired when the session turns expired (not on every failure).
+        on_session_expired = options.on_session_expired,
         now = options.now or os.time,
         session_id = tostring({}) .. ":" .. tostring((options.now or os.time)()),
         -- K4：禁用子进程 fork（fork 导致 UI 卡顿 0.5-3s），全部上传走
@@ -239,6 +286,16 @@ function ReadReport:new(options)
         count = 0,
         failure_count = 0,
         consecutive_failures = 0,
+        -- P2-F (2026-09-18, crash-report E1): circuit breaker. After
+        -- FAILURE_STREAK_LIMIT consecutive auth/transport failures the tick
+        -- stops sending (the watermark keeps every unsent second) until
+        -- reset_failure_streak() re-arms it — network recovery
+        -- (onNetworkConnected), a fresh QR login, or a manual re-start.
+        failure_streak_paused = false,
+        -- P1-C (2026-09-18, crash-report E1/E2): latched "needs login"
+        -- state, surfaced via status()/Report status and a one-shot host
+        -- callback instead of silent retries.
+        session_expired = false,
         waiting_count = 0,
         started_at = nil,
         -- Watermark of reading time already accepted by the server. Reading
@@ -353,6 +410,10 @@ function ReadReport:status()
         last_error = self.last_error,
         last_error_kind = self.last_error_kind,
         last_renewal_status = self.last_renewal_status,
+        -- P1-C: latched "needs login" flag for the status UI.
+        session_expired = self.session_expired == true,
+        -- P2-F: circuit-breaker state for the status UI.
+        failure_streak_paused = self.failure_streak_paused == true,
         stop_reason = self.stop_reason,
         target_book_id = self.current_book_id,
         target_book_title = self.current_book_title,
@@ -396,9 +457,10 @@ function ReadReport:resolve_target()
 end
 
 function ReadReport:_set_error(err, kind, prefix)
+    kind = kind or "error"
     local message = tostring(err)
     self.last_error = message
-    self.last_error_kind = kind or "error"
+    self.last_error_kind = kind
     self.failure_count = (self.failure_count or 0) + 1
     self.consecutive_failures = (self.consecutive_failures or 0) + 1
     self.state = "error"
@@ -406,6 +468,44 @@ function ReadReport:_set_error(err, kind, prefix)
         log("warn", prefix or "read report error:", message)
         self.logged_error = message
     end
+    -- P1-C: latch the "needs login" state on session-shaped failures so the
+    -- UI can say "re-login required" instead of "error"; cleared by any
+    -- accepted report (or a fresh login via reset_failure_streak).
+    if kind == "auth" or kind == "renewal_expired" or kind == "authentication" then
+        if not self.session_expired then
+            self.session_expired = true
+            self.session_expired_at = self.now()
+            if type(self.on_session_expired) == "function" then
+                pcall(self.on_session_expired)
+            end
+        end
+    end
+    -- P2-F: trip the circuit breaker once the failure streak is long enough.
+    if FAILURE_STREAK_PAUSE_KINDS[kind]
+        and (self.consecutive_failures or 0) >= FAILURE_STREAK_LIMIT
+        and not self.failure_streak_paused then
+        self.failure_streak_paused = true
+        log("warn", "read report paused: failure streak limit reached:",
+            "consecutive_failures=", tostring(self.consecutive_failures),
+            "limit=", tostring(FAILURE_STREAK_LIMIT),
+            "error_kind=", kind,
+            "resume=", "network recovery / re-login / report restart")
+    end
+end
+
+-- P2-F: re-arm the pipeline after a failure-streak pause. Called by the
+-- host on network recovery (onNetworkConnected), after a fresh QR login,
+-- and by start() for a new session.
+function ReadReport:reset_failure_streak(reason)
+    local failures = self.consecutive_failures or 0
+    if failures > 0 or self.failure_streak_paused then
+        log("info", "read report failure streak reset:",
+            "reason=", tostring(reason or "manual"),
+            "previous_failures=", tostring(failures),
+            "was_paused=", tostring(self.failure_streak_paused == true))
+    end
+    self.consecutive_failures = 0
+    self.failure_streak_paused = false
 end
 
 function ReadReport:_record_success(result)
@@ -417,6 +517,9 @@ function ReadReport:_record_success(result)
     self.logged_error = nil
     self.last_skip = nil
     self.consecutive_failures = 0
+    -- P2-F/P1-C: an accepted report proves session and link are healthy.
+    self.failure_streak_paused = false
+    self.session_expired = false
     self.state = "active"
     if recovered or self.count == 1 or self.count % 20 == 0 then
         log("info", "read report success:",
@@ -479,6 +582,9 @@ function ReadReport:start(reason)
     -- stale ramp from a previous session into the first ticks (e.g. a weak
     -- network that recovered overnight would otherwise still wait 300s).
     self.consecutive_failures = 0
+    -- P2-F: a fresh session re-arms the circuit breaker (a user re-start is
+    -- an explicit "try again" gesture).
+    self.failure_streak_paused = false
     -- Start the accumulation clock. watermark tracks how much reading time the
     -- server has already accepted; while the device is offline the tick leaves
     -- it intact, so once back online the backlog is drained as a series of
@@ -770,6 +876,16 @@ function ReadReport:_tick(generation, task)
             self:_schedule_next(generation, task, self:_next_tick_delay())
             return
         end
+        -- P2-F: circuit breaker — stop sending while a failure streak is
+        -- paused. The tick itself stays alive at a slow cadence so a reset
+        -- (network recovery / re-login) is noticed without touching the
+        -- server; the watermark keeps every unsent second.
+        if self.failure_streak_paused then
+            log("info", "read report paused by failure streak, skipping send:",
+                "consecutive_failures=", tostring(self.consecutive_failures or 0))
+            self:_schedule_next(generation, task, FAILURE_STREAK_RECHECK_SECONDS)
+            return
+        end
         local allow_renewal = self:_renewal_allowed()
         local elapsed_seconds = self:_next_report_seconds()
         local spawned, spawn_err = self:_start_job(
@@ -790,14 +906,23 @@ function ReadReport:_tick(generation, task)
         -- P2: log every failed tick's cost (and slow successes >= 1s) so a
         -- crash.log session can quantify how long the UI loop froze and how
         -- many requests a failure actually burned (P0-3 validation).
+        -- P0-B (2026-09-18, crash-report E5): time.now() runs at
+        -- FTS_PRECISION=1e6, so the raw difference is MICROSECONDS. The old
+        -- code labelled the raw difference "elapsed_ms" and compared it
+        -- against 1000 (= 1 ms), marking every healthy ~170 ms tick as
+        -- "slow" (105 INFO lines on 2026-09-17). Convert with time.to_ms()
+        -- and compare in the SFT domain with time.s(1).
         if time then
-            local elapsed_ms = time.now() - tick_started_ms
+            local duration = time.now() - tick_started_ms
+            local elapsed_ms = time.to_ms and time.to_ms(duration)
+                or math.floor(duration / 1000 + 0.5)
+            local slow_threshold = time.s and time.s(1) or 1000000
             if outcome and not outcome.accepted then
                 log("warn", "read report tick failed:",
                     "elapsed_ms=", tostring(elapsed_ms),
                     "error_kind=", tostring(outcome.error_kind or "unknown"),
                     "error=", tostring(outcome.error or "unknown"))
-            elseif elapsed_ms >= 1000 then
+            elseif duration >= slow_threshold then
                 log("info", "read report tick slow:",
                     "elapsed_ms=", tostring(elapsed_ms))
             end
@@ -1413,7 +1538,9 @@ function ReadReport:_run_pipeline(book_id, opts)
     if not opts.allow_renewal then
         self:_mark_context_stale(book_id)
         outcome.error = failure
-        outcome.error_kind = "server"
+        -- P1-C: -2012/-2013 session rejections are auth-shaped, not generic
+        -- server noise (drives the breaker and the expired-session surfacing).
+        outcome.error_kind = is_auth_error_body(result) and "auth" or "server"
         outcome.error_prefix = "read report server rejected:"
         return outcome
     end
@@ -1484,7 +1611,9 @@ function ReadReport:_run_pipeline(book_id, opts)
     outcome.error = failure .. "; final=" .. (final_ok
         and response_summary(self.client, final_result, final_code)
         or tostring(final_result))
-    outcome.error_kind = final_ok and "server" or "transport"
+    -- P1-C: classify the final retry the same way as the first attempt.
+    outcome.error_kind = not final_ok and "transport"
+        or (is_auth_error_body(final_result) and "auth" or "server")
     outcome.error_prefix = "read report final retry failed:"
     return outcome
 end

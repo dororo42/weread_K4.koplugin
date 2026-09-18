@@ -136,6 +136,16 @@ function M:showReportStatus()
             msg = msg .. "\n" .. T(_("Pending (offline): %1 min"), backlog_min)
         end
     end
+    if report_status.session_expired then
+        -- P1-C (2026-09-18): make "needs login" the headline instead of a
+        -- generic error, so an expired session is actionable at a glance.
+        msg = _("Session expired: please re-login (scan the QR code)") .. "\n"
+            .. msg
+    elseif report_status.failure_streak_paused then
+        -- P2-F: paused by the failure-streak breaker; say so explicitly.
+        msg = _("Reporting paused after repeated failures; it resumes on network recovery or re-login.") .. "\n"
+            .. msg
+    end
     if err ~= "" then
         msg = msg .. "\n" .. T(_("Last error: %1"), err)
     end

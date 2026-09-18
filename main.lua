@@ -25,6 +25,16 @@ local WeReadPlugin = WidgetContainer:extend{
     version = "0.6.0-k4-v6.0",
 }
 
+function WeReadPlugin:onNetworkConnected()
+    -- P2-F (2026-09-18, crash-report E1): network recovery re-arms the
+    -- reading-time report after a failure-streak pause (auth pauses are
+    -- also cleared here; six further attempts re-pause if still expired).
+    if self.read_report and self.read_report.reset_failure_streak then
+        pcall(self.read_report.reset_failure_streak, self.read_report,
+            "network_connected")
+    end
+end
+
 function WeReadPlugin:init()
     math.randomseed(os.time())
     self.settings = Settings:new()
@@ -86,6 +96,17 @@ function WeReadPlugin:init()
         -- to no deconfliction when this callback is absent.
         get_last_page_update = function()
             return self._last_page_update_at
+        end,
+        -- P1-C (2026-09-18, crash-report E1): surface a session expiry the
+        -- moment it is detected instead of letting the pipeline blind-retry
+        -- (84 silent minutes on 2026-09-17). One-shot per expiry episode;
+        -- the K4 footer glyph is KOReader-native and cannot carry plugin
+        -- state, so a transient toast + the Report status dialog are the
+        -- user-visible signals.
+        on_session_expired = function()
+            self:showTransientInfo(
+                _("WeRead session expired: please re-login (scan the QR code)"),
+                4)
         end,
         -- The report tick runs on the UI loop; use the link-state check here
         -- because NetworkMgr:isOnline() does a blocking DNS lookup.

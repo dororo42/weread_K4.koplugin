@@ -613,6 +613,14 @@ function QRLogin:_complete(login_result, generation)
             account_name = _("Unknown account")
         end
         logger.info("login completed")
+        -- P1-C/P2-F (2026-09-18): a fresh login re-arms the reading-time
+        -- report — clears the failure-streak pause and the latched
+        -- expired-session state, so the next tick reports normally.
+        if self.host.read_report
+                and type(self.host.read_report.reset_failure_streak) == "function" then
+            pcall(self.host.read_report.reset_failure_streak,
+                self.host.read_report, "relogin")
+        end
         self.host:refreshLoginMenu()
         self.host:showInfo(T(
             _("WeRead login successful.\n\nAccount: %1\nCookie: %2\nOfficial API key: %3"),

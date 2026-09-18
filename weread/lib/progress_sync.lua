@@ -288,6 +288,30 @@ function ProgressSync:_clear_verified(reason)
 end
 
 function ProgressSync:_fetch_remote(book_id, chapters)
+    -- P1-D (2026-09-18, crash-report E2): an HTTP-200 body carrying an API
+    -- error (succ=0 / errCode, e.g. -2012 "登录超时") is a CHANNEL failure,
+    -- not "no progress found". Normalizing it used to degrade the reason to
+    -- a generic progress_not_found, hiding exactly the session state the
+    -- user needs to see. Return a legible "errCode=..." reason instead.
+    local function api_error_reason(result)
+        if type(result) ~= "table" then
+            return nil
+        end
+        local code = result.errCode or result.errcode or result.errorCode
+        if code ~= nil and tonumber(code) ~= 0 then
+            local message = tostring(
+                result.errMsg or result.errmsg
+                or result.message or result.msg or "")
+            return "errCode=" .. tostring(code)
+                .. (message ~= "" and (" (" .. message .. ")") or "")
+        end
+        if result.succ ~= nil and result.succ ~= true
+                and tonumber(result.succ) ~= 1 then
+            return "succ=" .. tostring(result.succ)
+        end
+        return nil
+    end
+
     local gateway
     local web
     local gateway_error
@@ -295,20 +319,30 @@ function ProgressSync:_fetch_remote(book_id, chapters)
     if self.settings:is_api_configured() then
         local ok, result = pcall(self.client.get_progress, self.client, book_id)
         if ok then
-            gateway, gateway_error = PositionMapper.normalize_remote(
-                result, book_id, "gateway", chapters)
+            local api_err = api_error_reason(result)
+            if api_err then
+                gateway_error = "gateway " .. api_err
+            else
+                gateway, gateway_error = PositionMapper.normalize_remote(
+                    result, book_id, "gateway", chapters)
+            end
         else
-            gateway_error = tostring(result)
+            gateway_error = "gateway " .. tostring(result)
         end
     end
     if self.settings:is_cookie_configured() then
         local ok, result = pcall(
             self.client.get_web_progress, self.client, book_id)
         if ok then
-            web, web_error = PositionMapper.normalize_remote(
-                result, book_id, "web", chapters)
+            local api_err = api_error_reason(result)
+            if api_err then
+                web_error = "web " .. api_err
+            else
+                web, web_error = PositionMapper.normalize_remote(
+                    result, book_id, "web", chapters)
+            end
         else
-            web_error = tostring(result)
+            web_error = "web " .. tostring(result)
         end
     end
     local selected = PositionMapper.choose_remote(
@@ -729,6 +763,19 @@ function ProgressSync:_pull(options)
         end
         if not remote then
             self.state = "error"
+            -- P1-D (2026-09-18, crash-report E2): name the fallback
+            -- honestly. A failed pull never touches the (possibly stale)
+            -- verified position — previously the crash log could show a
+            -- same-second "positions_match" next to a -2012, which read as
+            -- "sync is fine" when the session was actually gone. Behavior
+            -- is unchanged (no upload, no overwrite); only the wording is
+            -- now truthful.
+            if self.verified then
+                log("warn", "pull failed, cached verification retained:",
+                    "reason=pull_failed_using_cached",
+                    "book=", context.book_id,
+                    "error=", tostring(pull_error))
+            end
             self:_persist(context.book_id, {
                 last_pull_at = self.now(),
                 last_sync_error = tostring(pull_error),

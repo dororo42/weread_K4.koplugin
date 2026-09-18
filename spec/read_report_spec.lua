@@ -178,3 +178,103 @@ describe("ReadReport teardown (S-05)", function()
         end
     end)
 end)
+
+-- P1-C (2026-09-18, crash-report E1/E2): expired-session surfacing.
+describe("ReadReport session-expiry surfacing (P1-C)", function()
+    it("latches session_expired once and fires the host callback once", function()
+        local report = new_report()
+        local fired = 0
+        report.on_session_expired = function() fired = fired + 1 end
+        report:_set_error("errCode=-2012 (登录超时)", "auth", "rejected:")
+        report:_set_error("errCode=-2012 (登录超时)", "auth", "rejected:")
+        assert.is_true(report.session_expired)
+        assert.equals(1, fired) -- one-shot per expiry episode
+        assert.equals("auth", report.last_error_kind)
+    end)
+
+    it("treats renewal_expired and authentication as session-shaped", function()
+        local report = new_report()
+        report:_set_error("renewal rejected", "renewal_expired", "x:")
+        assert.is_true(report.session_expired)
+        report.session_expired = false
+        report:_set_error("cookie not configured", "authentication", "x:")
+        assert.is_true(report.session_expired)
+    end)
+
+    it("does not latch session_expired on transport failures", function()
+        local report = new_report()
+        report:_set_error("timeout", "transport", "x:")
+        assert.is_false(report.session_expired)
+        assert.is_false(report.status().session_expired)
+    end)
+
+    it("clears session_expired on an accepted report", function()
+        local report = new_report()
+        report:_set_error("errCode=-2012", "auth", "x:")
+        assert.is_true(report.session_expired)
+        report:_record_success({ synckey = true })
+        assert.is_false(report.session_expired)
+    end)
+
+    it("exposes the breaker and session state via status()", function()
+        local report = new_report()
+        report:_set_error("reset by peer", "transport", "x:")
+        local st = report:status()
+        assert.is_false(st.session_expired)
+        assert.is_false(st.failure_streak_paused)
+    end)
+end)
+
+-- P2-F (2026-09-18, crash-report E1): failure-streak circuit breaker.
+describe("ReadReport failure-streak breaker (P2-F)", function()
+    it("pauses after 6 consecutive transport/auth failures", function()
+        local report = new_report()
+        for _i = 1, 5 do
+            report:_set_error("timeout", "transport", "x:")
+        end
+        assert.is_false(report.failure_streak_paused) -- limit is 6
+        report:_set_error("Address family not supported by protocol",
+            "transport", "x:")
+        assert.is_true(report.failure_streak_paused)
+        assert.is_true(report.status().failure_streak_paused)
+    end)
+
+    it("pauses on auth-shaped streaks as well", function()
+        local report = new_report()
+        for _i = 1, 6 do
+            report:_set_error("errCode=-2012", "auth", "x:")
+        end
+        assert.is_true(report.failure_streak_paused)
+    end)
+
+    it("does not pause on plain server rejections", function()
+        local report = new_report()
+        for _i = 1, 10 do
+            report:_set_error("succ=0", "server", "x:")
+        end
+        assert.is_false(report.failure_streak_paused)
+    end)
+
+    it("re-arms via reset_failure_streak (network recovery / re-login)", function()
+        local report = new_report()
+        for _i = 1, 6 do
+            report:_set_error("timeout", "transport", "x:")
+        end
+        assert.is_true(report.failure_streak_paused)
+        report:reset_failure_streak("network_connected")
+        assert.equals(0, report.consecutive_failures)
+        assert.is_false(report.failure_streak_paused)
+        assert.is_false(report.status().failure_streak_paused)
+    end)
+
+    it("a fresh start() re-arms the breaker", function()
+        local report = new_report()
+        for _i = 1, 6 do
+            report:_set_error("timeout", "transport", "x:")
+        end
+        assert.is_true(report.failure_streak_paused)
+        report:start("test")
+        assert.is_false(report.failure_streak_paused)
+        report:stop("test")
+    end)
+end)

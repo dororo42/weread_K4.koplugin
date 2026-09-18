@@ -58,6 +58,10 @@ local zh = {
     ["QR login failed:\n%1"] = "扫码登录失败：\n%1",
     ["The QR code has expired. Please try again."] = "二维码已失效，请重新扫码。",
     ["The verification code has expired. Please try again."] = "验证码已失效，请重新扫码。",
+    -- K4 v6.0 post-release fixes (P1-C/P2-F, 2026-09-18): expired-session surfacing.
+    ["WeRead session expired: please re-login (scan the QR code)"] = "微信读书登录已过期，请重新扫码登录",
+    ["Session expired: please re-login (scan the QR code)"] = "登录已过期：请重新扫码登录",
+    ["Reporting paused after repeated failures; it resumes on network recovery or re-login."] = "连续失败已暂停上报，网络恢复或重新登录后自动继续（阅读时长不会丢失）。",
     ["Incorrect verification code."] = "验证码不正确。",
     ["Unknown login response"] = "未知登录响应",
     -- B1 (2026-09-16): local reading ledger card.
