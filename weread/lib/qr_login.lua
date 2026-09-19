@@ -230,9 +230,14 @@ function QRLogin:_poll_protocol(uid, otp)
         error("Missing QR login UID")
     end
 
-    local url = LOGIN_INFO_URL .. "?uid=" .. WeRead.urlencode(uid) .. "&otp"
+    -- Upstream PR #167 (2026-09-19 port): always emit "&otp=" and append the
+    -- urlencoded value only when present. The previous shape produced a bare
+    -- "&otp" (no "=") on every empty-otp poll — the normal path right after
+    -- the QR is displayed — which some server/CDN paths reject, causing
+    -- intermittent scan-login failures.
+    local url = LOGIN_INFO_URL .. "?uid=" .. WeRead.urlencode(uid) .. "&otp="
     if type(otp) == "string" and otp ~= "" then
-        url = url .. "=" .. WeRead.urlencode(otp)
+        url = url .. WeRead.urlencode(otp)
     end
 
     local headers = {
