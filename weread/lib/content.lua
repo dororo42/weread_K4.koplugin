@@ -1109,8 +1109,39 @@ function Content.refresh_reader_state(client, book, chapter)
     Content.ensure_reader_state(client, book)
 end
 
+-- P2 (2026-09-19, gateway /_list discovery): fetch the chapter catalog via
+-- the official Skill Gateway `/book/chapterinfo` (Bearer, cookie-free — the
+-- same channel v6.5 already uses for gateway-first progress pulls). The
+-- gateway needs no web session, so the catalog keeps working when the web
+-- cookie has expired (-2012), and the response shape
+-- ({bookId, chapters=[{chapterUid,chapterIdx,title,wordCount,…}]}) is
+-- consumed by normalize_chapters unchanged. Returns nil when the gateway
+-- answer is unusable (callers fall back to the web chapterInfos endpoint).
+function Content.fetch_catalog_gateway(client, book)
+    local book_id = book.book_id or book.bookId
+    local catalog = client:gateway("/book/chapterinfo", { bookId = tostring(book_id) })
+    local chapters = Content.readable_chapters(
+        Content.normalize_chapters(catalog, book_id))
+    if type(chapters) ~= "table" or #chapters == 0 then
+        return nil
+    end
+    book.chapters = chapters
+    return chapters
+end
+
 function Content.fetch_catalog(client, book)
     local book_id = book.book_id or book.bookId
+    -- P2: gateway-first. The web chapterInfos endpoint stays as fallback
+    -- (no API key configured, or gateway transport/API failure), preserving
+    -- the pre-existing behaviour in every failure case.
+    local gw_ok, gw_chapters = pcall(Content.fetch_catalog_gateway, client, book)
+    if gw_ok and type(gw_chapters) == "table" and #gw_chapters > 0 then
+        return gw_chapters
+    end
+    if not gw_ok then
+        logger.warn("gateway chapterinfo unavailable, falling back to web:",
+            tostring(gw_chapters))
+    end
     local reader_url = book.reader_url or WeRead.reader_url(book_id)
     local catalog = client:post_json("https://weread.qq.com/web/book/chapterInfos", {
         bookIds = { tostring(book_id) },

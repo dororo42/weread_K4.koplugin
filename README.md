@@ -132,6 +132,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 - **HTTP 重试 body source 每轮重建（R-6）**：解析类错误（EAFNOSUPPORT 等）的一次性重试此前依赖"错误必先于 body 传输"的隐含前提，现显式每轮重建 source，未来扩充重试模式不可能发出空 body。
 
 **维护性**
+- **目录来源官方化（gateway `/book/chapterinfo`，免 Cookie）**：源自网关 `/_list` 自省目录的发现——官方 Skill Gateway 提供免登录章节目录接口，响应形态与现行解析管线完全兼容（经 2026-09-19 真值探测确认）。`fetch_catalog` 改为 gateway-first：已配置 API Key 时目录优先走官方通道（web 会话过期 -2012 **不再影响目录获取**），web `chapterInfos` 保留为无 Key/网关失败时的回退；章节列表/下载/续传恢复/阅读上报上下文等全部目录消费方自动受益。
 - **阅读账本日键修剪（R-2）**：B1 本地账本此前按 UTC 日累积、永不清理，跨年使用会无界增长（放大设置文件体积与 B11 落盘开销）。新增 90 天保留窗（`prune`），每 UTC 日至多触发一次；时钟异常（负 time_t 等 `os.date` 失败场景）自动跳过、绝不影响记账。
 - **README**：「开发与测试」节补全局副作用声明——插件加载时的 IPv4 优先 DNS patch（`weread/lib/ipv4_dns.lua`）对整个 KOReader 进程生效，异常自动回退原实现。
 
