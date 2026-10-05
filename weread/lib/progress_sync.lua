@@ -475,7 +475,15 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
         end
         -- Async upload: spawn subprocess, get result via on_complete callback
         -- (scheme B fix: UI not blocked, result correctly delivered).
-        local spawned, result = pcall(
+        -- P1 (2026-09-29 audit Y-3): pcall returns (ok, ret1, ret2) and
+        -- upload_position_async returns TWO values — (true, "async") when a
+        -- subprocess job was spawned, (false, {error_kind="busy"}) while the
+        -- report tick holds the pipeline, (accepted, outcome) on inline
+        -- completion. The old two-value destructuring bound ret2's "async"
+        -- tag to nothing, so the wait-for-callback and busy-retry branches
+        -- were unreachable and self.uploading was reset while an async job
+        -- was still in flight.
+        local call_ok, spawned, tag = pcall(
             self.read_report.upload_position_async,
             self.read_report,
             book_id,
@@ -524,29 +532,38 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
                 end
             end
         )
-        if not spawned then
+        if not call_ok then
             -- pcall caught an error from upload_position_async
             self.uploading = false
             self.state = "error"
             self:_persist(book_id, {
-                last_sync_error = tostring(result or "upload_failed"),
+                last_sync_error = tostring(spawned or "upload_failed"),
             })
-            log("warn", "upload async call failed:", tostring(result))
+            log("warn", "upload async call failed:", tostring(spawned))
             if show_result then
                 self.notify("upload_failed", {
-                    error = tostring(result or "upload_failed"),
+                    error = tostring(spawned or "upload_failed"),
                 })
             end
             return
         end
-        -- Check result: "async" means spawned (wait for callback),
-        -- "busy" means tick job in progress (retry), otherwise inline completed
-        if result == "async" then
-            return  -- on_complete will handle the result
+        -- spawned=true means a subprocess job is running and the
+        -- on_complete callback above owns the result.
+        if spawned then
+            return
         end
-        if type(result) == "table" and result.error_kind == "busy"
-            and attempts < BUSY_RETRY_LIMIT then
-            self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
+        if type(tag) == "table" and tag.error_kind == "busy" then
+            if attempts < BUSY_RETRY_LIMIT then
+                self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
+                return
+            end
+            -- Busy beyond the retry limit: the pending upload stays
+            -- persisted (pending_upload_position) and the next reader-ready
+            -- backlog retry picks it up. Do not leave the state machine in
+            -- "uploading".
+            log("warn", "upload busy beyond retry limit:", "book=", book_id)
+            self.uploading = false
+            self.state = "error"
             return
         end
         -- Inline fallback: upload_position_async already called on_complete

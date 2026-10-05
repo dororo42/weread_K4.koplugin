@@ -723,42 +723,38 @@ end
 -- root (defense in depth: book_resolved_dir always falls back to a
 -- sanitized path under cache_dir, but a corrupted setting must never be
 -- able to turn `rm -rf` into a filesystem-destroying command).
+-- P0 (2026-09-29 audit Y-1): the path is lexically normalized FIRST and the
+-- NORMALIZED path is returned for deletion. The previous version validated
+-- the collapsed shape while the callers deleted the raw string — a
+-- corrupted book.cache_dir like "<root>/../evil" or "<root>/.." passed the
+-- check but the OS resolved ".." at deletion time (verified exploitable).
+-- Returns the normalized path to delete, or nil when the path must not be
+-- touched; callers must delete the RETURNED path, never the raw input.
 function M:isSafeCachePath(path)
-    if type(path) ~= "string" or path == "" then
-        return false
-    end
-    if path == "/" or path:match("^/+$") then
-        return false
+    if type(path) ~= "string" or path == "" or path:match("^/+$") then
+        return nil
     end
     local root = self.settings and self.settings.cache_dir
-    if type(root) ~= "string" or root == "" then
-        return false
+    local root_normalized = PluginUtil.lexical_normalize(root)
+    local normalized = PluginUtil.lexical_normalize(path)
+    if not root_normalized or not normalized then
+        return nil -- ".." climbed above the filesystem root, or bad root
     end
-    local normalized = path:gsub("/+$", "")
-    local root_normalized = root:gsub("/+$", "")
     if normalized == root_normalized then
-        return false -- never delete the cache root itself
+        return nil -- never delete the cache root itself
     end
-    -- M-11 fix: normalize .. segments repeatedly. A single gsub pass leaves
-    -- nested ../../ sequences (e.g. /a/../../b) unresolved, which could let
-    -- a corrupted setting escape the cache root. Loop until no ../ remains.
-    -- (P3 defense: book_resolved_dir already sanitizes, but this is the
-    -- last gate before rmdir_recursive.)
-    local simplified = normalized
-    while simplified:find("/%.%./") do
-        simplified = simplified:gsub("/%.%./", "/")
+    if normalized:sub(1, #root_normalized + 1) ~= root_normalized .. "/" then
+        return nil
     end
-    if simplified:sub(1, #root_normalized + 1) ~= root_normalized .. "/" then
-        return false
-    end
-    return true
+    return normalized
 end
 
 function M:clearBookCache(book_id)
     local books = self.settings:get("books", {})
     local cache_dir = Content.book_resolved_dir(self.settings, book_id, books[book_id])
-    if self:isSafeCachePath(cache_dir) then
-        rmdir_recursive(cache_dir)
+    local target = self:isSafeCachePath(cache_dir)
+    if target then
+        rmdir_recursive(target)
     else
         logger.warn("refusing to delete unsafe cache path:",
             tostring(cache_dir))
@@ -781,12 +777,13 @@ function M:clearAllMPCache()
     local removed = false
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
-            local target = Content.book_resolved_dir(self.settings, book_id, book)
-            if self:isSafeCachePath(target) then
+            local candidate = Content.book_resolved_dir(self.settings, book_id, book)
+            local target = self:isSafeCachePath(candidate)
+            if target then
                 rmdir_recursive(target)
             else
                 logger.warn("refusing to delete unsafe cache path:",
-                    tostring(target))
+                    tostring(candidate))
             end
             -- S-20 (2026-09-05): index-level removal per entry.
             books[book_id] = nil
@@ -803,12 +800,13 @@ end
 function M:clearAllCache()
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
-        local target = Content.book_resolved_dir(self.settings, book_id, book)
-        if self:isSafeCachePath(target) then
+        local candidate = Content.book_resolved_dir(self.settings, book_id, book)
+        local target = self:isSafeCachePath(candidate)
+        if target then
             rmdir_recursive(target)
         else
             logger.warn("refusing to delete unsafe cache path:",
-                tostring(target))
+                tostring(candidate))
         end
     end
     self.settings:set("books", {})

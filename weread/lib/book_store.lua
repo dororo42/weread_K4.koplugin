@@ -40,7 +40,13 @@ local article_fields = {
 
 local function basename_safe(value)
     value = tostring(value or ""):gsub("[^%w%._-]", "_")
-    return value ~= "" and value or "weread"
+    -- P0 (2026-09-29 audit Y-1): a book id of exactly "." or ".." would turn
+    -- the fallback path "<root>/<id>" into a path traversal; every other
+    -- dotted name is a legal directory name.
+    if value == "" or value == "." or value == ".." then
+        return "weread"
+    end
+    return value
 end
 
 local function dirname(path)
@@ -54,12 +60,21 @@ end
 -- weread.lua record (book.cache_dir / cached_file / cached_chapters) must
 -- not redirect metadata reads/writes elsewhere on the filesystem; when the
 -- root check fails, fall back to the safe per-book directory under the root.
+-- P0 (2026-09-29 audit Y-1): the comparison runs on the lexically
+-- normalized form of both sides. The old raw string-prefix check accepted
+-- "<root>/../evil" (prefix passes, but the OS resolves it outside the root)
+-- and had no ".." handling at all.
 local function is_inside_root(root, dir)
     if type(root) ~= "string" or root == "" or type(dir) ~= "string" or dir == "" then
         return false
     end
-    local check = dir:gsub("/+$", "")
-    return check == root or check:sub(1, #root + 1) == root .. "/"
+    local root_normalized = PluginUtil.lexical_normalize(root)
+    local dir_normalized = PluginUtil.lexical_normalize(dir)
+    if not root_normalized or not dir_normalized then
+        return false
+    end
+    return dir_normalized == root_normalized
+        or dir_normalized:sub(1, #root_normalized + 1) == root_normalized .. "/"
 end
 
 function BookStore.resolved_dir(settings, book_id, book)
@@ -79,7 +94,10 @@ function BookStore.resolved_dir(settings, book_id, book)
     end
     local root = tostring(settings and settings.cache_dir or ""):gsub("/+$", "")
     if dir and is_inside_root(root, dir) then
-        return dir
+        -- Hand back the normalized form so the validated path and the used
+        -- path are the same string (audit Y-1). normalize cannot fail here:
+        -- is_inside_root already verified both sides resolve.
+        return PluginUtil.lexical_normalize(dir)
     end
     return root .. "/" .. basename_safe(book_id)
 end

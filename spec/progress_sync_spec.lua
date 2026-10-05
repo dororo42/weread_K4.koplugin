@@ -139,3 +139,99 @@ describe("progress_sync._fetch_remote gateway-first pull", function()
         assert.equals("web errCode=-2012 (登录超时)", err)
     end)
 end)
+
+-- P1 (2026-09-29 audit Y-3): _upload_snapshot destructures the pcall result
+-- of upload_position_async, which returns TWO values — (true, "async") for a
+-- spawned subprocess job, (false, {error_kind="busy"}) while the report tick
+-- holds the pipeline, (accepted, outcome) on inline completion. The old
+-- two-value destructuring bound ret2's "async" tag to nothing: the
+-- wait-for-callback and busy-retry branches were unreachable and
+-- self.uploading was reset while an async job was still in flight.
+describe("progress_sync._upload_snapshot pcall destructuring (audit Y-3)", function()
+    local POSITION = { book_id = "B1", percent = 50 }
+
+    -- Minimal receiver double: _upload_snapshot is exercised directly, with
+    -- the upload backend stubbed to return one of the three result shapes.
+    local function make_self(upload_backend)
+        local scheduled = {}
+        local obj = {
+            generation = 1,
+            uploading = false,
+            state = "idle",
+            current_book_id = "B1",
+            now = function() return 1000 end,
+            detect_book = function() return "B1" end,
+            is_online = function() return true end,
+            read_report = {
+                upload_position_async = upload_backend,
+            },
+            -- _upload_snapshot calls self.run_online(...) with DOT syntax
+            -- (matching the main.lua injection signature), so no self here.
+            run_online = function(_label, cb)
+                cb()
+                return true
+            end,
+            scheduler = {
+                scheduleIn = function(_self, delay, fn)
+                    scheduled[#scheduled + 1] = { delay = delay, fn = fn }
+                end,
+            },
+            notify = function() end,
+        }
+        obj._persist_calls = {}
+        obj._persist = function(self, book_id, patch)
+            self._persist_calls[#self._persist_calls + 1] = { book_id = book_id, patch = patch }
+        end
+        -- Method lookups (e.g. self:_upload_snapshot) resolve through the
+        -- real module table; the fields above override per test.
+        return setmetatable(obj, { __index = PS }), scheduled
+    end
+
+    it("keeps uploading=true while an async job is in flight", function()
+        local obj = make_self(function() return true, "async" end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        -- Regression: the old code reset uploading here even though the
+        -- subprocess job was still running and on_complete owns the result.
+        assert.is_true(obj.uploading)
+        assert.equals("uploading", obj.state)
+    end)
+
+    it("schedules a busy retry while the report pipeline holds the job", function()
+        local obj, scheduled = make_self(function() return false, { error_kind = "busy" } end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        assert.equals(1, #scheduled)
+        assert.equals(2, scheduled[1].delay) -- BUSY_RETRY_SECONDS
+        assert.is_true(obj.uploading)        -- still waiting to retry
+    end)
+
+    it("gives up after the busy retry limit without staying in uploading", function()
+        local obj, scheduled = make_self(function() return false, { error_kind = "busy" } end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        -- attempts=1 ran synchronously; drive the retries to the limit.
+        for _i = 1, 9 do
+            scheduled[#scheduled].fn()
+        end
+        assert.equals(9, #scheduled)
+        assert.is_false(obj.uploading)
+        assert.equals("error", obj.state)
+    end)
+
+    it("resets uploading after an inline completion", function()
+        local obj = make_self(function()
+            -- Inline shape: on_complete already ran inside
+            -- upload_position_async; returns (accepted, outcome).
+            return false, { accepted = false, error = "HTTP 500" }
+        end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        assert.is_false(obj.uploading)
+    end)
+
+    it("reports an error when the upload backend itself throws", function()
+        local obj = make_self(function() error("backend exploded") end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        assert.is_false(obj.uploading)
+        assert.equals("error", obj.state)
+        local last = obj._persist_calls[#obj._persist_calls]
+        assert.is_not_nil(last.patch.last_sync_error:find("backend exploded", 1, true))
+    end)
+end)

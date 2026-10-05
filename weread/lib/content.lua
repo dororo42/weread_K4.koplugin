@@ -36,7 +36,10 @@ end
 
 local function basename_safe(value)
     value = tostring(value or ""):gsub("[^%w%._-]", "_")
-    if value == "" then
+    -- P0 (2026-09-29 audit Y-1): exactly "." or ".." would turn
+    -- "<root>/<name>" into a path traversal; every other dotted name is a
+    -- legal directory/file name.
+    if value == "" or value == "." or value == ".." then
         value = "weread"
     end
     return value
@@ -952,12 +955,46 @@ function Content.rewrite_image_sources(xhtml, src_map)
     return xhtml
 end
 
+-- P1 (2026-09-29 audit): chapter inline images are fetched only from
+-- WeRead-operated hosts. The book-chapter tar-asset channel above is
+-- already host-safe (chapter.tar points at weread), but a plain <img src>
+-- inside the chapter XHTML used to be fetched from ANY host — a poisoned
+-- book source could turn e-readers into arbitrary fetchers. Untrusted URLs
+-- keep their original src (same outcome as a failed download) and log the
+-- host so a legitimately new CDN domain surfaces in crash.log immediately.
+-- Scheme note: http is accepted like the MP allowlist below — cookie safety
+-- is enforced independently (client.lua attaches cookies over HTTPS only).
+local TRUSTED_IMAGE_HOST_SUFFIXES = {
+    "weread.qq.com",     -- includes the res/cdn/p* subdomains
+    "mmbiz.qpic.cn",
+    "mmbiz.qlogo.cn",
+}
+
+local function is_trusted_image_url(src)
+    local url = tostring(src or "")
+    if url:match("^//") then
+        url = "https:" .. url
+    end
+    local host = url:match("^https?://([^/]+)")
+    if not host then
+        return false
+    end
+    host = host:lower():gsub(":%d+$", "")
+    for _i, suffix in ipairs(TRUSTED_IMAGE_HOST_SUFFIXES) do
+        if host == suffix or host:sub(-(#suffix + 1)) == "." .. suffix then
+            return true
+        end
+    end
+    return false
+end
+Content.is_trusted_image_url = is_trusted_image_url
+
 function Content.download_remote_images(client, xhtml, used_names, progress, opts)
     local assets = {}
     used_names = used_names or {}
     used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
     local remote_image_hrefs = used_names.__remote_image_hrefs
-    local function remote_url(src)
+    local function fetchable_url(src)
         local url = tostring(src or "")
         if url:match("^//") then
             url = "https:" .. url
@@ -966,9 +1003,15 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
             return url
         end
     end
+    -- Both passes share one predicate: the total counter must only count
+    -- images the allowlist actually lets us attempt.
+    local function should_fetch(src)
+        local url = fetchable_url(src)
+        return url ~= nil and is_trusted_image_url(url)
+    end
     local img_total = 0
     xhtml:gsub('src=(["\'])(.-)%1', function(_, src)
-        if remote_url(src) then
+        if should_fetch(src) then
             img_total = img_total + 1
         end
     end)
@@ -977,8 +1020,13 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
     end
     local index = 0
     local body = xhtml:gsub('src=(["\'])(.-)%1', function(quote, src)
-        local url = remote_url(src)
+        local url = fetchable_url(src)
         if not url then
+            return "src=" .. quote .. src .. quote
+        end
+        if not is_trusted_image_url(url) then
+            logger.warn("inline image host not trusted, keeping original src:",
+                "host=", tostring(url:match("^https?://([^/]+)")))
             return "src=" .. quote .. src .. quote
         end
         index = index + 1

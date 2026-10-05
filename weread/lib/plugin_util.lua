@@ -88,6 +88,37 @@ function PluginUtil.redact_body(text)
     return text
 end
 
+-- P0 (2026-09-29 audit Y-1): lexically resolve "." and ".." path segments.
+-- Returns the normalized path (absolute paths stay absolute, empty result is
+-- "" for relative input), or nil when a ".." climbs above the filesystem
+-- root — such a path can never be trusted. The point of the cache-path
+-- guards is that the VALIDATED string and the USED string are the same:
+-- validating a collapsed shape and then deleting/using the raw one let
+-- "<root>/../x" pass the prefix check while the OS resolved ".." at use time
+-- (verified exploitable in the 2026-09-29 audit). Callers must validate the
+-- normalized form and then use exactly that.
+function PluginUtil.lexical_normalize(path)
+    if type(path) ~= "string" or path == "" then
+        return nil
+    end
+    local absolute = path:sub(1, 1) == "/"
+    local parts = {}
+    for part in path:gmatch("[^/]+") do
+        if part == ".." then
+            if #parts == 0 then
+                return nil
+            end
+            table.remove(parts)
+        elseif part ~= "." and part ~= "" then
+            parts[#parts + 1] = part
+        end
+    end
+    if absolute then
+        return "/" .. table.concat(parts, "/")
+    end
+    return table.concat(parts, "/")
+end
+
 function PluginUtil.file_exists(path)
     if type(path) ~= "string" or path == "" then
         return false

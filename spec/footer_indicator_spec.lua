@@ -588,15 +588,17 @@ describe("footer_indicator", function()
     -- injectors must not clobber each other: the collapse keeps an active
     -- hint visible and every restore path re-asserts it afterwards.
     describe("login_hint interplay (R-3)", function()
-        local function seed_hint(store)
+        -- Parameter is named hint_store so it cannot shadow the describe-wide
+        -- `store` upvalue (luacheck W221 would fail the CI lint gate).
+        local function seed_hint(hint_store)
             -- matches what login_hint.show() leaves behind: the episode
             -- backup AND the G-layer text keys carrying the display text
-            store.data.footer_weread_login_hint_backup = {
+            hint_store.data.footer_weread_login_hint_backup = {
                 enabled = false, text = "HINT", repetitions = 1,
                 g_text = "HINT", g_repetitions = 1,
             }
-            store.data.reader_footer_custom_text = "HINT"
-            store.data.reader_footer_custom_text_repetitions = 1
+            hint_store.data.reader_footer_custom_text = "HINT"
+            hint_store.data.reader_footer_custom_text_repetitions = 1
         end
 
         it("keeps an active hint enabled through the coexist collapse", function()

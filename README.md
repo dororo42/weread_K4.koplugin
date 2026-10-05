@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v7.0）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v7.0.1）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -108,7 +108,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v7.0）          （菜单末尾）
+└── 关于（v0.6.0-k4-v7.0.1）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -122,6 +122,22 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v7.0.1（2026-09-29）· 独立核查 P0/P1 修复批次
+
+> 依据《weread_K4 独立核查与风险评估报告》（2026-09-29）：v7.0 全部六项变更声明经独立复跑测试与逐行审读证实属实；本批次落地报告中的 P0/P1 修复项。勘误：v7.0 节"183 用例"应为 **186**（该节发布时的真实计数），且 v7.0 新增用例带入了 1 条 luacheck 遮蔽警告。
+
+**安全/稳健性（P0）**
+- **Y-1 · 缓存路径守卫 `..` 绕过修复（核查中实测可利用）**：`isSafeCachePath` 此前用词法折叠后的形状做校验、调用方却删除原始字符串——损坏的手改 `book.cache_dir`（如 `<root>/../evil`、`<root>/..`）能通过前缀检查，而递归删除在 OS 解析 `..` 后落在缓存根之外（破坏性后果）。修复：新增 `PluginUtil.lexical_normalize`（词法解析 `.`/`..`，越根返回 nil）；`isSafeCachePath` 改为**返回规范化路径**、三处清理调用点删除的正是该返回值（校验与使用同一条路径）；`book_store.resolved_dir` 的根校验改为双侧规范化比较并返回规范化目录；`basename_safe`（book_store/content 两份）拒绝恰为 `.`/`..` 的 id。新增 `spec/path_guard_spec.lua`（15 用例，三个绕过 PoC 即回归用例）。
+- **Y-2 · 手动登录模板沙箱在 Lua 5.2+ 静默失效修复**：沙箱此前仅依赖 `setfenv`（LuaJIT/5.1 存在，5.2+ 为 nil）——非 LuaJIT 运行时上模板将以完整 `_G` 无声执行（io/require/ffi 全可达）。修复：5.2+ 分支改走 `load(source, name, "t", sandbox_env)`；两种沙箱机制皆缺的运行时**拒绝导入**（"sandbox_unavailable"）而非放行。设备（LuaJIT）走原 setfenv 分支，行为不变。settings_spec 新增 5 用例（io/require 不可达、最小 os 仍可用（S-17）、语法错误、正常导入并删档）。
+- **Y-4 · CI lint 门禁必红修复**：`spec/footer_indicator_spec.lua` 的 `seed_hint(store)` 参数遮蔽 describe 级上值 `store`，按 ci.yml "0 warnings" 门禁会挂红；参数改名 `hint_store`。
+
+**稳健性（P1）**
+- **Y-3 · `_upload_snapshot` pcall 解构修复**：`upload_position_async` 返回两个值，旧代码 `pcall` 只绑定第一个——`"async"` 等待回调分支与 busy 重试分支（M-L2）**永不可达**，且 `uploading` 并发保护在子进程在途时被提前复位。修复为三值解构；busy 超限后显式退出 "uploading" 态（待传位置仍在 pending 中，下次打开书由积压补传接管）。K4 无子进程故当日无实害，属潜伏缺陷。progress_sync_spec 新增 5 用例（含"async 在途不复位"回归）。
+- **P1-5 · 覆盖缺口补齐**：新增 `spec/downloader_resume_spec.lua`（断点续传集成测试，内存 FS：中断→询问恢复→只取缺失章 / 拒绝恢复→全量重下，3 用例）与 `spec/client_redirect_spec.lua`（跨源重定向清 Cookie/Authorization/x-wr-* 头、同源保留、303 降级 GET、重定向预算耗尽、真实 Cookie 合并链路，5 用例）。`renew_cookie` 的 stale 分支经核实已有覆盖（remarkable_borrow_p1_spec），无需补。
+- **P1-6 · 章节内联图片域名白名单**：`download_remote_images` 此前抓取章节 XHTML 内**任意** http(s) src——被投毒的书源可把设备变成任意 fetcher（MP 文章通道 #132 已有锚定白名单，章节通道一直裸奔）。新增 `is_trusted_image_url`（锚定 `weread.qq.com` 含子域、`mmbiz.qpic.cn`、`mmbiz.qlogo.cn`），非白名单 URL 保留原始 src（与下载失败同结局）并记 warn 日志（新 CDN 域名可从 crash.log 立即暴露）；进度计数只统计真实尝试。新增 `spec/inline_image_allowlist_spec.lua`（7 用例）。
+
+**测试**：186 → **226 用例**全绿（Lua 5.4；5.1 兼容由 `luac5.1 -p` 语法哨兵把守）；luacheck **0 警告**（63 文件）；`luac -p` 5.1/5.4 双哨兵通过。
 
 ### v7.0（2026-09-19）· 综合评估风险修复批次
 
@@ -416,7 +432,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v7.0 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v7.0.1 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |

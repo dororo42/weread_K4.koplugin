@@ -181,3 +181,81 @@ describe("Corrupted-config type guard (P2-A)", function()
         assert.equals(true, config.enabled)
     end)
 end)
+
+-- P0 (2026-09-29 audit Y-2): the manual-login template sandbox must hold on
+-- every runtime. The old implementation restricted the environment only via
+-- setfenv, which is nil on Lua 5.2+ — there the template silently ran with
+-- full _G (io/require/ffi reachable). The fix loads 5.2+ chunks through
+-- load(source, name, "t", sandbox_env). These tests run against a real
+-- template file (io.open/loadfile are NOT stubbed) with only the lfs
+-- existence probe pointed at it.
+describe("Manual login template sandbox (audit Y-2)", function()
+    local template_path = "/tmp/weread-test/settings/weread_manual_login.lua"
+    local saved_attributes
+
+    local function write_template(body)
+        os.execute("mkdir -p /tmp/weread-test/settings")
+        local fh = assert(io.open(template_path, "w"))
+        fh:write(body)
+        fh:close()
+    end
+
+    before_each(function()
+        local lfs_stub = package.loaded["libs/libkoreader-lfs"]
+        saved_attributes = lfs_stub.attributes
+        lfs_stub.attributes = function(path)
+            if path == template_path then return "file" end
+            return nil
+        end
+    end)
+
+    after_each(function()
+        package.loaded["libs/libkoreader-lfs"].attributes = saved_attributes
+        os.remove(template_path)
+    end)
+
+    it("imports a well-formed template and deletes the file", function()
+        write_template('return { api_key = "wrk-abc", '
+            .. 'cookies = { wr_skey = "skey12345", wr_vid = "123" } }')
+        local settings = fresh_settings()
+        assert.is_true(settings:import_manual_login())
+        assert.equals("wrk-abc", settings:get("api_key"))
+        assert.equals(false, io.open(template_path, "r") ~= nil)
+    end)
+
+    it("keeps io unreachable inside the template", function()
+        -- Under the fixed sandbox this import SUCCEEDS (io is nil in the
+        -- template environment). Under the old 5.2+ behaviour the template
+        -- ran with full _G, the error() fired, and the import failed.
+        write_template('if io ~= nil then error("SANDBOX ESCAPE: io reachable") end; '
+            .. 'return { api_key = "wrk-abc", '
+            .. 'cookies = { wr_skey = "skey12345", wr_vid = "123" } }')
+        local settings = fresh_settings()
+        assert.is_true(settings:import_manual_login())
+        assert.equals("wrk-abc", settings:get("api_key"))
+    end)
+
+    it("keeps require unreachable inside the template", function()
+        write_template('if require ~= nil then error("SANDBOX ESCAPE: require reachable") end; '
+            .. 'return { api_key = "wrk-abc", '
+            .. 'cookies = { wr_skey = "skey12345", wr_vid = "123" } }')
+        local settings = fresh_settings()
+        assert.is_true(settings:import_manual_login())
+    end)
+
+    it("still exposes the minimal os surface (S-17 contract)", function()
+        write_template('return { api_key = "wrk-" .. (os and os.time and "t" or "x"), '
+            .. 'cookies = { wr_skey = "skey12345", wr_vid = "123" } }')
+        local settings = fresh_settings()
+        assert.is_true(settings:import_manual_login())
+        assert.equals("wrk-t", settings:get("api_key"))
+    end)
+
+    it("reports invalid_format for a template with syntax errors", function()
+        write_template('return { api_key = "unterminated')
+        local settings = fresh_settings()
+        local ok, reason = settings:import_manual_login()
+        assert.is_false(ok)
+        assert.equals("invalid_format", reason)
+    end)
+end)

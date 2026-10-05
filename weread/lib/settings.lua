@@ -494,10 +494,6 @@ function Settings:import_manual_login()
         return false, "not_found"
     end
 
-    local ok_load, chunk = pcall(loadfile, path)
-    if not ok_load or type(chunk) ~= "function" then
-        return false, "invalid_format"
-    end
     -- Sandbox: restrict the environment so the loaded file cannot access
     -- os, io, require, ffi, etc. (M-S1 fix). S-17 (2026-09-05): math and a
     -- minimal os (time/date/clock only) were added so a legitimately filled
@@ -515,10 +511,37 @@ function Settings:import_manual_login()
         next = next,
         select = select,
     }
-    -- LuaJIT/Lua 5.1: use setfenv; Lua 5.2+: use load with env (but loadfile
-    -- already loaded, so setfenv is the compatible path).
+    -- P0 (2026-09-29 audit Y-2): the old code loaded the chunk with
+    -- loadfile() and only restricted the environment via setfenv, which
+    -- exists on LuaJIT/Lua 5.1 but is nil on Lua 5.2+ — there the sandbox
+    -- silently vanished and the template ran with full _G. Two branches:
+    --   * LuaJIT/5.1: loadfile + setfenv (the long-proven on-device path);
+    --   * Lua 5.2+: load(source, name, "t", sandbox_env).
+    -- A runtime with NEITHER mechanism refuses the import instead of
+    -- executing the template unsandboxed.
+    local chunk
     if setfenv then
-        setfenv(chunk, sandbox_env)
+        local ok_load, loaded = pcall(loadfile, path)
+        if not ok_load or type(loaded) ~= "function" then
+            return false, "invalid_format"
+        end
+        setfenv(loaded, sandbox_env)
+        chunk = loaded
+    elseif load then
+        local source_fh = io.open(path, "r")
+        if not source_fh then
+            return false, "invalid_format"
+        end
+        local source = source_fh:read("*a")
+        source_fh:close()
+        local ok_load, loaded = pcall(load, source, path, "t", sandbox_env)
+        if not ok_load or type(loaded) ~= "function" then
+            return false, "invalid_format"
+        end
+        chunk = loaded
+    else
+        logger.warn("manual login import refused: no sandboxing mechanism on this runtime")
+        return false, "sandbox_unavailable"
     end
     local ok_run, data = pcall(chunk)
     if not ok_run or type(data) ~= "table" then
