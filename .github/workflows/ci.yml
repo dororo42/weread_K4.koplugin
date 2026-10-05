@@ -16,6 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Clean-worktree gate (F-22)
+        # F-22 (2026-10-05 audit): uncommitted fixes/tests are unshippable —
+        # the v7.0.1 batch sat untracked in a worktree, so CI never ran its
+        # regression specs. Fail early when the shipped tree is dirty.
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Working tree is not clean; commit everything (tests and fixes travel together):"
+            git status --porcelain
+            exit 1
+          fi
+
       - uses: leafo/gh-actions-lua@v10
         with:
           # Keep strict standard Lua 5.1 (not LuaJIT): it is a compatibility
