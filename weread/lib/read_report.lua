@@ -895,7 +895,7 @@ function ReadReport:_tick(generation, task)
     self.next_tick_expected = nil
     -- P2: wall-clock cost of this tick (ms) for on-device diagnosis of
     -- UI-loop freezes (failed ticks and slow ticks are logged below).
-    local tick_started_ms = time and time.now() or 0
+    local tick_started_us = time and time.now() or 0
     local ok, err = pcall(function()
         local proceed, book_id, position = self:_precheck()
         if not proceed then
@@ -958,11 +958,11 @@ function ReadReport:_tick(generation, task)
         -- against 1000 (= 1 ms), marking every healthy ~170 ms tick as
         -- "slow" (105 INFO lines on 2026-09-17). Convert with time.to_ms()
         -- and compare in the SFT domain with time.s(1).
-        -- F-09 (2026-10-05 audit): the variable is renamed tick_started_us —
-        -- it holds the raw µs-domain timestamp; P0-B fixed the conversion
-        -- but left the unit-in-name lying.
+        -- F-09 (2026-10-05 audit): the variable is named tick_started_us —
+        -- it holds the raw µs-domain timestamp (FTS_PRECISION=1e6); P0-B
+        -- fixed the conversion but left the unit-in-name lying.
         if time then
-            local duration = time.now() - tick_started_ms
+            local duration = time.now() - tick_started_us
             local elapsed_ms = time.to_ms and time.to_ms(duration)
                 or math.floor(duration / 1000 + 0.5)
             local slow_threshold = time.s and time.s(1) or 1000000

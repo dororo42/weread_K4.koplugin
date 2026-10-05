@@ -204,6 +204,12 @@ local function tar_entries(data)
         local size_text = trim_nulls(header:sub(125, 136)):gsub("%s", "")
         local size = tonumber(size_text, 8) or 0
         local typeflag = header:sub(157, 157)
+        -- 2026-10-05 audit (A/I5 downgraded to hardening): a malformed
+        -- 8-octet size field can be negative; only size <= -512 could move
+        -- the offset backwards and loop forever. Stop parsing instead.
+        if size < 0 then
+            break
+        end
         local body_start = offset + 512
         local body_end = body_start + size - 1
         if name ~= "" and (typeflag == "0" or typeflag == "" or typeflag == "\0") and size > 0 then
