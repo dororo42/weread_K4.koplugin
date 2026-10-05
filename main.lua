@@ -23,10 +23,10 @@ local WeReadPlugin = WidgetContainer:extend{
     is_doc_only = false,
     -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
     -- self.version is what the in-plugin "About" dialog displays).
-    version = "0.6.0-k4-v7.0.1",
+    version = "0.6.0-k4-v7.5",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "1b9c823",
+    build_commit = "035c8bb",
 }
 
 function WeReadPlugin:onNetworkConnected()
