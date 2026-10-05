@@ -128,7 +128,13 @@ local function log_response(label, context, text)
     text = text or ""
     -- S-01 (2026-09-05): redact credential-looking values before the body
     -- reaches crash.log (see PluginUtil.redact_body).
-    local truncated_text = #text > 500 and text:sub(1, 500) .. "..." or text
+    -- F-13 (2026-10-05 audit): redact BEFORE truncating. The JSON redaction
+    -- pattern requires the closing quote, so a credential whose value
+    -- crossed the 500-byte cut no longer matched and leaked raw into
+    -- crash.log (the file users paste into issues).
+    local redacted_text = PluginUtil.redact_body(text)
+    local truncated_text = #redacted_text > 500
+        and redacted_text:sub(1, 500) .. "...[truncated]" or redacted_text
     logger.err(
         label,
         "method=", tostring(context.method or "unknown"),
@@ -295,12 +301,21 @@ function Client:request(opts)
         headers["Content-Length"] = tostring(#body)
     end
     local block_timeout = DEFAULT_TIMEOUT_SECONDS
-    local total_timeout = -1
+    -- F-21 (2026-10-05 audit): every request must carry a TOTAL deadline.
+    -- The old default was total_timeout = -1 (unlimited) and a number-type
+    -- opts.timeout only raised the block timeout — KOReader's socketutil
+    -- resets the block timeout between chunks, so a slow-drip connection
+    -- could hang a synchronous UI-thread request indefinitely (the 09/16
+    -- tick freezes; measured worst 26.9s, unbounded by design). Defaults
+    -- now pair block with total = block * 2; explicit {block, total} tables
+    -- keep their semantics.
+    local total_timeout = block_timeout * 2
     if type(opts.timeout) == "table" and opts.timeout[1] then
         block_timeout = opts.timeout[1]
-        total_timeout = opts.timeout[2] or block_timeout
+        total_timeout = opts.timeout[2] or block_timeout * 2
     elseif type(opts.timeout) == "number" then
         block_timeout = opts.timeout
+        total_timeout = block_timeout * 2
     end
     socketutil:set_timeout(block_timeout, total_timeout)
 
@@ -317,15 +332,29 @@ function Client:request(opts)
     -- P0-A (2026-09-18, crash-report E3): resolution-class transport errors
     -- (IPv6 literal on an AF_INET socket, fast DNS failures) are transient
     -- ordering artifacts — a single retry re-runs resolution with a fresh
-    -- getaddrinfo. Timeouts are deliberately NOT retried here: a second
-    -- 8s wait would double the worst-case UI freeze. Connect-phase failures
-    -- write no body bytes, so re-creating the default sink keeps the retry
-    -- side-effect-free; user-provided sinks are reused as-is. R-6
-    -- (2026-09-19, review): the string source is rebuilt per attempt as well
-    -- — it was safe only under the implicit assumption that resolution
-    -- errors strike before any body byte is pulled; rebuilding removes that
-    -- assumption, so future retry-pattern additions cannot send an empty
-    -- body from an exhausted source.
+    -- getaddrinfo. Connect-phase failures write no body bytes, so
+    -- re-creating the default sink keeps the retry side-effect-free;
+    -- user-provided sinks are reused as-is. R-6 (2026-09-19, review): the
+    -- string source is rebuilt per attempt as well — it was safe only under
+    -- the implicit assumption that resolution errors strike before any body
+    -- byte is pulled; rebuilding removes that assumption.
+    -- F-23 (2026-10-05 audit): two fixes. ① LuaSocket http.request signals
+    -- failure by RETURNING (nil, err) — the old retry only inspected pcall
+    -- errors, so a WANT_READ ("wantread") failure-shape request never
+    -- retried even though the QR-login path treats the identical state as
+    -- transient (10 such failures in the 09/22 storm, each followed by a
+    -- manual retry succeeding). ② the retryable class now covers
+    -- wantread/closed/refused/reset via the shared PluginUtil classifier.
+    -- "timeout" is deliberately EXCLUDED here: with the F-21 total deadline
+    -- a timeout has already consumed the whole budget and retrying would
+    -- double the UI-thread freeze — caller-level retries (downloader
+    -- chapter retry, read_report next tick) own that class. Still a single
+    -- immediate retry, never a backoff loop on the UI thread.
+    local function is_retryable_transport_error(err)
+        local text = tostring(err or ""):lower()
+        if text:find("timeout", 1, true) then return false end
+        return PluginUtil.is_transient_transport_error(text)
+    end
     local results
     for attempt = 1, 2 do
         local sink_to_use = opts.sink
@@ -337,21 +366,27 @@ function Client:request(opts)
         req_opts.source = body and ltn12.source.string(body) or nil
         results = { pcall(http.request, req_opts) }
         socketutil:reset_timeout()
-        if results[1] then
+        -- Failure shapes: pcall error → (false, err); http.request failure
+        -- → (true, nil, err). Normalize to the error value.
+        local transport_ok = results[1] and results[2] ~= nil
+        if transport_ok then
             break
         end
-        local retryable = attempt == 1 and ipv4_dns
-            and ipv4_dns.is_resolution_error(results[2])
+        local err_text = tostring(results[2] ~= nil and results[2] or results[3])
+        local retryable = attempt == 1 and is_retryable_transport_error(err_text)
+        if not retryable and attempt == 1 and ipv4_dns then
+            retryable = ipv4_dns.is_resolution_error(err_text)
+        end
         if not retryable then
             break
         end
         logger.warn(
-            "HTTP transport retry after resolution error:",
+            "HTTP transport retry after transient error:",
             "method=", tostring(req_opts.method),
             "url=", tostring(req_opts.url),
             "api=", tostring(diagnostic_api or "unknown"),
             "attempt=", tostring(attempt),
-            "error=", tostring(results[2])
+            "error=", err_text
         )
     end
     if not results[1] then
@@ -417,6 +452,15 @@ function Client:request_follow(opts, max_redirects)
         local next_url = absolute_url(url, header_value(headers, "location"))
         if not next_url then
             return text, code, headers, status, url
+        end
+        -- F-14 hardening (2026-10-05 audit, downgraded from important after
+        -- the cookie-leak claim was refuted: is_weread_url attaches
+        -- credentials over https only, and the origin change below clears
+        -- them). What remains true: an https→http hop would return a
+        -- plaintext body as a trusted API result — refuse the downgrade.
+        if url:sub(1, 8) == "https://" and next_url:sub(1, 7) == "http://" then
+            error("insecure redirect downgrade refused: "
+                .. PluginUtil.display_error(next_url))
         end
         if url_origin(url) ~= url_origin(next_url) then
             clear_cross_origin_headers(request_opts.headers)

@@ -37,16 +37,24 @@ local function rmdir_recursive(path)
 end
 
 -- Move a directory across filesystems without shell commands.
+-- F-11 (2026-10-05 audit): os.rename signals failure by RETURNING (nil, msg),
+-- it does not raise — so `pcall`'s first return is true even when the rename
+-- failed, and the old `if ok_rename then return true end` reported success
+-- unconditionally. The cross-filesystem copy+delete fallback was dead code:
+-- a failed move was reported as success while the caller rewrote every
+-- cached_file/cache_dir to a path that does not exist (verified by
+-- experiment: pcall(os.rename, missing, x) → (true, nil, "No such file or
+-- directory")). Check os.rename's own return value instead.
 local function move_dir(src, dst)
-    local ok_rename, err_rename = pcall(os.rename, src, dst)
-    if ok_rename then return true end
+    local ok_call, renamed, rename_err = pcall(os.rename, src, dst)
+    if ok_call and renamed then return true end
     -- os.rename fails across filesystems; fall back to copy+delete
     local lfs = require("libs/libkoreader-lfs")
     -- Try using lfs for a recursive copy if available, otherwise
     -- fall back to a simple approach: create dst, move contents, remove src
     PluginUtil.mkdirs(dst)
     local ok, iter, dir_obj = pcall(lfs.dir, src)
-    if not ok then return false, err_rename end
+    if not ok then return false, rename_err or "rename failed" end
     for entry in iter, dir_obj do
         if entry ~= "." and entry ~= ".." then
             local child_src = src .. "/" .. entry
@@ -86,6 +94,8 @@ local function move_dir(src, dst)
     lfs.rmdir(src)
     return true
 end
+-- Test-visible export (F-11 regression): the pcall(os.rename) success check.
+M.move_dir = move_dir
 
 function M:setMPImageDownload(enabled)
     local cache = self.settings:get("cache")

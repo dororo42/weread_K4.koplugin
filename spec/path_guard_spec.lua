@@ -226,3 +226,37 @@ describe("BookStore.resolved_dir root validation (audit Y-1)", function()
         assert.equals(ROOT .. "/B1", dir)
     end)
 end)
+
+-- F-11 (2026-10-05 audit): os.rename signals failure by RETURNING (nil, msg),
+-- it does not raise. The old move_dir checked pcall's first return only and
+-- reported success unconditionally, making the cross-filesystem copy+delete
+-- fallback dead code. Regression: when the rename fails, move_dir must NOT
+-- report success. Uses the top-level CacheUI (loaded against the stubs at
+-- collection time); only os.rename and the lfs handle are swapped per test.
+describe("move_dir rename fallback (F-11)", function()
+    local saved_rename, saved_lfs
+    before_each(function()
+        saved_rename = rawget(os, "rename")
+        saved_lfs = package.loaded["libs/libkoreader-lfs"]
+    end)
+    after_each(function()
+        rawset(os, "rename", saved_rename)
+        package.loaded["libs/libkoreader-lfs"] = saved_lfs
+    end)
+
+    it("does not report success when os.rename fails", function()
+        rawset(os, "rename", function() return nil, "cross-device link" end)
+        -- lfs handle without dir(): the copy+delete fallback cannot
+        -- enumerate the source, so move_dir must surface the failure
+        -- (false), never the old unconditional `true`.
+        package.loaded["libs/libkoreader-lfs"] = {}
+        local ok, err = CacheUI.move_dir("/mem/src", "/mem/dst")
+        assert.is_false(ok)
+        assert.equals("cross-device link", err)
+    end)
+
+    it("still reports success when os.rename succeeds", function()
+        rawset(os, "rename", function() return true end)
+        assert.is_true(CacheUI.move_dir("/mem/src", "/mem/dst"))
+    end)
+end)

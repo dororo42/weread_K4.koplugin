@@ -72,7 +72,12 @@ local PREFETCH_FAILURE_COOLDOWN_SECONDS = 300
 -- its degrade ladder — weak-network UI protection comes first — but a
 -- background chapter prefetch has no UI to protect and benefits from a
 -- patient single attempt (fewer wasted retries on slow CDNs).
-local PREFETCH_REQUEST_TIMEOUT = 30
+-- F-12 (2026-10-05 audit): the 30s block timeout ran on the SAME UI thread
+-- as everything else (K4 has no fork), so one page turn could freeze the
+-- reader for 30s×2 (chapter body + images). Now a {block, total} pair:
+-- 5s between chunks, 15s hard wall. The foreground_barrier still defers
+-- prefetch steps during interaction; the budget itself had no cap before.
+local PREFETCH_REQUEST_TIMEOUT = { 5, 15 }
 
 -- Completion reasons that mean "the job was superseded, not broken" (B13).
 local PREFETCH_NON_FAILURE_REASONS = {

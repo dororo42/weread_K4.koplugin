@@ -119,6 +119,35 @@ function PluginUtil.lexical_normalize(path)
     return table.concat(parts, "/")
 end
 
+-- F-23 (2026-10-05 audit): shared transient-transport classification.
+-- qr_login.lua's private is_timeout_error treated "wantread"/"timeout" as
+-- retryable while client.lua's transport retry only covered DNS-resolution
+-- errors — the same LuaSec WANT_READ state was a retryable transient on the
+-- QR-login path and a terminal failure on chapter downloads / reading
+-- reports (10 of the 09/22 download-storm failures were of this class, each
+-- followed by a manual retry succeeding seconds later). Deliberately
+-- EXCLUDES offline-class errors ("Network is unreachable", name resolution):
+-- retrying those synchronously is futile, they belong to the reconnect
+-- event flow (see read_report/progress_sync F-06).
+local TRANSIENT_TRANSPORT_PATTERNS = {
+    "timeout",
+    "wantread",
+    "closed",
+    "connection refused",
+    "connection reset",
+    "broken pipe",
+}
+
+function PluginUtil.is_transient_transport_error(err)
+    local text = tostring(err or ""):lower()
+    for _i, pattern in ipairs(TRANSIENT_TRANSPORT_PATTERNS) do
+        if text:find(pattern, 1, true) ~= nil then
+            return true
+        end
+    end
+    return false
+end
+
 function PluginUtil.file_exists(path)
     if type(path) ~= "string" or path == "" then
         return false

@@ -116,6 +116,22 @@ local BACKLOG_TICK_SECONDS = 30
 -- K4 tuning: raised from 10s to 15s to further reduce radio wake-ups on the
 -- K4's weak WiFi, at the cost of slower (but lossless) catch-up.
 
+-- F-01/F-21 (2026-10-05 audit): inline ticks run on the UI loop and every
+-- request now carries a total deadline (client.lua), but a tick is a
+-- PIPELINE of up to 4-5 sequential requests (context rebuild + enter +
+-- report, optionally renewal + retry). Give the whole tick a wall-clock
+-- budget: when it runs out mid-pipeline, the remaining steps defer to the
+-- next tick (TICK_BUDGET_RECHECK_SECONDS later) instead of stacking another
+-- bounded-but-long request onto a frozen UI. The watermark keeps every
+-- unsent second — deferral loses nothing. Not a failure: budget outcomes
+-- skip the failure-streak counters entirely.
+local TICK_BUDGET_SECONDS = 2
+local TICK_BUDGET_RECHECK_SECONDS = 5
+-- Sentinel raised out of _build_context when the budget trips mid-rebuild;
+-- _run_pipeline converts it into a "budget" outcome (never a context error,
+-- which would feed the failure-streak breaker).
+local BUDGET_SENTINEL = "weread tick budget exceeded"
+
 -- Context fields that the subprocess sends back for the parent to persist.
 -- Mirrors the scalar reading-state fields stored by BookStore; the chapter
 -- catalog itself stays in the on-disk catalog cache written by the child.
@@ -908,10 +924,18 @@ function ReadReport:_tick(generation, task)
                 tostring(spawn_err))
             self.logged_inline_fallback = true
         end
+        -- F-01: the budget covers the pipeline only (precheck/page-defer are
+        -- cheap); deadline is in the time.now() (µs) domain, nil when the
+        -- time module is unavailable (tests).
+        local tick_deadline
+        if time and time.s then
+            tick_deadline = time.now() + time.s(TICK_BUDGET_SECONDS)
+        end
         local outcome = self:_run_pipeline(book_id, {
             allow_renewal = allow_renewal,
             position = position,
             elapsed_seconds = elapsed_seconds,
+            deadline = tick_deadline,
         })
         -- P2: log every failed tick's cost (and slow successes >= 1s) so a
         -- crash.log session can quantify how long the UI loop froze and how
@@ -922,12 +946,18 @@ function ReadReport:_tick(generation, task)
         -- against 1000 (= 1 ms), marking every healthy ~170 ms tick as
         -- "slow" (105 INFO lines on 2026-09-17). Convert with time.to_ms()
         -- and compare in the SFT domain with time.s(1).
+        -- F-09 (2026-10-05 audit): the variable is renamed tick_started_us —
+        -- it holds the raw µs-domain timestamp; P0-B fixed the conversion
+        -- but left the unit-in-name lying.
         if time then
             local duration = time.now() - tick_started_ms
             local elapsed_ms = time.to_ms and time.to_ms(duration)
                 or math.floor(duration / 1000 + 0.5)
             local slow_threshold = time.s and time.s(1) or 1000000
-            if outcome and not outcome.accepted then
+            if outcome and outcome.error_kind == "budget" then
+                log("info", "read report tick budget exceeded, deferring remainder:",
+                    "elapsed_ms=", tostring(elapsed_ms))
+            elseif outcome and not outcome.accepted then
                 log("warn", "read report tick failed:",
                     "elapsed_ms=", tostring(elapsed_ms),
                     "error_kind=", tostring(outcome.error_kind or "unknown"),
@@ -936,6 +966,13 @@ function ReadReport:_tick(generation, task)
                 log("info", "read report tick slow:",
                     "elapsed_ms=", tostring(elapsed_ms))
             end
+        end
+        if outcome and outcome.error_kind == "budget" then
+            -- Not a failure: nothing was sent, the watermark keeps the
+            -- unsent seconds. Re-check shortly so a long context rebuild
+            -- splits across ticks instead of stacking onto a frozen UI.
+            self:_schedule_next(generation, task, TICK_BUDGET_RECHECK_SECONDS)
+            return
         end
         self:_apply_outcome(outcome)
         self:_schedule_next(generation, task, self:_next_tick_delay())
@@ -948,7 +985,8 @@ end
 
 -- P0-3a helper: degraded per-request timeout while the report pipeline is
 -- in a failure streak (see constants above). Returns nil (= client default
--- 8s) on healthy links.
+-- 8s) on healthy links. F-21: the client pairs a number timeout with
+-- total = block * 2, so the degrade ladder is now bounded too.
 function ReadReport:_request_timeout()
     local failures = self.consecutive_failures or 0
     if failures >= FAILURE_DEGRADE_DEEP_THRESHOLD then
@@ -958,6 +996,16 @@ function ReadReport:_request_timeout()
         return FAILURE_DEGRADE_TIMEOUT
     end
     return nil
+end
+
+-- F-01 (2026-10-05 audit): true when the tick's wall-clock budget is spent.
+-- deadline is a time.now() (µs-domain) timestamp computed in _tick; nil
+-- disables the check (upload path, non-KOReader test environments).
+function ReadReport:_budget_exceeded(deadline)
+    if not deadline or not time then
+        return false
+    end
+    return time.now() >= deadline
 end
 
 -- S-03 (2026-09-05): wall-clock rollback guard. Domain math (watermark,
@@ -1499,16 +1547,30 @@ end
 -- is described by the returned outcome table.
 function ReadReport:_run_pipeline(book_id, opts)
     opts = opts or {}
+    -- F-01: tick budget (see constants). nil deadline = check disabled.
+    local deadline = opts.deadline
     local outcome = { accepted = false, renew_attempted = false }
     outcome.reported_seconds = opts.elapsed_seconds or self:_interval()
 
     local context_ok, book = pcall(function()
-        return self:ensure_context(book_id, false)
+        return self:ensure_context(book_id, false, deadline)
     end)
     if not context_ok then
+        if tostring(book) == BUDGET_SENTINEL then
+            -- Budget tripped mid-rebuild: not a failure, the next tick
+            -- resumes the rebuild (nothing was reported, nothing lost).
+            outcome.error = BUDGET_SENTINEL
+            outcome.error_kind = "budget"
+            return outcome
+        end
         outcome.error = tostring(book)
         outcome.error_kind = "context"
         outcome.error_prefix = "read report context initialization failed:"
+        return outcome
+    end
+    if self:_budget_exceeded(deadline) then
+        outcome.error = BUDGET_SENTINEL
+        outcome.error_kind = "budget"
         return outcome
     end
     local ok, result, http_code = pcall(function()
@@ -1555,6 +1617,15 @@ function ReadReport:_run_pipeline(book_id, opts)
         return outcome
     end
     outcome.renew_attempted = true
+    if self:_budget_exceeded(deadline) then
+        -- The first send already failed, so the failure accounting below is
+        -- honest — but the renewal + final-retry chain defers to the next
+        -- tick instead of stacking more bounded requests onto the UI.
+        outcome.error = failure .. "; tick budget exceeded, deferring renewal"
+        outcome.error_kind = is_auth_error_body(result) and "auth" or "server"
+        outcome.error_prefix = "read report server rejected:"
+        return outcome
+    end
 
     local renew_ok, renew_result = pcall(function()
         return self.client:renew_cookie()
@@ -1596,16 +1667,33 @@ function ReadReport:_run_pipeline(book_id, opts)
     end
     outcome.renewal_status = "replaced"
 
+    -- F-01: renewal succeeded but the budget is spent — defer the final
+    -- refresh+send. Not a failure (nothing failed; the renewed cookies are
+    -- already stored and the next tick sends with them).
+    if self:_budget_exceeded(deadline) then
+        outcome.error = BUDGET_SENTINEL
+        outcome.error_kind = "budget"
+        return outcome
+    end
     local final_context_ok, final_book = pcall(function()
-        return self:ensure_context(book_id, true)
+        return self:ensure_context(book_id, true, deadline)
     end)
     if not final_context_ok then
+        if tostring(final_book) == BUDGET_SENTINEL then
+            outcome.error = BUDGET_SENTINEL
+            outcome.error_kind = "budget"
+            return outcome
+        end
         outcome.error = failure .. "; final_context=" .. tostring(final_book)
         outcome.error_kind = "context"
         outcome.error_prefix = "read report final context refresh failed:"
         return outcome
     end
-    outcome.book = self:_context_snapshot(final_book)
+    if self:_budget_exceeded(deadline) then
+        outcome.error = BUDGET_SENTINEL
+        outcome.error_kind = "budget"
+        return outcome
+    end
     local final_ok, final_result, final_code = pcall(function()
         return self:_send(
             book_id, final_book, opts.position, opts.elapsed_seconds)
@@ -1664,7 +1752,7 @@ end
 
 -- Build (and refresh when stale) the reader context on the given book
 -- record. Performs network I/O; never persists settings.
-function ReadReport:_build_context(book_id, force, book)
+function ReadReport:_build_context(book_id, force, book, deadline)
     book.book_id = book.book_id or book.bookId or book_id
     book.reader_url = WeRead.reader_url(book_id)
 
@@ -1704,6 +1792,12 @@ function ReadReport:_build_context(book_id, force, book)
     end
     book.read_session_entered_at = nil
     book.read_session_id = self.session_id
+    -- F-01: budget checks between the rebuild's network steps. Tripping
+    -- raises the BUDGET_SENTINEL (never a plain error): _run_pipeline
+    -- converts it into a "budget" outcome so the breaker never sees it.
+    if self:_budget_exceeded(deadline) then
+        error(BUDGET_SENTINEL, 0)
+    end
     if force or type(book.chapters) ~= "table" or #book.chapters == 0 then
         local chapters = Content.fetch_catalog(self.client, book)
         local cache_ok, cache_err = Content.save_catalog_cache(
@@ -1725,6 +1819,9 @@ function ReadReport:_build_context(book_id, force, book)
             end)
         end
         book.chapters = chapters
+    end
+    if self:_budget_exceeded(deadline) then
+        error(BUDGET_SENTINEL, 0)
     end
     self:_merge_remote_progress(book_id, book)
 
@@ -1749,7 +1846,7 @@ function ReadReport:_build_context(book_id, force, book)
     return book
 end
 
-function ReadReport:ensure_context(book_id, force)
+function ReadReport:ensure_context(book_id, force, deadline)
     book_id = tostring(book_id or "")
     if book_id == "" then
         error("missing book id")
@@ -1769,7 +1866,7 @@ function ReadReport:ensure_context(book_id, force)
     -- inside the TTL window) skips the full book-record write + settings
     -- flush that used to run unconditionally on every tick.
     local before = existing and self:_context_snapshot(existing) or nil
-    self:_build_context(book_id, force, book)
+    self:_build_context(book_id, force, book, deadline)
     -- P0-3: any rebuild (fresh or forced) clears the stale flag; the
     -- deferred refresh has now happened (whichever book it was for).
     self._context_stale = false

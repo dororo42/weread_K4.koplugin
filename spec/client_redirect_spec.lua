@@ -23,9 +23,25 @@ local __PREEXISTING = {}
 for _, name in ipairs(__SPEC_STUB_NAMES) do
     __PREEXISTING[name] = { loaded = package.loaded[name], preload = package.preload[name] }
 end
+-- Stub instances are created ONCE and reused: client.lua binds socketutil /
+-- socket.http at require time, so re-running the factories would hand later
+-- describes a fresh table while the module under test keeps the stale one.
+local __STUB_INSTANCES = {}
 local function preload_stub(name, factory)
-    package.preload[name] = factory
-    package.loaded[name] = factory()
+    if not __STUB_INSTANCES[name] then
+        __STUB_INSTANCES[name] = factory()
+    end
+    local instance = __STUB_INSTANCES[name]
+    package.preload[name] = function() return instance end
+    package.loaded[name] = instance
+end
+-- Each describe's teardown(__CLEAR) restores the pre-spec state; a describe
+-- that runs after one of those teardowns re-installs the SAME instances.
+local function reinstall_stubs()
+    for name, instance in pairs(__STUB_INSTANCES) do
+        package.preload[name] = function() return instance end
+        package.loaded[name] = instance
+    end
 end
 
 preload_stub("ltn12", function()
@@ -37,7 +53,10 @@ preload_stub("ltn12", function()
 end)
 preload_stub("socketutil", function()
     return {
-        set_timeout = function() end,
+        set_timeout = function(_self, block, total)
+            _G.__SPEC_TIMEOUTS = _G.__SPEC_TIMEOUTS or {}
+            _G.__SPEC_TIMEOUTS[#_G.__SPEC_TIMEOUTS + 1] = { block = block, total = total }
+        end,
         reset_timeout = function() end,
         table_sink = function(_t) return function() end end,
     }
@@ -126,6 +145,10 @@ local function script_responses(responses)
         local response = responses[#http_requests]
         if not response then
             return true, 200, {}, "200"
+        end
+        if response.error then
+            -- LuaSocket http.request failure shape: returns (nil, err)
+            return nil, response.error
         end
         return true, response.code, response.headers or {}, tostring(response.code)
     end
@@ -219,5 +242,105 @@ describe("Client:request_follow redirect credential handling", function()
         local dropped = Cookie.merge_set_cookie({}, "tracker=1; Path=/")
         assert.is_nil(dropped.tracker)
         assert.is_true(PluginUtil.lexical_normalize ~= nil)
+    end)
+end)
+
+-- F-21 (2026-10-05 audit): every request must carry a total deadline. The
+-- old default was total_timeout = -1 (unlimited) and a number-type
+-- opts.timeout only raised the block timeout — a slow-drip connection could
+-- hang a synchronous UI-thread request indefinitely.
+describe("Client:request timeout pairing (F-21)", function()
+    teardown(__CLEAR)
+    before_each(reinstall_stubs)
+
+    local function last_timeout()
+        local calls = _G.__SPEC_TIMEOUTS or {}
+        return calls[#calls]
+    end
+
+    it("pairs the 8s default block timeout with a 16s total", function()
+        script_responses({})
+        local client = new_client()
+        client:request({ url = "https://weread.qq.com/a", method = "GET" })
+        assert.equals(8, last_timeout().block)
+        assert.equals(16, last_timeout().total)
+    end)
+
+    it("bounds a number-type timeout (degrade ladder) with total = block*2", function()
+        script_responses({})
+        local client = new_client()
+        client:request({ url = "https://weread.qq.com/a", method = "GET", timeout = 4 })
+        assert.equals(4, last_timeout().block)
+        assert.equals(8, last_timeout().total)
+    end)
+
+    it("honours an explicit {block, total} table", function()
+        script_responses({})
+        local client = new_client()
+        client:request({ url = "https://weread.qq.com/a", method = "GET",
+            timeout = { 5, 15 } })
+        assert.equals(5, last_timeout().block)
+        assert.equals(15, last_timeout().total)
+    end)
+end)
+
+-- F-23 (2026-10-05 audit): LuaSocket http.request signals failure by
+-- RETURNING (nil, err); the old retry only inspected pcall errors, so a
+-- WANT_READ ("wantread") failure never retried on the download/report paths
+-- even though the QR-login path treats the same state as transient.
+describe("Client:request transient retry (F-23)", function()
+    teardown(__CLEAR)
+    before_each(reinstall_stubs)
+
+    it("retries once when http.request returns (nil, wantread)", function()
+        script_responses({ { error = "wantread" } })
+        local client = new_client()
+        local _, code = client:request_follow({
+            url = "https://weread.qq.com/web/a", method = "GET" })
+        assert.equals(2, #http_requests)
+        assert.equals(200, code)
+    end)
+
+    it("retries once on a pcall-shaped transient error (closed)", function()
+        script_responses({ { error = "closed" } })
+        local client = new_client()
+        client:request_follow({ url = "https://weread.qq.com/web/a", method = "GET" })
+        assert.equals(2, #http_requests)
+    end)
+
+    it("does NOT retry offline-class errors", function()
+        script_responses({ { error = "Network is unreachable" } })
+        local client = new_client()
+        client:request({ url = "https://weread.qq.com/a", method = "GET" })
+        assert.equals(1, #http_requests)
+    end)
+
+    it("does NOT retry timeouts (already consumed the total budget)", function()
+        script_responses({ { error = "timeout" } })
+        local client = new_client()
+        client:request({ url = "https://weread.qq.com/a", method = "GET" })
+        assert.equals(1, #http_requests)
+    end)
+end)
+
+-- F-14 hardening (2026-10-05 audit): refuse https→http redirect downgrades.
+-- (The cookie-leak part of the original finding was refuted —
+-- is_weread_url attaches credentials over https only — so this stays a
+-- plaintext-integrity guard.)
+describe("Client:request_follow https downgrade refusal (F-14)", function()
+    teardown(__CLEAR)
+    before_each(reinstall_stubs)
+
+    it("refuses a Location that downgrades to http", function()
+        script_responses({
+            { code = 302, headers = { location = "http://weread.qq.com/x" } },
+        })
+        local client = new_client()
+        local ok, err = pcall(function()
+            client:request_follow({ url = "https://weread.qq.com/a", method = "GET" })
+        end)
+        assert.is_false(ok)
+        assert.is_not_nil(tostring(err):find("insecure redirect downgrade refused", 1, true))
+        assert.equals(1, #http_requests)
     end)
 end)
