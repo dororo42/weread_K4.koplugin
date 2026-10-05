@@ -215,8 +215,8 @@ end
 local progress_store = {}
 local progress_seq = 0
 
-local function new_downloader()
-    local books_table = {}
+local function new_downloader(seed_books)
+    local books_table = seed_books or {}
     local settings = {
         cache_dir = "/mem",
         get = function(_self, key, default)
@@ -231,7 +231,10 @@ local function new_downloader()
             return default
         end,
         set = function() end,
-        set_book = function() end,
+        -- real single-record write so tests can assert the persisted record
+        set_book = function(_self, book_id, book)
+            books_table[tostring(book_id)] = book
+        end,
         remove_book = function() end,
         flush = function() end,
     }
@@ -246,7 +249,7 @@ local function new_downloader()
             return progress_store[tostring(text)]
         end,
     }
-    return Downloader:new({
+    local dl = Downloader:new({
         client = client,
         settings = settings,
         show_info = function() end,
@@ -260,6 +263,7 @@ local function new_downloader()
         run_background_task = function() return true end,
         is_connected = function() return true end,
     })
+    return dl, books_table
 end
 
 local BOOK = { book_id = "B1", title = "Resume Book" }
@@ -353,5 +357,125 @@ describe("Downloader breakpoint resume (v4.0)", function()
         assert.is_true(completed[1])
         assert.equals(3, fetch_calls - fetched_before)
         assert.is_nil(next(memfs))
+    end)
+end)
+
+
+-- F-05 (2026-10-05 audit): session-shaped errors terminate the whole job
+-- instead of "retry once then skip" for every remaining chapter (the 09/22
+-- storm burned 26 chapters x 2 attempts of predictable failures and left
+-- only a WARN line).
+describe("Downloader session-error short-circuit (F-05)", function()
+    teardown(__CLEAR)
+
+    before_each(function()
+        for key in pairs(memfs) do memfs[key] = nil end
+        progress_store = {}
+        progress_seq = 0
+        fetch_calls = 0
+        cancel_after_uid = nil
+        dl_ref = nil
+        _G.__SPEC_DIALOGS = nil
+        patch_content_for_memfs()
+    end)
+
+    it("aborts the job on a session-shaped chapter error without retry", function()
+        dl_ref = new_downloader()
+        local real_fetch = Content.fetch_single_chapter_source
+        Content.fetch_single_chapter_source = function(_c, _s, _b, chapter)
+            fetch_calls = fetch_calls + 1
+            error("plugins/.../content.lua: /web/book/chapter/e_0 returned empty object")
+        end
+        local completed = {}
+        dl_ref:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed = { ok, value } end,
+        })
+        -- one attempt only — no retry, no further chapters
+        assert.equals(1, fetch_calls)
+        assert.is_false(completed[1])
+        assert.equals("authentication_required", completed[2])
+        -- progress persisted so Resume keeps what landed
+        assert.is_not_nil(memfs["/mem/.dl/progress.json"])
+        Content.fetch_single_chapter_source = real_fetch
+    end)
+
+    it("still retries once with backoff on transient errors", function()
+        dl_ref = new_downloader()
+        local real_fetch = Content.fetch_single_chapter_source
+        local attempts = 0
+        Content.fetch_single_chapter_source = function(_c, _s, _b, chapter)
+            fetch_calls = fetch_calls + 1
+            attempts = attempts + 1
+            if attempts == 1 then
+                error("timeout")
+            end
+            return "<body>" .. tostring(chapter.chapterUid) .. "</body>"
+        end
+        local completed = {}
+        dl_ref:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed = { ok, value } end,
+        })
+        -- chapter 1: fail + retry (2 calls), chapters 2-3 succeed
+        assert.equals(4, fetch_calls)
+        assert.is_true(completed[1])
+        Content.fetch_single_chapter_source = real_fetch
+    end)
+end)
+
+-- F-18 (2026-10-05 audit): a completed download must never overwrite an
+-- existing catalog with the downloaded subset — with a skipped chapter the
+-- subset is smaller, and percent math + next-chapter prefetch use the full
+-- catalog. Only a MISSING catalog gets filled (the v4.5 rebuild case).
+describe("Downloader catalog preservation (F-18)", function()
+    teardown(__CLEAR)
+
+    before_each(function()
+        for key in pairs(memfs) do memfs[key] = nil end
+        progress_store = {}
+        progress_seq = 0
+        fetch_calls = 0
+        cancel_after_uid = nil
+        dl_ref = nil
+        _G.__SPEC_DIALOGS = nil
+        patch_content_for_memfs()
+    end)
+
+    it("keeps the full catalog when a whole-book run skips a chapter", function()
+        local full_chapters = {
+            { chapterUid = "u1", title = "C1" },
+            { chapterUid = "u2", title = "C2" },
+            { chapterUid = "u3", title = "C3" },
+        }
+        local dl, books_table = new_downloader({
+            B1 = { book_id = "B1", title = "Resume Book", chapters = full_chapters },
+        })
+        -- chapter 2 fails twice (transient) -> skipped, chapters 1+3 land
+        Content.fetch_single_chapter_source = function(_c, _s, _b, chapter)
+            fetch_calls = fetch_calls + 1
+            if tostring(chapter.chapterUid) == "u2" then
+                error("timeout")
+            end
+            return "<body>" .. tostring(chapter.chapterUid) .. "</body>"
+        end
+        local completed = {}
+        dl:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed = { ok, value } end,
+        })
+        assert.is_true(completed[1])
+        assert.equals(3, #books_table.B1.chapters) -- full catalog survived
+        assert.equals("u2", books_table.B1.chapters[2].chapterUid)
+    end)
+
+    it("still fills a missing catalog after delete-and-redownload (v4.5)", function()
+        local dl, books_table = new_downloader()
+        assert.is_nil(books_table.B1)
+        local completed = {}
+        dl:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed = { ok, value } end,
+        })
+        assert.is_true(completed[1])
+        -- record absent from the index: the completion path rebuilds it and
+        -- set_book persists the downloaded chapter list (v4.5 contract)
+        assert.equals(3, #books_table.B1.chapters)
     end)
 end)

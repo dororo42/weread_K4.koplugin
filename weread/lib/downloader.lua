@@ -834,12 +834,63 @@ function Downloader:_perf(dl, stage, started, ...)
         "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total), ...)
 end
 
+-- F-05 (2026-10-05 audit): session/authorization-shaped errors. The 09/22
+-- storm hammered the server with 26 chapters x (1 try + 1 retry) of exactly
+-- predictable failures ("returned empty object" + same-day -2012/-2013) and
+-- silently skipped them all. These are terminal for the whole job: retrying
+-- the next chapter burns radio and risk-control goodwill for a 100%
+-- predictable result.
+local SESSION_ERROR_PATTERNS = {
+    "returned empty object",
+    "errCode=%-2012",
+    "errCode=%-2013",
+    "%-2010",
+    "登录超时",
+    "renewal rejected %((expired%)%)",
+    "authentication_required",
+}
+
+local function is_session_error(err)
+    local text = tostring(err or "")
+    for _i, pattern in ipairs(SESSION_ERROR_PATTERNS) do
+        if text:find(pattern, 1, true) or text:find(pattern) then
+            return true
+        end
+    end
+    return false
+end
+
 function Downloader:_failChapter(dl, err)
     local chapter = dl.chapters[dl.index]
     local uid = tostring(chapter and chapter.chapterUid or dl.index)
+    -- F-05: a session-shaped error terminates the whole job immediately —
+    -- the outcome for every remaining chapter is already known. Progress is
+    -- persisted first so "Resume" keeps the chapters that did land.
+    if is_session_error(err) then
+        logger.warn("chapter download aborted: session-shaped error, terminating job:",
+            "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
+            "chapter_uid=", uid, "error=", log_error(err))
+        dl.current = nil
+        self:_saveProgress(dl)
+        if dl.progress_dialog then
+            dl.progress_dialog:close()
+            dl.progress_dialog = nil
+        end
+        self:_releaseStandby(dl)
+        self:_notifyCompletion(dl, false, "authentication_required")
+        self:_finishJob(dl)
+        if not dl.prefetch then
+            self.show_info(T(
+                _("Download stopped: the WeRead session appears expired (chapter %1 failed with a login-shaped error). Log in again and resume.\n%2"),
+                tostring(dl.index), display_error(err)))
+        end
+        return
+    end
     -- Retry each failed chapter once before giving up on it: transient
     -- network hiccups (weak K4 WiFi, CDN resets) are common and a single
-    -- retry recovers most of them without hammering the server.
+    -- retry recovers most of them without hammering the server. F-05: the
+    -- retry now waits 2s instead of re-entering the state machine
+    -- immediately (~0.5s) so a wobbly CDN is not hammered back-to-back.
     dl.chapter_retries = dl.chapter_retries or {}
     if not dl.chapter_retries[uid] then
         dl.chapter_retries[uid] = true
@@ -848,7 +899,7 @@ function Downloader:_failChapter(dl, err)
             "chapter_uid=", uid, "error=", log_error(err))
         dl.current = nil
         -- Keep dl.index unchanged so _step re-downloads this chapter.
-        self:_scheduleGuarded(dl, function() self:_step(dl) end)
+        self:_scheduleGuarded(dl, function() self:_step(dl) end, 2)
         return
     end
     table.insert(dl.failed, uid)
@@ -1168,7 +1219,18 @@ function Downloader:_step(dl)
             -- book record. A delete-and-redownload rebuilds the record
             -- without chapters, which breaks progress sync
             -- (capture_local -> catalog_unavailable).
-            if type(dl.selected) == "table" and #dl.selected > 0 then
+            -- F-18 (2026-10-05 audit): fill a MISSING catalog, never
+            -- overwrite an existing one. The old code replaced
+            -- book.chapters with dl.selected unconditionally — a
+            -- single-chapter download (or a whole-book run with skipped
+            -- chapters) shrank the catalog to the downloaded subset, which
+            -- distorted percent math (F-17 baseline) and stopped next-
+            -- chapter prefetch at the download boundary. The v4.5 purpose
+            -- (rebuild the catalog after delete-and-redownload) only needs
+            -- the missing case.
+            local existing_chapters = (record and record.chapters) or dl.book.chapters
+            if (type(existing_chapters) ~= "table" or #existing_chapters == 0)
+                and type(dl.selected) == "table" and #dl.selected > 0 then
                 dl.book.chapters = dl.selected
                 if record then
                     record.chapters = dl.selected
@@ -1275,6 +1337,25 @@ function Downloader:_step(dl)
                 _("Downloaded %1 chapters; %2 failed.\n\nBook saved:\n%3\n\nRead now?"),
                 tostring(#dl.selected), tostring(#dl.failed), path
             )
+            -- F-05: the 09/22 storm left the user with only a count. Name
+            -- the failed chapters (up to five, folded) so the user can
+            -- decide between re-download and give-up without a log dig.
+            local uid_to_chapter = {}
+            for _, ch in ipairs(dl.chapters or {}) do
+                uid_to_chapter[tostring(ch.chapterUid or ch.chapterId or "")] = ch
+            end
+            local failed_titles = {}
+            for i, fuid in ipairs(dl.failed) do
+                if i > 5 then
+                    table.insert(failed_titles, T(_("…and %1 more"),
+                        tostring(#dl.failed - 5)))
+                    break
+                end
+                local ch = uid_to_chapter[fuid]
+                table.insert(failed_titles, (ch and ch.title) or fuid)
+            end
+            completion_text = completion_text .. "\n\n" .. T(
+                _("Failed chapters: %1"), table.concat(failed_titles, "、"))
         else
             completion_text = T(_("Downloaded %1 chapters.\n\nBook saved:\n%2\n\nRead now?"), tostring(#dl.selected), path)
         end

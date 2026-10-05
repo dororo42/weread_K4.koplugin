@@ -196,7 +196,12 @@ function PositionMapper.local_to_remote(chapters, fraction, options)
     end
 
     return {
-        percent = math.floor(clamp(overall_fraction, 0, 1) * 100),
+        -- F-17 (2026-10-05 audit): round instead of floor. The old floor
+        -- made the local percent systematically low by up to 1 point while
+        -- the remote value is a float — a one-directional bias that pushed
+        -- compare() toward "remote_ahead" at the threshold boundary and
+        -- could walk the reading position backwards one pull at a time.
+        percent = math.floor(clamp(overall_fraction, 0, 1) * 100 + 0.5),
         fraction = clamp(overall_fraction, 0, 1),
         chapter_uid = selected.uid,
         chapter_idx = selected.chapter_idx,
@@ -255,13 +260,20 @@ function PositionMapper.remote_to_local(chapters, remote, options)
     }
 end
 
+-- F-17: both sides are rounded onto the same 0.1-point resolution before
+-- subtracting, so an integer local percent and a 12-digit float remote
+-- percent are compared on one baseline (log evidence: local= 22 vs
+-- remote= 13.737369237737).
+local function pct_baseline(value)
+    return math.floor((tonumber(value) or 0) * 10 + 0.5) / 10
+end
+
 function PositionMapper.compare(local_position, remote, threshold)
     if type(local_position) ~= "table" or type(remote) ~= "table" then
         return "unknown", 0
     end
     threshold = math.max(0, tonumber(threshold) or 2)
-    local delta = (tonumber(remote.percent) or 0)
-        - (tonumber(local_position.percent) or 0)
+    local delta = pct_baseline(remote.percent) - pct_baseline(local_position.percent)
     if local_position.chapter_uid ~= nil and remote.chapter_uid ~= nil
         and tostring(local_position.chapter_uid)
             ~= tostring(remote.chapter_uid)

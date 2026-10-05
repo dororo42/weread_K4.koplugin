@@ -198,6 +198,12 @@ function M:moveBooksToNewDir(movable, new_dir)
     UIManager:scheduleIn(0.1, function()
         local books = self.settings:get("books", {})
         local moved, skipped, failed = 0, 0, 0
+        -- W-1 (2026-10-05 audit): track which records actually changed and
+        -- persist them individually (set_book). The old tail call
+        -- set("books", books) rewrote EVERY book's 2-3 JSON files — with a
+        -- 789-book shelf that was ~2,000 flash writes in one synchronous
+        -- UI-loop pass.
+        local changed_ids = {}
         for _i, m in ipairs(movable) do
             local ok, reason = self:moveBookDir(m.src, m.dst)
             if ok then
@@ -213,6 +219,7 @@ function M:moveBooksToNewDir(movable, new_dir)
                         end
                     end
                 end
+                changed_ids[m.book_id] = true
                 moved = moved + 1
             elseif reason == "target_exists" then
                 skipped = skipped + 1
@@ -222,7 +229,9 @@ function M:moveBooksToNewDir(movable, new_dir)
                 logger.err("move book cache failed:", m.src, "->", m.dst)
             end
         end
-        self.settings:set("books", books)
+        for book_id in pairs(changed_ids) do
+            self.settings:set_book(book_id, books[book_id])
+        end
         self.settings:flush()
         self:closeBusy()
         local message
@@ -611,7 +620,7 @@ end
 function M:scanLocalCache(root, allowed, dry_run)
     local lfs = require("libs/libkoreader-lfs")
     local books = self.settings:get("books", {})
-    local added, updated = Scan.scan_root({
+    local added, updated, changed_ids = Scan.scan_root({
         root = root,
         fs = lfs,
         books = books,
@@ -621,7 +630,11 @@ function M:scanLocalCache(root, allowed, dry_run)
         now = os.time(),
     })
     if not dry_run then
-        self.settings:set("books", books)
+        -- W-1 (2026-10-05 audit): persist only the records the scan changed
+        -- (single-record writes) instead of rewriting every book's JSONs.
+        for book_id in pairs(changed_ids or {}) do
+            self.settings:set_book(book_id, books[book_id])
+        end
         self.settings:flush()
     end
     return added, updated

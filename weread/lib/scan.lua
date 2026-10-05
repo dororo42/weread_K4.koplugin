@@ -32,10 +32,14 @@ end
 --   is_mp    function(book_id) -> true for MP (public account) ids
 --   dry_run  when true, only count what would change
 --   now      timestamp used for updated_at on new records
--- Returns added, updated.
+-- Returns added, updated, changed_ids.
+-- W-1 (2026-10-05 audit): the third return is a { book_id = true } set of
+-- records this scan actually mutated, so the caller can persist them with
+-- single-record writes instead of rewriting the whole books table.
 function Scan.scan_root(opts)
     local fs, books, allowed = opts.fs, opts.books, opts.allowed
     local added, updated = 0, 0
+    local changed_ids = {}
     -- M-9 fix: pcall(fs.dir, opts.root) evaluates fs.dir BEFORE pcall is
     -- invoked, so if opts.fs is nil the "attempt to index a nil value"
     -- error escapes pcall and crashes. Validate fs first.
@@ -147,6 +151,7 @@ function Scan.scan_root(opts)
                             else
                                 updated = updated + 1
                             end
+                            changed_ids[book_id] = true
                             books[book_id] = record
                         end
                     end
@@ -154,7 +159,7 @@ function Scan.scan_root(opts)
             end
         end
     end
-    return added, updated
+    return added, updated, changed_ids
 end
 
 return Scan

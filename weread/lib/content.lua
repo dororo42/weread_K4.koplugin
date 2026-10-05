@@ -269,10 +269,16 @@ local function write_file(path, data)
     end
 end
 
+-- R3' (2026-10-05 audit): the EPUB is assembled into a .tmp file and
+-- atomically renamed over the target. The old code wrote the final path
+-- directly: a power loss mid-write on FAT left a truncated EPUB, and
+-- re-downloading the same book destroyed the previous valid copy before the
+-- new one existed. Same tmp+rename discipline as write_file/BookStore.
 local function write_epub(path, entries)
+    local tmp_path = path .. ".tmp"
     local Archiver = require("ffi/archiver")
     local archive = Archiver.Writer:new{}
-    if not archive:open(path, "epub") then
+    if not archive:open(tmp_path, "epub") then
         error("failed to open archive for writing: " .. tostring(archive.err))
     end
 
@@ -296,6 +302,12 @@ local function write_epub(path, entries)
     end
 
     archive:close()
+    -- R3': os.rename signals failure by returning nil (not raising).
+    local ok_rename = os.rename(tmp_path, path)
+    if not ok_rename then
+        os.remove(tmp_path)
+        error("failed to publish epub (rename): " .. tostring(path))
+    end
 end
 
 local function xml_escape(value)
@@ -893,9 +905,12 @@ function Content.save_book_epub_streamed(settings, book, chapters, body_paths, a
 </html>]]
     css = css or [[body { line-height: 1.7; margin: 5%; } img { max-width: 100%; }]]
 
+    -- R3' (2026-10-05 audit): streamed assembly also lands in a .tmp and is
+    -- renamed over the target only after a clean close (see write_epub).
+    local tmp_path = path .. ".tmp"
     local Archiver = require("ffi/archiver")
     local archive = Archiver.Writer:new{}
-    if not archive:open(path, "epub") then
+    if not archive:open(tmp_path, "epub") then
         error("failed to open archive for writing: " .. tostring(archive.err))
     end
     local mtime = os.time()
@@ -935,6 +950,11 @@ function Content.save_book_epub_streamed(settings, book, chapters, body_paths, a
     archive:addFileFromMemory("OEBPS/toc.ncx", ncx, mtime)
     archive:addFileFromMemory("OEBPS/style.css", css, mtime)
     archive:close()
+    local ok_rename = os.rename(tmp_path, path)
+    if not ok_rename then
+        os.remove(tmp_path)
+        error("failed to publish epub (rename): " .. tostring(path))
+    end
     return path
 end
 
