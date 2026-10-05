@@ -24,15 +24,34 @@ local WeReadPlugin = WidgetContainer:extend{
     -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
     -- self.version is what the in-plugin "About" dialog displays).
     version = "0.6.0-k4-v7.0.1",
+    -- F-07: short hash of the commit the current release batch is based on
+    -- (updated at every release bump; purely diagnostic).
+    build_commit = "1b9c823",
 }
 
 function WeReadPlugin:onNetworkConnected()
+    -- F-06 (2026-10-05 audit): KOReader fires onNetworkConnected twice per
+    -- reconnect (09/16 12:07:23 + :24 in the crash log). Debounce to one
+    -- handling per 5 seconds.
+    local now = os.time()
+    if self._last_network_connected_at
+        and (now - self._last_network_connected_at) < 5 then
+        return
+    end
+    self._last_network_connected_at = now
     -- P2-F (2026-09-18, crash-report E1): network recovery re-arms the
-    -- reading-time report after a failure-streak pause (auth pauses are
-    -- also cleared here; six further attempts re-pause if still expired).
+    -- reading-time report after a failure-streak pause. F-06: auth-shaped
+    -- pauses are kept (see reset_failure_streak) — only the re-login path
+    -- clears those; transport-shaped pauses clear here.
     if self.read_report and self.read_report.reset_failure_streak then
         pcall(self.read_report.reset_failure_streak, self.read_report,
             "network_connected")
+    end
+    -- F-06: reconnect-driven progress pull replaces the old fixed-delay
+    -- retry chain that kept firing 3x15s while the device was known-offline
+    -- (50 scheduled / 11 exhausted retries in the 4 days after v7.0).
+    if self.progress_sync and self.progress_sync.on_network_connected then
+        pcall(self.progress_sync.on_network_connected, self.progress_sync)
     end
 end
 
@@ -214,7 +233,12 @@ function WeReadPlugin:init()
     UIManager:scheduleIn(0, function()
         self:initHotkeyOverride()
     end)
-    logger.info("initialized:", "version=", self.version)
+    -- F-07 (2026-10-05 audit): device crash logs had no way to map log line
+    -- numbers back to a source revision (79-line drift between the v7.0
+    -- device build and HEAD). Log the release-base commit alongside the
+    -- version; update build_commit at every release bump.
+    logger.info("initialized:", "version=", self.version,
+        "build_commit=", tostring(self.build_commit or "unknown"))
 end
 
 Mixin.apply(WeReadPlugin, {

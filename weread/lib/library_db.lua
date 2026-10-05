@@ -169,17 +169,23 @@ function LibraryDB:getShelf()
             ORDER BY shelf_position, book_id
         ]])
     end)
+    -- F-15 (2026-10-05 audit): the row walk is inside the pcall like every
+    -- other method — a corrupted WAL / flash read error must degrade to
+    -- "shelf unavailable" (network fallback), not escape into the UI.
+    local read_ok = false
     if ok and stmt then
-        local row = stmt:reset():step()
-        while row do
-            local book = decode(row[1])
-            if book then books[#books + 1] = book end
-            row = stmt:step()
-        end
+        read_ok = pcall(function()
+            local row = stmt:reset():step()
+            while row do
+                local book = decode(row[1])
+                if book then books[#books + 1] = book end
+                row = stmt:step()
+            end
+        end)
     end
     close_statement(stmt)
     pcall(function() db:close() end)
-    return ok and books or nil
+    return (ok and read_ok) and books or nil
 end
 
 function LibraryDB:putBook(book)

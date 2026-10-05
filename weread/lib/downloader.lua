@@ -829,9 +829,12 @@ end
 
 function Downloader:_perf(dl, stage, started, ...)
     local elapsed = tonumber(time.now() - started) / 1000
+    -- F-08 (2026-10-05 audit): dl.index has already advanced past the last
+    -- chapter at completion time — clamp so the log never shows N+1/N.
+    local chapter_now = math.min(dl.index or 1, dl.total or 1)
     logger.info("download_perf", "stage=", stage,
         "ms=", string.format("%.1f", elapsed),
-        "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total), ...)
+        "chapter=", tostring(chapter_now) .. "/" .. tostring(dl.total), ...)
 end
 
 -- F-05 (2026-10-05 audit): session/authorization-shaped errors. The 09/22

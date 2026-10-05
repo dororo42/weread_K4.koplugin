@@ -689,6 +689,16 @@ function ProgressSync:_schedule_pull_retry(options, retry_token)
         if retry_token ~= self.pull_retry_token then return end
         if self.verified or self.pulling then return end
         if self.state == "awaiting_choice" then return end
+        -- F-06 (2026-10-05 audit): do not re-pull while known-offline — the
+        -- crash log showed 50 scheduled / 11 exhausted retries in 4 days
+        -- firing into "Failed to restore Wi-Fi". The reconnect event
+        -- (on_network_connected) owns the offline case; fixed-delay retries
+        -- only run when the link came back on their own watch.
+        if self.is_online and not self.is_online() then
+            log("info", "pull retry skipped: still offline; reconnect will re-trigger",
+                "book=", tostring(self.current_book_id))
+            return
+        end
         self:_pull({
             manual = false,
             retry = attempt,
@@ -1048,6 +1058,19 @@ function ProgressSync:on_resume()
         end
         self:_pull({ manual = false })
     end
+end
+
+-- F-06 (2026-10-05 audit): reconnect-driven pull. Host calls this from a
+-- debounced onNetworkConnected. A plain pull invalidates any pending
+-- fixed-delay retry (retry-token semantics); guards mirror on_reader_ready.
+function ProgressSync:on_network_connected()
+    if not self.current_book_id then return end
+    if self.verified or self.pulling then return end
+    if self.state == "awaiting_choice" then return end
+    if self:_config().pull_on_open ~= true then return end
+    log("info", "pull on network reconnect:",
+        "book=", tostring(self.current_book_id))
+    self:_pull({ manual = false })
 end
 
 function ProgressSync:sync_now()

@@ -34,14 +34,38 @@ package.preload["luasettings"] = function()
         self.data[key] = nil
     end
 
-    function LuaSettings:flush() end
+    function LuaSettings:flush()
+        -- F-16: Settings:flush() redirects the store to "<file>.tmp" for the
+        -- framework write, then renames — the stub must actually write the
+        -- tmp file so the redirect contract is exercisable in tests.
+        local path = rawget(self, "path") or rawget(self, "_path")
+        if type(path) == "string" and path ~= "" then
+            local fh = io.open(path, "w")
+            if fh then
+                fh:write("flushed")
+                fh:close()
+            end
+        end
+    end
 
     return LuaSettings
 end
 
 package.preload["libs/libkoreader-lfs"] = function()
     return {
-        attributes = function() return nil end,
+        -- F-16: Settings:flush() verifies the tmp file it renames, so the
+        -- stub needs a real (io-based) existence probe instead of a
+        -- constant nil. Directories still report nil (io.open fails on
+        -- them), matching the old behaviour for the mkdir paths.
+        attributes = function(path)
+            if type(path) ~= "string" then return nil end
+            local fh = io.open(path, "rb")
+            if fh then
+                fh:close()
+                return "file"
+            end
+            return nil
+        end,
         mkdir = function() return true end,
     }
 end
@@ -205,7 +229,9 @@ describe("Manual login template sandbox (audit Y-2)", function()
         saved_attributes = lfs_stub.attributes
         lfs_stub.attributes = function(path)
             if path == template_path then return "file" end
-            return nil
+            -- delegate to the base probe so the F-16 tmp-verification in
+            -- Settings:flush() keeps working under this override
+            return saved_attributes(path)
         end
     end)
 
@@ -257,5 +283,21 @@ describe("Manual login template sandbox (audit Y-2)", function()
         local ok, reason = settings:import_manual_login()
         assert.is_false(ok)
         assert.equals("invalid_format", reason)
+    end)
+end)
+
+-- F-16 (2026-10-05 audit): the framework write lands in "<file>.tmp" and is
+-- atomically renamed over the real settings file; the tmp file must be gone
+-- afterwards and the real file must carry the flushed payload.
+describe("Settings flush tmp+rename (F-16)", function()
+    it("publishes weread.lua atomically and leaves no tmp behind", function()
+        local settings = fresh_settings()
+        settings:flush()
+        local fh = io.open("/tmp/weread-test/settings/weread.lua", "r")
+        assert.is_not_nil(fh)
+        local content = fh and fh:read("*a")
+        if fh then fh:close() end
+        assert.equals("flushed", content)
+        assert.is_nil(io.open("/tmp/weread-test/settings/weread.lua.tmp", "rb"))
     end)
 end)

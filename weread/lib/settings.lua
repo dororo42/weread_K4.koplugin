@@ -362,13 +362,54 @@ function Settings:flush()
             backup_exists = true
         end
     end
-    local ok, err = pcall(function() self.store:flush() end)
+    -- F-16 (2026-10-05 audit): redirect the framework write to a .tmp file,
+    -- verify it, then atomically rename it over the real file. The old B11
+    -- flow let LuaSettings write IN PLACE (a power loss mid-write still
+    -- truncated the live file) and the recovery path was a plain,
+    -- non-atomic rewrite. The tmp+rename discipline matches BookStore.
+    local tmp_path = type(file) == "string" and (file .. ".tmp") or nil
+    local path_field
+    if type(self.store) == "table" then
+        for _, name in ipairs({ "path", "_path" }) do
+            if rawget(self.store, name) ~= nil then
+                path_field = name
+                break
+            end
+        end
+    end
+    local ok, err
+    if tmp_path and path_field then
+        local original_path = rawget(self.store, path_field)
+        rawset(self.store, path_field, tmp_path)
+        ok, err = pcall(function() self.store:flush() end)
+        rawset(self.store, path_field, original_path)
+        if ok then
+            local mode = lfs.attributes(tmp_path, "mode")
+            if not mode then
+                ok, err = false, "settings tmp file missing after flush"
+            end
+        end
+        if ok then
+            -- os.rename signals failure by returning nil (F-11 lesson).
+            local renamed = os.rename(tmp_path, file)
+            if not renamed then
+                ok, err = false, "settings tmp rename failed"
+            end
+        end
+        if not ok then
+            pcall(os.remove, tmp_path)
+        end
+    else
+        -- Unknown LuaSettings surface (exotic hosts): legacy in-place write
+        -- with the post-verify below still guarding the result.
+        ok, err = pcall(function() self.store:flush() end)
+    end
     if ok then
         local mode = type(file) == "string" and lfs.attributes(file, "mode") or nil
-        if backup_exists and not mode then
+        if not mode then
             ok = false
             err = "settings file vanished after flush"
-        elseif backup_exists and mode then
+        elseif backup_exists then
             local fh = io.open(file, "rb")
             local content = fh and fh:read("*a") or nil
             if fh then fh:close() end
@@ -436,14 +477,6 @@ function Settings:merge_set_cookie(set_cookie, options)
         replace_cookies = true,
         flush = not options or options.flush ~= false,
     })
-end
-
-function Settings:get_all()
-    local all = {}
-    for key in pairs(defaults) do
-        all[key] = self:get(key)
-    end
-    return all
 end
 
 function Settings:get_download_dir()

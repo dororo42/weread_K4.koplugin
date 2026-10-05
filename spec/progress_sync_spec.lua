@@ -235,3 +235,67 @@ describe("progress_sync._upload_snapshot pcall destructuring (audit Y-3)", funct
         assert.is_not_nil(last.patch.last_sync_error:find("backend exploded", 1, true))
     end)
 end)
+
+-- F-06 (2026-10-05 audit): fixed-delay pull retries must not fire while the
+-- device is known-offline — the crash log showed 50 scheduled / 11 exhausted
+-- retries in 4 days firing into "Failed to restore Wi-Fi". The reconnect
+-- event (on_network_connected) owns the offline case.
+describe("progress_sync pull retry offline skip (F-06)", function()
+    local function make_self(online)
+        local scheduled = {}
+        local pulled = {}
+        local obj = {
+            generation = 1,
+            pull_retry_token = 5,
+            verified = false,
+            pulling = false,
+            state = "unverified",
+            current_book_id = "B1",
+            settings = { get = function(_self, key, default)
+                if key == "sync" then return { pull_on_open = true } end
+                return default
+            end },
+            is_online = function() return online end,
+            scheduler = {
+                scheduleIn = function(_self, delay, fn)
+                    scheduled[#scheduled + 1] = { delay = delay, fn = fn }
+                end,
+            },
+            -- faithful to the real _pull contract: a plain pull bumps the
+            -- retry token, invalidating any pending scheduled retry
+            _pull = function(self2, opts)
+                self2.pull_retry_token = self2.pull_retry_token + 1
+                pulled[#pulled + 1] = opts
+            end,
+        }
+        return setmetatable(obj, { __index = PS }), scheduled, pulled
+    end
+
+    it("skips the deferred retry while still offline", function()
+        local obj, scheduled, pulled = make_self(false)
+        obj:_schedule_pull_retry({ retry = 0 }, 5)
+        assert.equals(1, #scheduled)
+        scheduled[1].fn()
+        assert.equals(0, #pulled)
+    end)
+
+    it("pulls when the link is back by retry time", function()
+        local obj, scheduled, pulled = make_self(true)
+        obj:_schedule_pull_retry({ retry = 0 }, 5)
+        scheduled[1].fn()
+        assert.equals(1, #pulled)
+        assert.equals(false, pulled[1].manual)
+    end)
+
+    it("reconnect re-triggers the pull and invalidates stale retries", function()
+        local obj, scheduled, pulled = make_self(true)
+        obj:_schedule_pull_retry({ retry = 0 }, 5)
+        obj:on_network_connected()
+        -- on_network_connected pulled once (plain pull bumps the token, so
+        -- the stale scheduled retry is a no-op even if it fires later)
+        assert.equals(1, #pulled)
+        assert.equals(6, obj.pull_retry_token)
+        scheduled[1].fn()
+        assert.equals(1, #pulled)
+    end)
+end)

@@ -70,10 +70,6 @@ end
 
 local CONTEXT_TTL_SECONDS = 15 * 60
 local RENEWAL_COOLDOWN_SECONDS = 10 * 60
-local JOB_POLL_INITIAL_SECONDS = 0.25
-local JOB_POLL_MAX_SECONDS = 2
-local JOB_TIMEOUT_SECONDS = 180
-local JOB_COLLECT_INTERVAL_SECONDS = 2
 -- Sleep windows longer than this are excluded from reading time. 30s is a
 -- deliberate compromise: normal scheduler jitter on the K4 (GC/e-ink refresh/
 -- wifi reconnect can delay ticks 10-30s) must NOT be misread as sleep, which
@@ -441,6 +437,9 @@ function ReadReport:status()
         -- Unsent (e.g. accumulated offline) reading time still being drained.
         backlog_seconds = self.watermark
             and math.max(0, self.now() - self.watermark) or nil,
+        -- F-03: offline time beyond the per-session re-attach cap, preserved
+        -- (not dropped) and drained across future sessions.
+        residual_backlog_seconds = self.residual_backlog_seconds,
     }
 end
 
@@ -484,9 +483,13 @@ function ReadReport:_set_error(err, kind, prefix)
     self.failure_count = (self.failure_count or 0) + 1
     self.consecutive_failures = (self.consecutive_failures or 0) + 1
     self.state = "error"
-    if self.logged_error ~= message then
+    -- N2 (2026-10-05 audit): dedup on kind + message prefix — the full
+    -- message embeds response bodies/errLog ids, so exact comparison almost
+    -- never hit and failure storms flooded the log.
+    local dedup_key = (kind or "") .. "|" .. message:sub(1, 160)
+    if self.logged_error ~= dedup_key then
         log("warn", prefix or "read report error:", message)
-        self.logged_error = message
+        self.logged_error = dedup_key
     end
     -- P1-C: latch the "needs login" state on session-shaped failures so the
     -- UI can say "re-login required" instead of "error"; cleared by any
@@ -517,6 +520,30 @@ end
 -- host on network recovery (onNetworkConnected), after a fresh QR login,
 -- and by start() for a new session.
 function ReadReport:reset_failure_streak(reason)
+    -- F-06 (2026-10-05 audit): an auth-shaped pause is NOT cleared by
+    -- network recovery — a dead session does not heal when Wi-Fi comes
+    -- back, and the old unconditional reset re-queued up to 6 doomed
+    -- requests per reconnect (doubled by the K4's double
+    -- onNetworkConnected fires). Auth pauses clear on re-login
+    -- (qr_login "relogin") or a fresh start() only.
+    if reason == "network_connected"
+        and (self.session_expired
+            or self.last_error_kind == "auth"
+            or self.last_error_kind == "renewal_expired"
+            or self.last_error_kind == "authentication") then
+        log("info", "read report failure streak reset skipped: auth-shaped pause waits for re-login",
+            "reason=", tostring(reason),
+            "last_error_kind=", tostring(self.last_error_kind),
+            "session_expired=", tostring(self.session_expired == true))
+        return
+    end
+    -- A re-login is the documented (qr_login P1-C/P2-F) way to clear the
+    -- latched expired-session state; the old implementation never actually
+    -- did it, leaving the status line stale until the first accepted report.
+    if reason == "relogin" and self.session_expired then
+        self.session_expired = false
+        self.session_expired_at = nil
+    end
     local failures = self.consecutive_failures or 0
     if failures > 0 or self.failure_streak_paused then
         log("info", "read report failure streak reset:",
@@ -636,8 +663,14 @@ function ReadReport:start(reason)
     -- it would re-introduce the close→reopen gap as reading time.
     local watermarks = type(config.watermarks) == "table" and config.watermarks or {}
     local entry = watermarks[tostring(book_id)]
-    local pending = entry and tonumber(entry.pending_backlog)
-    if pending and pending > 0 then
+    local pending = (entry and tonumber(entry.pending_backlog)) or 0
+    -- F-03 (2026-10-05 audit): fold the preserved residual from previous
+    -- sessions back into the pool. The old code DROPPED everything beyond
+    -- the cap ("dropping excess", 10 events on device, peak 2,522s = 42
+    -- minutes of real reading lost per event).
+    local residual = (entry and tonumber(entry.residual_backlog)) or 0
+    local total_pending = pending + residual
+    if total_pending > 0 then
         -- Re-attach the preserved offline reading time in front of now.
         -- Cap at a conservative 3h (2026-08-24 review R-A, was 24h): normal
         -- offline reading (weak-network reconnect, overnight airplane-mode
@@ -648,17 +681,23 @@ function ReadReport:start(reason)
         -- never produce — drop the excess rather than report it (reporting
         -- 24h at once is a classic abnormal-usage flag server-side).
         local cap = 3 * 3600
-        local capped = math.min(pending, cap)
-        if pending > cap then
-            log("warn", "pending backlog exceeds conservative cap, dropping excess:",
-                "pending=", tostring(pending), "cap=", tostring(cap))
+        local capped = math.min(total_pending, cap)
+        if total_pending > cap then
+            entry.residual_backlog = total_pending - cap
+            log("warn", "backlog exceeds the per-session re-attach cap; excess preserved as residual:",
+                "total_pending=", tostring(total_pending), "cap=", tostring(cap),
+                "residual=", tostring(entry.residual_backlog))
+        else
+            entry.residual_backlog = nil
         end
         self.watermark = now - capped
         self.pending_backlog_seconds = capped
+        self.residual_backlog_seconds = entry.residual_backlog
     else
         -- No pending backlog: start fresh at now.
         self.watermark = now
         self.pending_backlog_seconds = nil
+        self.residual_backlog_seconds = nil
     end
     self.last_active_at = now
     self.watermark_book_id = book_id
@@ -700,25 +739,8 @@ function ReadReport:stop(reason)
         self.scheduler:unschedule(self.task)
         self.task = nil
     end
-    if self.job then
-        -- Try to collect any already-completed result before abandoning (H-7 fix)
-        local runner = self.subprocess
-        if runner and self.job.read_fd then
-            local readable = runner.read_size(self.job.read_fd)
-            if readable and readable > 0 then
-                local payload = runner.read_all(self.job.read_fd)
-                self.job.read_fd = nil
-                local outcome = self:_decode_outcome(payload)
-                if outcome then
-                    self:_apply_job_outcome(self.job, outcome)
-                    self.job = nil
-                end
-            end
-        end
-        if self.job then
-            self:_abandon_job(self.job)
-        end
-    end
+    -- F-02 (2026-10-05 audit): the subprocess job bookkeeping died with the
+    -- runner (S-13 removed the fork; no job can ever be in flight here).
     self.next_tick_expected = nil
     self.state = reason == "suspend" and "suspended"
         or "stopped"
@@ -857,15 +879,17 @@ function ReadReport:_tick(generation, task)
     if self.next_tick_expected then
         local delay = self.now() - self.next_tick_expected
         if delay > SUSPEND_EXCLUDE_THRESHOLD_SECONDS then
-            log("info", "read report tick delayed beyond threshold, likely suspend:",
-                "delay=", delay, "threshold=", SUSPEND_EXCLUDE_THRESHOLD_SECONDS)
-            -- Drop only the sleep window (the delayed tick gap), keeping the
-            -- backlog accumulated before the suspend: resetting the watermark
-            -- to now would silently discard offline reading time too.
-            local now = self.now()
-            self.watermark = math.min(now,
-                (self.watermark or now) + math.max(0, delay))
-            self:_persist_watermark()
+            -- F-04 (2026-10-05 audit): not confiscating this gap. The old
+            -- code advanced the watermark across the whole delay, treating
+            -- blocked ticks (F-01) and Wi-Fi reconnects as sleep (log
+            -- evidence: delay= 365 / 631 confiscated on 09/16). Sleep
+            -- handling now trusts the on_suspend/on_resume pair only
+            -- (on_resume advances the watermark by the observed sleep
+            -- duration, H-4).
+            log("info", "read report tick delayed beyond threshold:",
+                "delay=", delay,
+                "threshold=", SUSPEND_EXCLUDE_THRESHOLD_SECONDS,
+                "note=", "no on_suspend event; watermark untouched")
         end
     end
     self.next_tick_expected = nil
@@ -896,12 +920,6 @@ function ReadReport:_tick(generation, task)
             self:_schedule_next(generation, task)
             return
         end
-        if self.job then
-            -- Previous report is still in flight; keep the cadence and let
-            -- the poller reschedule once it completes.
-            self:_schedule_next(generation, task, self:_next_tick_delay())
-            return
-        end
         -- P2-F: circuit breaker — stop sending while a failure streak is
         -- paused. The tick itself stays alive at a slow cadence so a reset
         -- (network recovery / re-login) is noticed without touching the
@@ -914,16 +932,10 @@ function ReadReport:_tick(generation, task)
         end
         local allow_renewal = self:_renewal_allowed()
         local elapsed_seconds = self:_next_report_seconds()
-        local spawned, spawn_err = self:_start_job(
-            book_id, allow_renewal, generation, task, position, elapsed_seconds)
-        if spawned then
-            return
-        end
-        if not self.logged_inline_fallback then
-            log("warn", "read report subprocess unavailable, reporting inline:",
-                tostring(spawn_err))
-            self.logged_inline_fallback = true
-        end
+        -- F-02 (2026-10-05 audit): the pipeline runs inline unconditionally —
+        -- the K4 fork disabled subprocess support (S-13) and ~130 lines of
+        -- unreachable job code are now gone with it. The inline freeze is
+        -- bounded by the F-21 request deadlines plus the F-01 tick budget.
         -- F-01: the budget covers the pipeline only (precheck/page-defer are
         -- cheap); deadline is in the time.now() (µs) domain, nil when the
         -- time module is unavailable (tests).
@@ -1130,213 +1142,9 @@ function ReadReport:_context_fingerprint(book_id)
 end
 
 -- ------------------------------------------------------------------
--- Subprocess job management (parent side)
--- ------------------------------------------------------------------
-
-function ReadReport:_start_job(book_id, allow_renewal, generation, task, position, elapsed_seconds, on_complete)
-    local runner = self.subprocess
-    if not runner then
-        return false, "no subprocess support"
-    end
-    local pid, read_fd = runner.run(function(_pid, child_write_fd)
-        local outcome = self:_child_report(book_id, allow_renewal, position, elapsed_seconds)
-        local ok, encoded = pcall(function()
-            return self.client:json_encode(outcome)
-        end)
-        if not ok or type(encoded) ~= "string" then
-            encoded = '{"accepted":false,"error":"failed to serialize report outcome",'
-                .. '"error_kind":"job"}'
-        end
-        runner.write_all(child_write_fd, encoded)
-    end)
-    if not pid then
-        return false, tostring(read_fd)
-    end
-
-    local job = {
-        pid = pid,
-        read_fd = read_fd,
-        book_id = book_id,
-        started_at = self.now(),
-        poll_interval = JOB_POLL_INITIAL_SECONDS,
-        auth_fingerprint = self:_auth_fingerprint(),
-        context_fingerprint = self:_context_fingerprint(book_id),
-    }
-    job.poll = function()
-        self:_poll_job(job, generation, task)
-    end
-    job.on_complete = on_complete
-    self.job = job
-    self.scheduler:scheduleIn(job.poll_interval, job.poll)
-    return true
-end
-
-function ReadReport:_poll_job(job, generation, task)
-    if self.job ~= job then
-        return
-    end
-    local runner = self.subprocess
-    local done = runner.is_done(job.pid)
-    local readable = job.read_fd and runner.read_size(job.read_fd)
-    if done or (readable and readable > 0) then
-        local payload
-        if job.read_fd then
-            payload = runner.read_all(job.read_fd)
-            job.read_fd = nil
-        end
-        self.job = nil
-        if not done then
-            -- Output was read while the child was still exiting; reap it in
-            -- the background so it does not linger as a zombie.
-            self:_collect_pid(job.pid)
-        end
-        self:_apply_job_outcome(job, self:_decode_outcome(payload))
-        self:_schedule_next(generation, task, self:_next_tick_delay())
-        return
-    end
-    if self.now() - job.started_at > JOB_TIMEOUT_SECONDS then
-        log("warn", "read report job timed out, terminating:", "pid=", job.pid)
-        self:_abandon_job(job)
-        self:_set_error("report job timed out", "transport", "read report job failed:")
-        self:_schedule_next(generation, task)
-        return
-    end
-    job.poll_interval = math.min(job.poll_interval * 2, JOB_POLL_MAX_SECONDS)
-    self.scheduler:scheduleIn(job.poll_interval, job.poll)
-end
-
--- Kill a running job and keep reaping until the child is collected, so a
--- stopped or timed-out report can never leave a zombie behind.
-function ReadReport:_abandon_job(job)
-    job = job or self.job
-    if not job then
-        return
-    end
-    if self.job == job then
-        self.job = nil
-    end
-    local runner = self.subprocess
-    if job.poll then
-        self.scheduler:unschedule(job.poll)
-    end
-    runner.terminate(job.pid)
-    local collect_attempts = 0
-    local MAX_COLLECT_ATTEMPTS = 30  -- 30 * 2s = 60s upper bound (M-L6 fix)
-    local collect
-    collect = function()
-        if runner.is_done(job.pid) then
-            if job.read_fd then
-                runner.read_all(job.read_fd)
-                job.read_fd = nil
-            end
-            return
-        end
-        collect_attempts = collect_attempts + 1
-        if collect_attempts > MAX_COLLECT_ATTEMPTS then
-            log("warn", "zombie collection gave up after",
-                tostring(MAX_COLLECT_ATTEMPTS * JOB_COLLECT_INTERVAL_SECONDS) .. "s",
-                "pid=", tostring(job.pid))
-            return
-        end
-        if job.read_fd and (runner.read_size(job.read_fd) or 0) ~= 0 then
-            -- Drain the pipe so a child blocked on write() can exit.
-            runner.read_all(job.read_fd)
-            job.read_fd = nil
-        end
-        self.scheduler:scheduleIn(JOB_COLLECT_INTERVAL_SECONDS, collect)
-    end
-    collect()
-end
-
-function ReadReport:_collect_pid(pid)
-    local runner = self.subprocess
-    local collect_attempts = 0
-    local MAX_COLLECT_ATTEMPTS = 30  -- 30 * 2s = 60s upper bound (M-L6 fix)
-    local collect
-    collect = function()
-        if not runner.is_done(pid) then
-            collect_attempts = collect_attempts + 1
-            if collect_attempts <= MAX_COLLECT_ATTEMPTS then
-                self.scheduler:scheduleIn(JOB_COLLECT_INTERVAL_SECONDS, collect)
-            end
-        end
-    end
-    self.scheduler:scheduleIn(1, collect)
-end
-
-function ReadReport:_decode_outcome(payload)
-    if type(payload) ~= "string" or payload == "" then
-        return nil
-    end
-    local ok, decoded = pcall(function()
-        return self.client:json_decode(payload)
-    end)
-    if ok and type(decoded) == "table" then
-        return decoded
-    end
-    return nil
-end
-
--- ------------------------------------------------------------------
 -- Outcome application (parent side)
 -- ------------------------------------------------------------------
 
-function ReadReport:_apply_job_outcome(job, outcome)
-    local book_id = job.book_id
-    if type(outcome) == "table" then
-        if type(outcome.auth) == "table" then
-            if self:_auth_fingerprint() ~= job.auth_fingerprint then
-                log("info", "skip renewed auth write-back: parent auth changed during job")
-            else
-                local ok, err = pcall(function()
-                    self.settings:update_auth({
-                        cookies = outcome.auth.cookies,
-                        wr_ticket = outcome.auth.wr_ticket,
-                        wr_wrpa = outcome.auth.wr_wrpa,
-                    }, { replace_cookies = true })
-                end)
-                if not ok then
-                    log("warn", "persist renewed auth failed:", tostring(err))
-                end
-            end
-        end
-        if type(outcome.book) == "table" then
-            if self:_context_fingerprint(book_id) ~= job.context_fingerprint then
-                log("info", "skip report context write-back: parent record changed during job")
-            else
-                local ok, err = pcall(function()
-                    self:_persist_context(book_id, outcome.book)
-                end)
-                if not ok then
-                    log("warn", "persist report context failed:", tostring(err))
-                end
-            end
-        end
-    end
-    local result = self:_apply_outcome(outcome)
-    -- Notify the async caller (e.g. progress_sync upload_position_async) if registered
-    if type(job.on_complete) == "function" then
-        local accepted = type(outcome) == "table" and outcome.accepted == true
-        local ok_cb, cb_err = pcall(job.on_complete, accepted, outcome)
-        if not ok_cb then
-            log("warn", "upload on_complete callback failed:", tostring(cb_err))
-        end
-    end
-    return result
-end
-
--- Persist the current per-book watermark and snapshot the unsent reading
--- time into pending_backlog so offline-accumulated reading time survives
--- document close / KOReader restart / suspend. Without this, start() resets
--- the watermark to now and the unsent backlog is silently dropped — the
--- root cause of "offline reading time never gets reported".
--- Watermarks are stored per-book in config.watermarks[book_id] (S-2 fix),
--- so switching books doesn't inherit the old book's backlog.
--- pending_backlog (pending_backlog fix) = max(0, last_active_at - watermark):
---   the unsent reading time accumulated up to the last reading activity.
---   On the next start() it is re-attached as (now - pending_backlog), so
---   the close→reopen gap is never counted while real offline reading time
---   is preserved regardless of how long the gap was.
 function ReadReport:_persist_watermark()
     if not self.watermark then return end
     -- Use current_book_id if available, fall back to watermark_book_id
@@ -1354,6 +1162,12 @@ function ReadReport:_persist_watermark()
     -- last_active_at (not now) is what excludes the close→reopen gap.
     local last_active = self.last_active_at or self.now()
     local pending = math.max(0, last_active - self.watermark)
+    -- F-03: fold any preserved residual into the snapshot so it rides
+    -- across sessions; the next start() re-splits it against the cap.
+    local existing_entry = watermarks[book_id]
+    if existing_entry and existing_entry.residual_backlog then
+        pending = pending + (tonumber(existing_entry.residual_backlog) or 0)
+    end
     -- Keep self.pending_backlog_seconds in sync with the persisted value so
     -- _apply_outcome can clear it once the backlog is drained.
     self.pending_backlog_seconds = pending > 0 and pending or nil
@@ -1501,46 +1315,6 @@ end
 -- ------------------------------------------------------------------
 -- Report pipeline (runs in the subprocess, or inline as fallback)
 -- ------------------------------------------------------------------
-
--- Child entry point. Neuters settings persistence inside the fork and
--- captures auth changes (Set-Cookie merges, cookie renewal) so the parent
--- can persist them from the outcome.
-function ReadReport:_child_report(book_id, allow_renewal, position, elapsed_seconds)
-    self._no_persist = true
-    self.settings.flush = function() end
-    local auth_changed = false
-    local original_update_auth = self.settings.update_auth
-    self.settings.update_auth = function(settings_obj, credentials, options)
-        auth_changed = true
-        options = options or {}
-        options.flush = false
-        return original_update_auth(settings_obj, credentials, options)
-    end
-
-    local ok, outcome = pcall(function()
-        return self:_run_pipeline(book_id, {
-            allow_renewal = allow_renewal,
-            position = position,
-            elapsed_seconds = elapsed_seconds,
-        })
-    end)
-    if not ok then
-        outcome = {
-            accepted = false,
-            error = tostring(outcome),
-            error_kind = "task",
-            error_prefix = "read report task failed:",
-        }
-    end
-    if auth_changed then
-        outcome.auth = {
-            cookies = self.settings:get("cookies", {}),
-            wr_ticket = self.settings:get("wr_ticket", ""),
-            wr_wrpa = self.settings:get("wr_wrpa", ""),
-        }
-    end
-    return outcome
-end
 
 -- Full report attempt: context, send, refresh-retry, renewal, final retry.
 -- Pure with respect to the parent state machine: everything the caller needs
@@ -1977,24 +1751,12 @@ end
 
 -- Async upload: spawns subprocess, calls on_complete(accepted, outcome) when done.
 -- Returns (true, "async") if spawned, (false, outcome) if inline fallback.
+-- F-02 (2026-10-05 audit): inline upload, formerly "async upload: spawns
+-- subprocess". The runner is gone (S-13), so the "async" and "busy" result
+-- shapes died with it; the Y-3 pcall destructure in progress_sync still
+-- tolerates both shapes defensively. Synchronous by nature — the caller
+-- (progress sync upload) already treats this path as blocking.
 function ReadReport:upload_position_async(book_id, position, elapsed_seconds, on_complete)
-    if self.job then
-        return false, { error = "read_report_busy", error_kind = "busy" }
-    end
-    local runner = self.subprocess
-    if runner and self:_can_spawn() then
-        local upload_book_id = tostring(book_id)
-        local allow_renewal = self:_renewal_allowed()
-        local elapsed = elapsed_seconds or 0
-        local spawned, spawn_err = self:_start_job(upload_book_id, allow_renewal,
-            self.generation, nil, position, elapsed, on_complete)
-        if spawned then
-            return true, "async"
-        end
-        log("warn", "upload_position_async spawn failed, running inline:",
-            tostring(spawn_err))
-    end
-    -- Inline fallback: run synchronously and call on_complete
     local outcome = self:_run_pipeline(tostring(book_id), {
         allow_renewal = self:_renewal_allowed(),
         position = position,
@@ -2010,11 +1772,6 @@ function ReadReport:upload_position_async(book_id, position, elapsed_seconds, on
         pcall(on_complete, outcome.accepted == true, outcome)
     end
     return outcome.accepted == true, outcome
-end
-
--- Check whether subprocess spawning is available (P1-B helper).
-function ReadReport:_can_spawn()
-    return self.subprocess ~= nil and type(self.subprocess.run) == "function"
 end
 
 return ReadReport

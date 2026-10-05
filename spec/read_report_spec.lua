@@ -321,3 +321,131 @@ describe("ReadReport failure-streak breaker (P2-F)", function()
         report:stop("test")
     end)
 end)
+
+-- F-03 (2026-10-05 audit): backlog beyond the per-session re-attach cap is
+-- preserved as a persisted residual instead of being dropped (10 drop
+-- events / peak 2,522s of real reading lost on device), and stop() folds
+-- the residual back into the pending snapshot.
+describe("ReadReport backlog residual conservation (F-03)", function()
+    local NOW = 1000000
+
+    local function make_report(watermarks)
+        local config = {
+            enabled = true,
+            mode = "auto",
+            book_id = "",
+            book_title = "",
+            interval_seconds = 30,
+            report_on_open = true,
+            watermarks = watermarks or {},
+        }
+        local settings = {
+            get = function(_self, key, default)
+                if key == "read_report" then return config end
+                if key == "cookies" then return {} end
+                return default
+            end,
+            set = function() end,
+            flush = function() end,
+            is_cookie_configured = function() return true end,
+        }
+        local scheduler = {
+            scheduleIn = function() end,
+            unschedule = function() end,
+        }
+        local report = ReadReport:new{
+            settings = settings,
+            client = {},
+            scheduler = scheduler,
+            get_document = function() return {} end,
+            detect_book = function() return "B1" end,
+            now = function() return NOW end,
+        }
+        return report, config
+    end
+
+    it("splits an oversized backlog into cap + persisted residual at start", function()
+        local report, config = make_report({
+            B1 = { pending_backlog = 14000 },
+        })
+        assert.is_true(report:start("spec"))
+        assert.equals(NOW - 10800, report.watermark) -- cap re-attached only
+        assert.equals(3200, config.watermarks.B1.residual_backlog)
+        assert.equals(3200, report.residual_backlog_seconds)
+        report:stop("spec")
+    end)
+
+    it("folds the residual back into the pending snapshot at stop", function()
+        local report, config = make_report({
+            B1 = { pending_backlog = 14000 },
+        })
+        report:start("spec")
+        -- simulate 100s of session reading after the re-attach
+        report.last_active_at = NOW + 100
+        report:stop("spec")
+        local entry = config.watermarks.B1
+        -- pending = session gap (100 + 10800 re-attached) + residual 3200
+        assert.equals(14100, entry.pending_backlog)
+        assert.is_nil(entry.residual_backlog) -- folded, not duplicated
+    end)
+
+    it("keeps a backlog within the cap untouched", function()
+        local report, config = make_report({
+            B1 = { pending_backlog = 3600 },
+        })
+        assert.is_true(report:start("spec"))
+        assert.equals(NOW - 3600, report.watermark)
+        assert.is_nil(config.watermarks.B1.residual_backlog)
+        report:stop("spec")
+    end)
+end)
+
+-- F-06 (2026-10-05 audit): auth-shaped failure pauses survive a
+-- network-connected reset (a dead session does not heal with Wi-Fi); only
+-- re-login or a fresh start clears them.
+describe("ReadReport auth pause survives network recovery (F-06)", function()
+    local NOW = 1000000
+
+    local function make_report()
+        local config = {
+            enabled = true, mode = "auto", book_id = "", book_title = "",
+            interval_seconds = 30, report_on_open = true, watermarks = {},
+        }
+        return ReadReport:new{
+            settings = {
+                get = function(_self, key, default)
+                    if key == "read_report" then return config end
+                    return default
+                end,
+                set = function() end,
+                flush = function() end,
+                is_cookie_configured = function() return true end,
+            },
+            client = {},
+            scheduler = { scheduleIn = function() end, unschedule = function() end },
+            get_document = function() return {} end,
+            detect_book = function() return "B1" end,
+            now = function() return NOW end,
+        }
+    end
+
+    it("keeps an auth pause on network_connected, clears on relogin", function()
+        local report = make_report()
+        report:_set_error("errCode=-2012 登录超时", "auth", "test:")
+        assert.is_true(report.session_expired)
+        report:reset_failure_streak("network_connected")
+        assert.equals(1, report.consecutive_failures) -- kept
+        assert.is_true(report.session_expired)
+        report:reset_failure_streak("relogin")
+        assert.equals(0, report.consecutive_failures)
+        assert.is_false(report.session_expired)
+    end)
+
+    it("still clears a transport pause on network_connected", function()
+        local report = make_report()
+        report:_set_error("timeout", "transport", "test:")
+        assert.equals(1, report.consecutive_failures)
+        report:reset_failure_streak("network_connected")
+        assert.equals(0, report.consecutive_failures)
+    end)
+end)
