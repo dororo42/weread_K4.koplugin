@@ -723,6 +723,30 @@ function Content.spool_assets_meta_path(settings, book, uid)
     return Content.spool_dir(settings, book) .. "/assets/" .. basename_safe(uid) .. ".json"
 end
 
+-- B2 (upstream v1.6.0 borrow): per-chapter length marker + a separate
+-- rendered/ directory. length is the cheap half-write detector (sha256 is
+-- deliberately deferred until a device benchmark proves the pure-Lua cost);
+-- rendered/ keeps footnote-transformed copies so the pristine spool body is
+-- never overwritten in place (re-render after a footnotes_mode switch needs
+-- the original).
+function Content.spool_body_meta_path(settings, book, uid)
+    return Content.spool_dir(settings, book) .. "/chapters/" .. basename_safe(uid) .. ".meta"
+end
+
+function Content.spool_rendered_path(settings, book, uid)
+    return Content.spool_dir(settings, book) .. "/rendered/" .. basename_safe(uid) .. ".xhtml"
+end
+
+-- True when the spooled body may be reused on resume. With a .meta marker
+-- the byte length must match; legacy spools without a marker stay lenient.
+function Content.spool_body_complete(settings, book, uid, body)
+    local meta = Content.read_file(Content.spool_body_meta_path(settings, book, uid))
+    if not meta then return true end
+    local length = tonumber(meta:match("^length=(%d+)"))
+    if not length then return true end
+    return length == #body
+end
+
 -- Progress file is per download mode so a paused whole-book download and a
 -- paused separate-chapter download never clobber each other.
 function Content.spool_progress_path(settings, book, mode)
@@ -738,6 +762,8 @@ function Content.spool_chapter(settings, book, uid, xhtml, assets)
     local safe_uid = basename_safe(uid)
     local body_path = spool .. "/chapters/" .. safe_uid .. ".xhtml"
     Content.write_file(body_path, xhtml)
+    Content.write_file(Content.spool_body_meta_path(settings, book, uid),
+        "length=" .. tostring(#xhtml))
     local assets_meta = {}
     if assets and #assets > 0 then
         local assets_dir = spool .. "/assets/" .. safe_uid
@@ -790,6 +816,8 @@ function Content.remove_spool_chapter(settings, book, uid)
     local spool = Content.spool_dir(settings, book)
     local safe_uid = basename_safe(uid)
     os.remove(spool .. "/chapters/" .. safe_uid .. ".xhtml")
+    os.remove(Content.spool_body_meta_path(settings, book, uid))
+    os.remove(Content.spool_rendered_path(settings, book, uid))
     os.remove(Content.spool_assets_meta_path(settings, book, uid))
     local assets_dir = spool .. "/assets/" .. safe_uid
     local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
@@ -931,7 +959,10 @@ function Content.save_book_epub_streamed(settings, book, chapters, body_paths, a
     local spool = Content.spool_dir(settings, book)
     for chapter_index, chapter in ipairs(chapters or {}) do
         local uid = tostring(chapter.chapterUid or chapter_index)
-        local body = Content.read_file(body_paths and body_paths[uid])
+        -- B2: prefer the footnote-rendered copy; the pristine spool body is
+        -- the fallback (and what a resumed re-render reads from).
+        local body = Content.read_file(Content.spool_rendered_path(settings, book, uid))
+            or Content.read_file(body_paths and body_paths[uid])
             or Content.read_file(Content.spool_body_path(settings, book, uid)) or ""
         local title = chapter.title or ("Chapter " .. uid)
         local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>

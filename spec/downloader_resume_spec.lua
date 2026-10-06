@@ -440,7 +440,7 @@ describe("Downloader catalog preservation (F-18)", function()
         patch_content_for_memfs()
     end)
 
-    it("keeps the full catalog when a whole-book run skips a chapter", function()
+    it("keeps the full catalog when a whole-book run completes (F-18)", function()
         local full_chapters = {
             { chapterUid = "u1", title = "C1" },
             { chapterUid = "u2", title = "C2" },
@@ -449,11 +449,31 @@ describe("Downloader catalog preservation (F-18)", function()
         local dl, books_table = new_downloader({
             B1 = { book_id = "B1", title = "Resume Book", chapters = full_chapters },
         })
-        -- chapter 2 fails twice (transient) -> skipped, chapters 1+3 land
+        local completed = {}
+        dl:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed = { ok, value } end,
+        })
+        assert.is_true(completed[1])
+        -- an existing catalog is never replaced by the downloaded subset
+        assert.equals(3, #books_table.B1.chapters)
+        assert.equals("u2", books_table.B1.chapters[2].chapterUid)
+    end)
+
+    -- B1 (upstream 6667f39 borrow): a whole-book run with failures must NOT
+    -- publish a truncated EPUB nor clear the spool — the 09/22 storm lost 45
+    -- chapters this way (published subset + wiped resume state).
+    it("refuses to publish and keeps the spool when a chapter fails (B1)", function()
+        local dl, books_table = new_downloader({
+            B1 = { book_id = "B1", title = "Resume Book", chapters = {
+                { chapterUid = "u1", title = "C1" },
+                { chapterUid = "u2", title = "C2" },
+                { chapterUid = "u3", title = "C3" },
+            } },
+        })
         Content.fetch_single_chapter_source = function(_c, _s, _b, chapter)
             fetch_calls = fetch_calls + 1
             if tostring(chapter.chapterUid) == "u2" then
-                error("timeout")
+                error("timeout") -- transient: retried once, then skipped
             end
             return "<body>" .. tostring(chapter.chapterUid) .. "</body>"
         end
@@ -461,9 +481,18 @@ describe("Downloader catalog preservation (F-18)", function()
         dl:start(BOOK, CHAPTERS, "book", {
             on_complete = function(ok, value) completed = { ok, value } end,
         })
-        assert.is_true(completed[1])
-        assert.equals(3, #books_table.B1.chapters) -- full catalog survived
-        assert.equals("u2", books_table.B1.chapters[2].chapterUid)
+        assert.is_false(completed[1])
+        assert.equals("incomplete_full_book", completed[2])
+        -- no EPUB published, spool + progress retained for Resume
+        assert.is_nil(memfs["/mem/WeRead - book.epub"])
+        assert.is_not_nil(memfs[spool_body_path("u1")])
+        assert.is_not_nil(memfs[spool_body_path("u3")])
+        assert.is_not_nil(memfs["/mem/.dl/progress.json"])
+        assert.is_nil(books_table.B1.cached_full_book)
+        Content.fetch_single_chapter_source = function(_c, _s, _b, chapter)
+            fetch_calls = fetch_calls + 1
+            return "<body>" .. tostring(chapter.chapterUid) .. "</body>"
+        end
     end)
 
     it("still fills a missing catalog after delete-and-redownload (v4.5)", function()
