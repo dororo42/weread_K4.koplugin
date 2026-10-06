@@ -411,7 +411,12 @@ function I18n.language()
     if G_reader_settings and G_reader_settings.readSetting then
         lang = G_reader_settings:readSetting("language")
     end
-    return lang or "en"
+    -- B7 (upstream 6a577ad borrow): fall back to KOReader's initialized
+    -- gettext locale so the plugin follows the runtime UI language even when
+    -- no explicit "language" setting is saved (Kindle system language often
+    -- differs from G_reader_settings).
+    local gettext = package.loaded["gettext"]
+    return lang or (type(gettext) == "table" and gettext.current_lang) or "en"
 end
 
 function I18n.is_zh()

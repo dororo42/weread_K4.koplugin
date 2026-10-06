@@ -177,7 +177,16 @@ function QRLogin:_request_json(url, opts, stage)
 end
 
 function QRLogin:_begin_protocol()
+    -- B5 (upstream 317ade4 borrow): pre-heat the login page with a stable
+    -- wr_fp cookie so each device keeps its own web session — a second
+    -- device's login no longer invalidates the first one's (-2012 class).
     local login_cookies = {}
+    if self.settings and type(self.settings.get_device_fingerprint) == "function" then
+        local ok_fp, fp = pcall(self.settings.get_device_fingerprint, self.settings)
+        if ok_fp and type(fp) == "string" and fp ~= "" then
+            login_cookies.wr_fp = fp
+        end
+    end
     local _, page_code, page_headers = self.client:request_follow({
         url = SKILLS_PAGE_URL,
         method = "GET",

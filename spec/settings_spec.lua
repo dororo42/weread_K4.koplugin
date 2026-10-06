@@ -301,3 +301,17 @@ describe("Settings flush tmp+rename (F-16)", function()
         assert.is_nil(io.open("/tmp/weread-test/settings/weread.lua.tmp", "rb"))
     end)
 end)
+
+-- B5 (upstream 317ade4 borrow): the device fingerprint is generated once and
+-- persisted; every later call returns the same value.
+describe("Settings device fingerprint (B5 wr_fp)", function()
+    it("generates once and persists across calls", function()
+        local settings = fresh_settings()
+        local first = settings:get_device_fingerprint()
+        assert.equals("string", type(first))
+        assert.is_true(#first > 0)
+        assert.equals(first, settings:get_device_fingerprint())
+        -- stored through the normal settings channel, not a side file
+        assert.equals(first, settings:get("device_fingerprint"))
+    end)
+end)

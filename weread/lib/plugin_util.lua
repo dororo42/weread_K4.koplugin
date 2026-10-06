@@ -2,10 +2,29 @@ local I18n = require("weread.lib.i18n")
 local T = require("ffi/util").template
 local logger = require("weread.lib.logger")
 
+-- B4 (upstream v1.6.0 borrow, reader_open_perf): zero-behaviour open-speed
+-- instrumentation. time.now() runs in the raw µs domain (FTS_PRECISION=1e6,
+-- KOReader ui/time) — the /1000 below therefore yields MILLISECONDS, and
+-- this comment is part of the port: without it a future precision change
+-- would silently re-create the "µs labelled as ms" bug (P0-B, 105 false
+-- `tick slow` lines on 2026-09-17).
+local ok_time, time = pcall(require, "ui/time")
+
 local PluginUtil = {
     T = T,
     unpack_args = unpack or table.unpack,
 }
+
+function PluginUtil.reader_open_perf(stage, started, ...)
+    if not ok_time or not time or type(time.now) ~= "function" then
+        return started
+    end
+    local now = time.now()
+    logger.info("reader_open_perf", "stage=", stage,
+        "wall_ms=", string.format("%.1f",
+            started and tonumber(now - started) / 1000 or 0), ...)
+    return now
+end
 
 -- Wrap a plugin event handler so a Lua error can never propagate into
 -- KOReader's core event loop. KOReader's event propagation

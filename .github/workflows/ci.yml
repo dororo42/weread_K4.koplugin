@@ -54,6 +54,17 @@ jobs:
       - name: Unit tests (busted)
         run: busted spec
 
+      - name: build_commit must be an ancestor of HEAD (F-07)
+        run: |
+          BC=$(grep -o 'build_commit = "[0-9a-f]*"' main.lua | cut -d'"' -f2)
+          echo "build_commit=$BC"
+          git fetch --unshallow --quiet || true
+          git merge-base --is-ancestor "$BC" HEAD \
+            && echo "build_commit is an ancestor of HEAD" || {
+            echo "::error::main.lua build_commit ($BC) is not an ancestor of HEAD — refresh it at release"
+            exit 1
+          }
+
       - name: Lint (luacheck)
         # Explicit whitelist: never lint vendored rocks or hidden dirs.
         # Findings are surfaced as ::error:: check annotations (readable

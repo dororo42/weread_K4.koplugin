@@ -38,6 +38,14 @@ M.onShowWeRead = guarded("onShowWeRead", function(self)
     self:showAccountStatus()
 end)
 
+-- B8 (upstream 9caeb0f borrow): Dispatcher action for the report status —
+-- bindable to keys/profiles, which matters on a non-touch device. Only the
+-- status action is new; weread_sync_progress already exists in the fork with
+-- the same event name (re-registering would collide).
+M.onShowWeReadReportStatus = guarded("onShowWeReadReportStatus", function(self)
+    self:showReportStatus()
+end)
+
 function M:onWeReadSyncProgress()
     local book_id = self:detectWeReadBook()
     if not book_id or WeRead.is_mp_book(book_id) then
@@ -87,6 +95,8 @@ function M:handleEndOfBook(status_self)
 end
 
 function M:onReaderReady()
+    -- B4: open-speed instrumentation (entry / after progress sync / end).
+    local perf_started = PluginUtil.reader_open_perf("reader_ready:start", nil)
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
 
     -- v5.0: apply a pending whole-book chapter jump now that the document has
@@ -209,12 +219,14 @@ function M:onReaderReady()
     end
 
     self.progress_sync:on_reader_ready()
+    PluginUtil.reader_open_perf("reader_ready:progress_sync_done", perf_started)
     local prefetch_session_gen = self._reader_session_gen
     UIManager:scheduleIn(0.2, function()
         if prefetch_session_gen ~= self._reader_session_gen then return end
         self:maybePrefetchNextChapter(weread_book_id)
     end)
     local reason = select(3, self.read_report:on_reader_ready())
+    PluginUtil.reader_open_perf("reader_ready:done", perf_started)
     local rr = self.settings:get("read_report")
     if rr.enabled and rr.mode == "auto" and reason == "document_not_weread" then
         self:showTransientInfo(_("Current book is not from WeRead, reading time not reported"), 1)

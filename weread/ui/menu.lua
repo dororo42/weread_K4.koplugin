@@ -33,6 +33,14 @@ function M:onDispatcherRegisterActions()
         title = _("WeRead · Bookshelf"),
         reader = true,
     })
+    -- B8 (upstream 9caeb0f borrow): key-bindable report status. weread_sync_progress
+    -- is deliberately NOT re-registered (already above, same event name).
+    Dispatcher:registerAction("weread_read_report_status", {
+        category = "none",
+        event = "ShowWeReadReportStatus",
+        title = _("WeRead · Reading time report status"),
+        reader = true,
+    })
 end
 
 function M:addToMainMenu(menu_items)

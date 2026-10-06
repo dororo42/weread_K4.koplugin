@@ -12,6 +12,10 @@ Settings.AUTH_SCHEMA_VERSION = 1
 
 local defaults = {
     auth_schema_version = Settings.AUTH_SCHEMA_VERSION,
+    -- B5 (upstream 317ade4 borrow): stable per-device fingerprint sent as the
+    -- wr_fp cookie during QR login so two devices on one account keep
+    -- independent web sessions (K4+K5 dual-device scenario).
+    device_fingerprint = "",
     api_key = "",
     cookies = {},
     wr_ticket = "",
@@ -500,6 +504,33 @@ end
 function Settings:reset_account()
     clear_auth_store(self.store)
     self:flush()
+end
+
+-- B5 (upstream 317ade4 borrow): persist a device fingerprint once — 4 bytes
+-- from /dev/urandom formatted as an exact decimal (%.0f keeps the 32-bit
+-- value intact through double). Sent as the wr_fp cookie at QR-login time.
+function Settings:get_device_fingerprint()
+    local stored = self:get("device_fingerprint", "")
+    if type(stored) == "string" and stored ~= "" then
+        return stored
+    end
+    local value
+    local fh = io.open("/dev/urandom", "rb")
+    if fh then
+        local data = fh:read(4)
+        fh:close()
+        if data and #data == 4 then
+            local b1, b2, b3, b4 = data:byte(1, 4)
+            value = string.format("%.0f",
+                b1 * 16777216 + b2 * 65536 + b3 * 256 + b4)
+        end
+    end
+    if not value then
+        value = tostring(os.time())
+    end
+    self:set("device_fingerprint", value)
+    self:flush()
+    return value
 end
 
 function Settings:is_cookie_configured()
