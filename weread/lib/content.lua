@@ -280,6 +280,66 @@ end
 -- directly: a power loss mid-write on FAT left a truncated EPUB, and
 -- re-downloading the same book destroyed the previous valid copy before the
 -- new one existed. Same tmp+rename discipline as write_file/BookStore.
+-- B-4 (2026-10-20 audit, "发布前开包验数"): before an assembled archive is
+-- renamed over the target, parse its zip End-Of-Central-Directory record in
+-- pure Lua and require the recorded entry count. A truncated/empty tmp
+-- archive (power loss, archiver failure) must never replace a good EPUB.
+-- Pure string ops so the spec runtime (plain Lua 5.1, no ffi) can test it.
+local function read_zip_total_entries(path)
+    local f = io.open(path, "rb")
+    if not f then
+        return nil, "cannot open " .. tostring(path)
+    end
+    local size = f:seek("end")
+    if not size or size < 22 then
+        f:close()
+        return nil, "archive too small (" .. tostring(size) .. " bytes)"
+    end
+    -- EOCD is at most 22 bytes + a zip comment (max 65535) from the end.
+    local window = math.min(size, 65557)
+    f:seek("set", size - window)
+    local tail = f:read(window)
+    f:close()
+    if not tail then
+        return nil, "short read"
+    end
+    local eocd
+    for i = #tail - 21, 1, -1 do
+        if tail:sub(i, i + 3) == "PK\005\006" then
+            eocd = i
+            break
+        end
+    end
+    if not eocd then
+        return nil, "no zip EOCD record (not a valid zip archive)"
+    end
+    -- EOCD layout (0-based from sig): 8-9 entries-on-disk, 10-11 total
+    -- entries (u16 LE). A >65535-entry archive would need zip64; the
+    -- streamed writer never produces one.
+    local b1, b2 = tail:byte(eocd + 10, eocd + 11)
+    if not b1 or not b2 then
+        return nil, "truncated EOCD"
+    end
+    return b1 + b2 * 256
+end
+
+--- Verify an assembled EPUB before publishing: file exists, is plausibly
+--- sized, and its zip EOCD records at least `min_entries` entries.
+--- Returns true, total_entries on success; nil, reason on failure.
+function Content.verify_epub_package(path, min_entries)
+    min_entries = math.max(tonumber(min_entries) or 4, 4)
+    local total, err = read_zip_total_entries(path)
+    if not total then
+        return nil, err
+    end
+    if total < min_entries then
+        return nil, string.format(
+            "epub entry count %d < expected minimum %d (truncated publish?)",
+            total, min_entries)
+    end
+    return true, total
+end
+
 local function write_epub(path, entries)
     local tmp_path = path .. ".tmp"
     local Archiver = require("ffi/archiver")
@@ -308,6 +368,14 @@ local function write_epub(path, entries)
     end
 
     archive:close()
+    -- B-4 (2026-10-20 audit): verify the tmp archive before publishing —
+    -- write_epub adds exactly #entries files (mimetype deduped), so the
+    -- EOCD must record at least that many.
+    local ok_verify, v_err = Content.verify_epub_package(tmp_path, #entries)
+    if not ok_verify then
+        os.remove(tmp_path)
+        error("epub verification failed before publish: " .. tostring(v_err))
+    end
     -- R3': os.rename signals failure by returning nil (not raising).
     local ok_rename = os.rename(tmp_path, path)
     if not ok_rename then
@@ -987,6 +1055,20 @@ function Content.save_book_epub_streamed(settings, book, chapters, body_paths, a
     archive:addFileFromMemory("OEBPS/toc.ncx", ncx, mtime)
     archive:addFileFromMemory("OEBPS/style.css", css, mtime)
     archive:close()
+    -- B-4 (2026-10-20 audit): verify the tmp archive before publishing.
+    -- Count exactly what this assembly added: mimetype + container.xml
+    -- (+ cover.xhtml/cover image when present) + one file per chapter +
+    -- one per asset + opf/nav/ncx/css.
+    local n_added = 2
+    if cover_data and #cover_data > 0 then
+        n_added = n_added + 2
+    end
+    n_added = n_added + #(chapters or {}) + #asset_list + 4
+    local ok_verify, v_err = Content.verify_epub_package(tmp_path, n_added)
+    if not ok_verify then
+        os.remove(tmp_path)
+        error("epub verification failed before publish: " .. tostring(v_err))
+    end
     local ok_rename = os.rename(tmp_path, path)
     if not ok_rename then
         os.remove(tmp_path)
@@ -1098,6 +1180,10 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
             return client:get_binary(url, {
                 referer = "https://weread.qq.com/",
                 timeout = opts and opts.timeout,
+                -- N-1: re-validate every redirect hop against the image
+                -- allowlist — a whitelisted CDN must not be able to bounce
+                -- the fetch to an arbitrary host (welite B-6 lesson).
+                url_validator = is_trusted_image_url,
             })
         end)
         if not ok or not data or #data == 0 then
@@ -1140,9 +1226,14 @@ function Content.download_chapter_assets(client, book, chapter, used_names, opts
     elseif tar_url:match("^/") then
         tar_url = "https://weread.qq.com" .. tar_url
     end
+    -- N-1: chapter image archives are the largest binary payloads the
+    -- plugin fetches (several full-page illustrations per chapter), so they
+    -- get an explicit, generous ceiling instead of the 8MB image default —
+    -- still bounded, because an unbounded archive on 256MB is an OOM.
     local raw = client:get_binary(tar_url, {
         referer = referer,
         timeout = opts and opts.timeout,
+        max_bytes = 32 * 1024 * 1024,
     })
     local assets = {}
     local src_map = {}
@@ -1722,7 +1813,14 @@ function Content.download_mp_images(client, body_html, progress, assets_dir)
             url = "https:" .. url
         end
         local ok, data = pcall(function()
-            return client:get_binary(url, { referer = "https://weread.qq.com/" })
+            -- N-1: the sink now enforces MP_IMAGE_MAX_BYTES mid-download
+            -- (the post-check below stays as the backstop), and every
+            -- redirect hop is re-validated against the MP host allowlist.
+            return client:get_binary(url, {
+                referer = "https://weread.qq.com/",
+                max_bytes = MP_IMAGE_MAX_BYTES,
+                url_validator = is_mp_image_url,
+            })
         end)
         if not ok or type(data) ~= "string" or #data == 0 then
             logger.warn("MP image download failed, keeping original src:",

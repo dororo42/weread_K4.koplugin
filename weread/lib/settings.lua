@@ -5,10 +5,24 @@ local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
 
 local logger_ok, logger = pcall(require, "weread.lib.logger")
+local CredentialStore = require("weread.lib.credential_store")
 
 local Settings = {}
 Settings.__index = Settings
 Settings.AUTH_SCHEMA_VERSION = 1
+
+-- N-3 (2026-10-20 audit): these keys live in the dedicated 0600 credential
+-- file (weread.credentials.lua), NOT in weread.lua. Keep in sync with
+-- CredentialStore's sanitize(). device_fingerprint deliberately stays here:
+-- it is a per-device identifier, not an account secret, and must survive
+-- logout.
+local CREDENTIAL_KEYS = {
+    api_key = true,
+    cookies = true,
+    wr_ticket = true,
+    wr_wrpa = true,
+    account = true,
+}
 
 local defaults = {
     auth_schema_version = Settings.AUTH_SCHEMA_VERSION,
@@ -95,6 +109,28 @@ local function clear_auth_store(store)
     store:saveSetting("account", deepcopy(defaults.account))
 end
 
+-- N-3: the 0600-file counterpart of clear_auth_store. Clears the in-memory
+-- table and persists the empty state atomically (the file stays in place so
+-- the next launch does not re-trigger the legacy migration).
+local function clear_credentials(obj)
+    if type(obj.credentials) == "table" then
+        obj.credentials.api_key = ""
+        obj.credentials.cookies = {}
+        obj.credentials.wr_ticket = ""
+        obj.credentials.wr_wrpa = ""
+        obj.credentials.account = deepcopy(defaults.account)
+    end
+    if obj.use_cred_file and obj.cred_store then
+        obj.cred_store:save(obj.credentials)
+    end
+end
+
+local function log_warn(...)
+    if logger_ok and logger and type(logger.warn) == "function" then
+        logger.warn(...)
+    end
+end
+
 function Settings:new()
     local data_dir = DataStorage:getFullDataDir() .. "/weread"
     ensure_dir(data_dir)
@@ -108,6 +144,45 @@ function Settings:new()
     local download_dir = obj.store:readSetting("download_dir", "")
     obj.cache_dir = (type(download_dir) == "string" and download_dir ~= "") and download_dir or obj.default_cache_dir
     ensure_dir(obj.cache_dir)
+    -- N-3 (2026-10-20 audit): credentials move to a dedicated 0600 file.
+    -- Migration: a pre-v8.0 config keeps them in LuaSettings — import them
+    -- into the file and strip the LuaSettings copies. A failed write keeps
+    -- the legacy copy authoritative (use_cred_file stays false) and the
+    -- import retries on the next launch, so no state is ever lost. Fresh
+    -- installs have neither and go straight to the file.
+    obj.credentials_file = DataStorage:getSettingsDir() .. "/weread.credentials.lua"
+    obj.cred_store = CredentialStore.new(obj.credentials_file)
+    obj.credentials = obj.cred_store and obj.cred_store:load() or {}
+    obj.use_cred_file = obj.cred_store ~= nil
+    if obj.cred_store and not obj.cred_store:exists() then
+        local legacy = {}
+        local has_legacy = false
+        for key in pairs(CREDENTIAL_KEYS) do
+            local value = obj.store:readSetting(key, nil)
+            if value ~= nil then
+                legacy[key] = value
+                has_legacy = true
+            end
+        end
+        if has_legacy then
+            if obj.cred_store:save(legacy) then
+                obj.credentials = legacy
+                for key in pairs(CREDENTIAL_KEYS) do
+                    if type(obj.store.delSetting) == "function" then
+                        obj.store:delSetting(key)
+                    else
+                        obj.store:saveSetting(key, nil)
+                    end
+                end
+                obj.store:flush()
+            else
+                log_warn("credential migration deferred: 0600 file write failed;",
+                    "keeping the legacy settings copy until the next launch")
+                obj.credentials = legacy
+                obj.use_cred_file = false
+            end
+        end
+    end
     local cache = obj.store:readSetting("cache", deepcopy(defaults.cache))
     local cache_changed = false
     if cache.download_book_images == nil then
@@ -187,7 +262,11 @@ function Settings:new()
         -- flows and has no reliable QR account provenance.
         -- Invalidate only credentials; books, downloads and user preferences
         -- remain intact and the UI will guide the user through a fresh QR login.
-        clear_auth_store(obj.store)
+        if obj.use_cred_file then
+            clear_credentials(obj)
+        else
+            clear_auth_store(obj.store)
+        end
         obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
         legacy_changed = true
     end
@@ -204,6 +283,18 @@ end
 function Settings:get(key, default)
     if default == nil then
         default = defaults[key]
+    end
+    -- N-3: credential keys are served from the 0600 file's in-memory table
+    -- (never from weread.lua) once the credential backend is active.
+    if CREDENTIAL_KEYS[key] and self.use_cred_file then
+        local value = self.credentials[key]
+        if value ~= nil then
+            -- Hand out copies so callers cannot mutate the in-memory state
+            -- without going through set() (the S-02 books-cache contract,
+            -- applied to credentials).
+            return type(value) == "table" and deepcopy(value) or value
+        end
+        return deepcopy(default)
     end
     if key ~= "books" then
         local value = self.store:readSetting(key, deepcopy(default))
@@ -245,6 +336,20 @@ function Settings:get(key, default)
 end
 
 function Settings:set(key, value)
+    -- N-3: credential writes go to the 0600 file, persisted immediately —
+    -- credential changes are rare (login / logout / cookie rotation) and a
+    -- lost rotation forces a re-login. A failed write keeps the in-memory
+    -- value for this session only; the next launch falls back to the last
+    -- persisted state (or re-runs the migration if the file never landed).
+    if CREDENTIAL_KEYS[key] and self.use_cred_file then
+        self.credentials[key] = type(value) == "table" and deepcopy(value) or value
+        local ok, err = self.cred_store:save(self.credentials)
+        if not ok then
+            log_warn("credential write failed; session value kept in memory only:",
+                "key=", tostring(key), "error=", tostring(err))
+        end
+        return
+    end
     if key == "books" and type(value) == "table" then
         local indexes = {}
         for book_id, book in pairs(value) do
@@ -502,7 +607,11 @@ function Settings:set_download_dir(path)
 end
 
 function Settings:reset_account()
-    clear_auth_store(self.store)
+    if self.use_cred_file then
+        clear_credentials(self)
+    else
+        clear_auth_store(self.store)
+    end
     self:flush()
 end
 

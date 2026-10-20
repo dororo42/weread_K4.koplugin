@@ -344,3 +344,106 @@ describe("Client:request_follow https downgrade refusal (F-14)", function()
         assert.equals(1, #http_requests)
     end)
 end)
+
+-- N-1 (2026-10-20 audit): binary downloads must be bounded DURING the
+-- transfer (a post-download size check arrives after the memory is spent on
+-- K4's 256MB — welite W-3), and every redirect hop must be re-validated
+-- against the caller's allowlist (welite B-6: first-hop-only checks let a
+-- whitelisted CDN bounce the fetch to an arbitrary host).
+describe("Client:get_binary bounded download + per-hop validation (N-1)", function()
+    teardown(__CLEAR)
+    before_each(reinstall_stubs)
+
+    -- Same scripting as script_responses, plus body delivery through the
+    -- sink so the bounded-sink path is exercised for real.
+    local function script_body(responses)
+        http_requests = {}
+        package.loaded["socket.http"].request = function(opts)
+            http_requests[#http_requests + 1] = opts
+            local response = responses[#http_requests]
+            if not response then
+                return true, 200, {}, "200"
+            end
+            if response.error then
+                return nil, response.error
+            end
+            if response.body and opts.sink then
+                opts.sink(response.body)
+            end
+            return true, response.code, response.headers or {}, tostring(response.code)
+        end
+    end
+
+    it("aborts mid-body when the response exceeds max_bytes", function()
+        script_body({ { code = 200, body = "0123456789" } })
+        local client = new_client()
+        local ok, err = pcall(function()
+            return client:get_binary("https://weread.qq.com/img.png", { max_bytes = 4 })
+        end)
+        assert.is_false(ok)
+        assert.is_not_nil(tostring(err):find("exceeds", 1, true))
+    end)
+
+    it("returns the body when it stays under max_bytes", function()
+        script_body({ { code = 200, body = "abc" } })
+        local client = new_client()
+        local text, code = client:get_binary(
+            "https://weread.qq.com/img.png", { max_bytes = 8 })
+        assert.equals("abc", text)
+        assert.equals(200, code)
+    end)
+
+    it("applies the 8MB default ceiling when the caller omits max_bytes", function()
+        script_body({ { code = 200,
+            body = string.rep("a", 8 * 1024 * 1024 + 1) } })
+        local client = new_client()
+        local ok, err = pcall(function()
+            return client:get_binary("https://weread.qq.com/img.png")
+        end)
+        assert.is_false(ok)
+        assert.is_not_nil(tostring(err):find("exceeds", 1, true))
+    end)
+
+    it("re-validates every redirect hop against the caller validator", function()
+        script_body({
+            { code = 302, headers = { location = "https://evil.example.com/y" } },
+        })
+        local client = new_client()
+        local ok, err = pcall(function()
+            return client:get_binary("https://mmbiz.qpic.cn/x", {
+                url_validator = function(u)
+                    return tostring(u):match("^https://mmbiz%.qpic%.cn/") ~= nil
+                end,
+            })
+        end)
+        assert.is_false(ok)
+        assert.is_not_nil(tostring(err):find("redirect target not allowed", 1, true))
+        -- the rejected hop was refused before any request went out
+        assert.equals(1, #http_requests)
+    end)
+
+    it("follows redirects while every hop passes the validator", function()
+        script_body({
+            { code = 302, headers = { location = "https://mmbiz.qpic.cn/y" } },
+            { code = 200, body = "img-bytes" },
+        })
+        local client = new_client()
+        local text = client:get_binary("https://mmbiz.qpic.cn/x", {
+            url_validator = function(u)
+                return tostring(u):match("^https://mmbiz%.qpic%.cn/") ~= nil
+            end,
+        })
+        assert.equals("img-bytes", text)
+        assert.equals(2, #http_requests)
+    end)
+
+    it("never forwards the validator or the byte cap to http.request", function()
+        script_body({ { code = 200, body = "abc" } })
+        local client = new_client()
+        client:get_binary("https://weread.qq.com/img.png", {
+            url_validator = function() return true end,
+        })
+        assert.is_nil(http_requests[1].url_validator)
+        assert.is_nil(http_requests[1].max_bytes)
+    end)
+end)

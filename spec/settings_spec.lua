@@ -118,6 +118,9 @@ end
 local function fresh_settings(store_seed)
     _G.__TEST_STORES = { ["/tmp/weread-test/settings/weread.lua"] = store_seed or {} }
     _G.__TEST_DISK = {}
+    -- N-3: start every case from a clean credential backend so the 0600
+    -- file never leaks state between describes.
+    os.remove("/tmp/weread-test/settings/weread.credentials.lua")
     local Settings = require("weread.lib.settings")
     -- require is cached; Settings:new() reads the (re-seeded) store each time.
     return Settings:new()
@@ -311,7 +314,98 @@ describe("Settings device fingerprint (B5 wr_fp)", function()
         assert.equals("string", type(first))
         assert.is_true(#first > 0)
         assert.equals(first, settings:get_device_fingerprint())
-        -- stored through the normal settings channel, not a side file
+        -- stored through the normal settings channel (NOT a credential:
+        -- a per-device identifier must survive logout), not a side file
         assert.equals(first, settings:get("device_fingerprint"))
+    end)
+end)
+
+-- N-3 (2026-10-20 audit): credentials (cookies / api_key / wr_ticket /
+-- wr_wrpa / account) moved from weread.lua (LuaSettings, typically 0644 —
+-- world-readable over USB) to a dedicated 0600 file. These tests cover the
+-- migration, the routing, and the degraded fallback when the 0600 write
+-- fails. The file itself is exercised end-to-end in
+-- spec/credential_store_spec.lua.
+describe("Credential file migration and routing (N-3)", function()
+    local CRED_FILE = "/tmp/weread-test/settings/weread.credentials.lua"
+
+    -- fresh_settings() always clears the file; this variant can keep it so
+    -- a "reopen the plugin" step observes what the previous launch persisted.
+    local function fresh(store_seed, clean_cred)
+        _G.__TEST_STORES = { ["/tmp/weread-test/settings/weread.lua"] = store_seed or {} }
+        _G.__TEST_DISK = {}
+        if clean_cred then
+            os.remove(CRED_FILE)
+        end
+        return require("weread.lib.settings"):new()
+    end
+
+    before_each(function()
+        os.remove(CRED_FILE)
+    end)
+
+    it("migrates legacy LuaSettings credentials into the 0600 file", function()
+        local settings = fresh({
+            -- a real pre-v8.0 config that has credentials also carries the
+            -- auth schema version (set at first login); without it the
+            -- auth-schema migration would (correctly) invalidate them.
+            auth_schema_version = 1,
+            api_key = "wrk-legacy",
+            cookies = { wr_skey = "legacy-skey" },
+        })
+        assert.equals("wrk-legacy", settings:get("api_key"))
+        assert.equals("legacy-skey", settings:get("cookies", {}).wr_skey)
+        -- the 0600 file now holds the payload; the plaintext copy is gone
+        assert.is_not_nil(io.open(CRED_FILE, "rb"))
+        assert.is_nil(settings.store:readSetting("api_key", nil))
+        assert.is_nil(settings.store:readSetting("cookies", nil))
+    end)
+
+    it("routes credential writes to the file, not the settings store", function()
+        local settings = fresh()
+        settings:update_auth({ api_key = "wrk-new", cookies = { wr_skey = "s1" } })
+        assert.equals("wrk-new", settings:get("api_key"))
+        assert.is_nil(settings.store:readSetting("api_key", nil))
+        -- a "reopen" (fresh Settings:new() over the same file) sees them
+        local reopened = fresh({ auth_schema_version = 1 }, false)
+        assert.equals("wrk-new", reopened:get("api_key"))
+        assert.equals("s1", reopened:get("cookies", {}).wr_skey)
+    end)
+
+    it("keeps the legacy copy when the 0600 write fails (retry next launch)", function()
+        local CredentialStore = require("weread.lib.credential_store")
+        local saved_save = CredentialStore.save
+        CredentialStore.save = function() return nil, "simulated failure" end
+        local settings = fresh({
+            auth_schema_version = 1,
+            api_key = "wrk-legacy",
+            cookies = { wr_skey = "legacy-skey" },
+        })
+        CredentialStore.save = saved_save
+        -- degraded to the LuaSettings backend, still readable, file absent
+        assert.equals("wrk-legacy", settings:get("api_key"))
+        assert.equals("wrk-legacy", settings.store:readSetting("api_key", nil))
+        assert.is_nil(io.open(CRED_FILE, "rb"))
+    end)
+
+    it("clears the credential file on reset_account (logout)", function()
+        local settings = fresh({
+            auth_schema_version = 1,
+            api_key = "wrk-legacy",
+            cookies = { wr_skey = "legacy-skey" },
+        })
+        settings:reset_account()
+        assert.equals("", settings:get("api_key"))
+        assert.same({}, settings:get("cookies", {}))
+        local reopened = fresh({ auth_schema_version = 1 }, false)
+        assert.equals("", reopened:get("api_key"))
+        assert.same({}, reopened:get("cookies", {}))
+    end)
+
+    it("keeps non-credential settings in LuaSettings untouched", function()
+        local settings = fresh({ api_key = "wrk-legacy" })
+        settings:set("download_dir", "/mnt/us/books")
+        assert.equals("/mnt/us/books", settings.store:readSetting("download_dir", nil))
+        assert.equals("/mnt/us/books", settings:get("download_dir"))
     end)
 end)

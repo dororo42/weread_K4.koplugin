@@ -54,6 +54,13 @@ jobs:
       - name: Unit tests (busted)
         run: busted spec
 
+      - name: Module-map gate (N-2)
+        # N-2 (2026-10-20 audit): every runtime module needs a spec or a
+        # documented exception; the map in module-map.json is the single
+        # source of truth. Fails on missing/stale entries, spec-less
+        # modules without a reason, dead spec references and orphan specs.
+        run: python3 tools/check_module_map.py
+
       - name: build_commit must be an ancestor of HEAD (F-07)
         run: |
           BC=$(grep -o 'build_commit = "[0-9a-f]*"' main.lua | cut -d'"' -f2)

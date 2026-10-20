@@ -127,9 +127,25 @@ function M:getMainMenuItems()
     if self.ui.document then
         table.insert(items, 2, {
             text = _("Sync progress now"),
+            -- N-7 (2026-10-20 audit): grey the entry out while a sync is in
+            -- flight. ProgressSync:_pull already no-ops on re-entry (the
+            -- welite-W1 lesson is covered at the sync layer, not here), so
+            -- this is purely UX: without it a second tap looks like nothing
+            -- happened. The reader-navigation dialog entry
+            -- (on_sync_progress) relies on the same sync-layer no-op.
             enabled_func = function()
                 local book_id = self:detectWeReadBook()
-                return book_id ~= nil and not WeRead.is_mp_book(book_id)
+                if book_id == nil or WeRead.is_mp_book(book_id) then
+                    return false
+                end
+                local progress_sync = self.progress_sync
+                if progress_sync then
+                    local status = progress_sync:status()
+                    if status and (status.pulling or status.uploading) then
+                        return false
+                    end
+                end
+                return true
             end,
             callback = self:safeCallback(_("Sync progress now"), function()
                 self:onWeReadSyncProgress()

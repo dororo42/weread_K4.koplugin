@@ -1,0 +1,170 @@
+{
+  "schema": 1,
+  "_description": "Module -> spec coverage map (N-2, 2026-10-20 audit). Every runtime Lua module must appear here with at least one spec exercising it, OR an explicit non-empty 'reason' documenting why it ships without a dedicated spec (device-only glue, trivial delegation). Enforced by tools/check_module_map.py in CI: fails on missing/stale entries, spec-less modules without a reason, non-existent specs, and orphan spec files. When adding a module, add its entry in the same change; when adding a spec, reference it from the covered module.",
+  "_excluded": {
+    "_meta.lua": " declarative plugin metadata (version/name), no runtime logic; gated by the version-consistency checks"
+  },
+  "modules": {
+    "main.lua": {
+      "specs": [],
+      "reason": "KOReader plugin entry point: wiring only (creates dispatcher, registers UI/menu/Downloads, forwards events). Syntax-gated by luac -p strict 5.1 and smoke-tested on device; all logic lives in weread/lib + weread/ui modules that carry their own specs."
+    },
+    "reader_menu_order.lua": {
+      "specs": [],
+      "reason": "Declarative KOReader menu-order table (data, no logic); consumed by KOReader's menu framework on device."
+    },
+    "weread/lib/book_store.lua": {
+      "specs": ["spec/path_guard_spec.lua"]
+    },
+    "weread/lib/client.lua": {
+      "specs": ["spec/client_redirect_spec.lua", "spec/remarkable_borrow_p1_spec.lua"]
+    },
+    "weread/lib/content.lua": {
+      "specs": [
+        "spec/catalog_gateway_spec.lua",
+        "spec/content_css_sanitize_spec.lua",
+        "spec/downloader_resume_spec.lua",
+        "spec/epub_publish_verify_spec.lua",
+        "spec/inline_image_allowlist_spec.lua",
+        "spec/mp_images_spec.lua"
+      ]
+    },
+    "weread/lib/cookie.lua": {
+      "specs": ["spec/cookie_spec.lua", "spec/client_redirect_spec.lua"]
+    },
+    "weread/lib/credential_store.lua": {
+      "specs": ["spec/credential_store_spec.lua", "spec/settings_spec.lua"]
+    },
+    "weread/lib/crypto.lua": {
+      "specs": [],
+      "reason": "ffi-backed device-only primitives (LuaJIT ffi/libcrypto): cannot load under the plain Lua 5.1 spec runtime. Contract is pinned by spec/protocol_spec.lua via a deterministic stub, and the real implementations are exercised on device."
+    },
+    "weread/lib/downloader.lua": {
+      "specs": ["spec/downloader_resume_spec.lua", "spec/prefetch_guard_spec.lua"]
+    },
+    "weread/lib/footnotes.lua": {
+      "specs": ["spec/footnotes_spec.lua"]
+    },
+    "weread/lib/foreground_barrier.lua": {
+      "specs": [],
+      "reason": "Device-only foreground/background timing glue around UIManager events; depends on a live UIManager loop that the spec runtime cannot provide. Its decisions are driven by reader_lifecycle state which is exercised via downloader integration on device."
+    },
+    "weread/lib/global_state.lua": {
+      "specs": [],
+      "reason": "Trivial shared-state table holder (get/set of a single state table consumed by foreground_barrier/reader_lifecycle/ui.common); no branches to test."
+    },
+    "weread/lib/i18n.lua": {
+      "specs": ["spec/i18n_spec.lua"]
+    },
+    "weread/lib/ipv4_dns.lua": {
+      "specs": ["spec/ipv4_dns_spec.lua"]
+    },
+    "weread/lib/ko_stats.lua": {
+      "specs": ["spec/ko_stats_spec.lua"]
+    },
+    "weread/lib/library_db.lua": {
+      "specs": [],
+      "reason": "Device-only sqlite/ffi storage wrapper; requires the on-device database runtime. Schema behaviour is exercised on device; consumers (migrations, main wiring) are gated by luac -p and device smoke tests."
+    },
+    "weread/lib/logger.lua": {
+      "specs": [],
+      "reason": "Trivial logging wrapper over ffi/util (prefix + level filtering, no branches); direct assertions would only restate its one-liner implementation."
+    },
+    "weread/lib/migrations.lua": {
+      "specs": [],
+      "reason": "Schema migration glue on top of the device-only library_db/sqlite runtime; migration results are verified on device upgrade paths. Pure transformations it contains are covered indirectly by settings/content specs."
+    },
+    "weread/lib/mixin.lua": {
+      "specs": [],
+      "reason": "Trivial OOP helper (class/inherit one-liner); no branches."
+    },
+    "weread/lib/plugin_util.lua": {
+      "specs": ["spec/client_redirect_spec.lua", "spec/path_guard_spec.lua"]
+    },
+    "weread/lib/position_mapper.lua": {
+      "specs": ["spec/position_mapper_spec.lua"]
+    },
+    "weread/lib/progress_sync.lua": {
+      "specs": ["spec/progress_sync_spec.lua"]
+    },
+    "weread/lib/protocol.lua": {
+      "specs": ["spec/protocol_spec.lua"]
+    },
+    "weread/lib/qr_login.lua": {
+      "specs": ["spec/qr_login_spec.lua", "spec/remarkable_borrow_p1_spec.lua"]
+    },
+    "weread/lib/read_report.lua": {
+      "specs": [
+        "spec/read_report_spec.lua",
+        "spec/remarkable_borrow_p1_spec.lua",
+        "spec/stats_ledger_spec.lua"
+      ]
+    },
+    "weread/lib/read_stats.lua": {
+      "specs": ["spec/ko_stats_spec.lua"]
+    },
+    "weread/lib/reader_lifecycle.lua": {
+      "specs": [],
+      "reason": "Device-only lifecycle glue (KReader page events -> sync/pull drivers); requires live reader UI events. Its pure helpers are exercised indirectly through downloader/progress_sync integration on device."
+    },
+    "weread/lib/reader_state.lua": {
+      "specs": [],
+      "reason": "Device-only provider of the live reader document state (page/progress accessors); cannot be instantiated without a real document. Consumers are covered by content/downloader specs via stubs."
+    },
+    "weread/lib/scan.lua": {
+      "specs": [],
+      "reason": "Device-only directory scan for cache cleanup (consumed by ui.cache); touches the on-device cache tree layout. Path traversal safety is covered by spec/path_guard_spec.lua which gates the shared path utilities it uses."
+    },
+    "weread/lib/settings.lua": {
+      "specs": ["spec/settings_spec.lua"]
+    },
+    "weread/lib/stats_ledger.lua": {
+      "specs": ["spec/stats_ledger_spec.lua"]
+    },
+    "weread/ui/cache.lua": {
+      "specs": ["spec/path_guard_spec.lua"]
+    },
+    "weread/ui/common.lua": {
+      "specs": [],
+      "reason": "KOReader widget glue (dialog/toast helpers around UIManager); requires the live widget runtime. Logic-free forwarding to global_state/logger."
+    },
+    "weread/ui/download_dialog.lua": {
+      "specs": [],
+      "reason": "KOReader DownloadDialog widget: pure UI presentation driven by weread.lib.downloader (which carries its own specs); no decisions of its own beyond widget callbacks."
+    },
+    "weread/ui/end_of_book_dialog.lua": {
+      "specs": [],
+      "reason": "KOReader end-of-book dialog widget: presentation-only, actions delegate to progress_sync/reader_navigation which carry their own specs."
+    },
+    "weread/ui/footer_indicator.lua": {
+      "specs": ["spec/footer_indicator_spec.lua"]
+    },
+    "weread/ui/library.lua": {
+      "specs": [],
+      "reason": "KOReader bookshelf UI: presentation over weread.lib.book_store/content (both spec-covered); interactive behaviour verified on device."
+    },
+    "weread/ui/login_hint.lua": {
+      "specs": ["spec/login_hint_spec.lua"]
+    },
+    "weread/ui/menu.lua": {
+      "specs": [],
+      "reason": "KOReader menu registration glue: declarative item table plus enabled_func wiring over progress_sync:status() (spec-covered); interactive behaviour verified on device."
+    },
+    "weread/ui/progress_sync_dialog.lua": {
+      "specs": [],
+      "reason": "KOReader sync-progress dialog widget: presentation over weread.lib.progress_sync (spec-covered)."
+    },
+    "weread/ui/read_report.lua": {
+      "specs": [],
+      "reason": "KOReader reading-report UI: presentation over weread.lib.read_report + weread.lib.read_stats (both spec-covered)."
+    },
+    "weread/ui/read_stats_view.lua": {
+      "specs": [],
+      "reason": "KOReader stats view widget: presentation over weread.lib.read_stats (spec-covered)."
+    },
+    "weread/ui/reader_navigation.lua": {
+      "specs": [],
+      "reason": "KOReader page-event glue: forwards reader events to progress_sync/downloader (spec-covered); no decisions of its own beyond delegation."
+    }
+  }
+}

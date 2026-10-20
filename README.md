@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v7.6）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v8.0）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -108,7 +108,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v7.6）          （菜单末尾）
+└── 关于（v0.6.0-k4-v8.0）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -122,6 +122,19 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v8.0（2026-10-20）· 独立审查 🟡 修复批次 + 工程纪律固化（N-1/N-2/N-3/N-5/N-6/N-7/B-4/B-8）
+
+> 依据《2026-10-20 weread_K4 独立审查与接手核实报告》第六章，按 ROI 排序落地。修复 3 项 🟡（N-1/N-2/N-3）、落地 3 项 🟢 建议（B-4/B-8 + N-5/N-6/N-7 收尾）。截至 2026-10-20：新增 **44** 个用例（总计 **303**），luacheck 0 警告，luac 5.1 语法哨兵通过，module-map 门禁（43 模块 / 21 项逐条豁免 / 0 孤儿 spec）接入 CI。
+
+- **N-1 · `get_binary` 下载面收敛（🟡）**：新增 `MAX_BINARY_BYTES`（8MB）有界汇 + `Content-Length` 预检；`request_follow` 支持 `url_validator` per-hop 校验回调，逐章图片、MP 图片每跳复验 `is_trusted_image_url` 域名白名单（`content.lua` 3 处调用点接入），tar 素材包 32MB 上限。重定向到非白名单主机失败、超限 body 报错、正常图片不受影响（`client_redirect_spec` +6 用例）。
+- **N-2 · module-map 门禁（🟡）**：新增 `module-map.json`（43 个运行时模块 → spec 覆盖映射；21 项无专项 spec 模块逐条写明豁免理由）+ `tools/check_module_map.py`（stdlib-only：缺失/过期条目、无理由零覆盖、失效 spec 引用、孤儿 spec 全部 fail），纳入 CI。`protocol.lua`（此前零覆盖）补齐 15 用例专项 spec：bit 32 位模拟自检（LuaJIT 语义）、手算 sign 向量（`sign("ab")`="2a0a2b88"）、`e()` 混淆结构追踪、URL 构造器/t9 封面上采样。spec 存根治理：protocol_spec 改为运行阶段惰性装桩 + 清理式 teardown，规避 busted「先加载全部文件顶层代码」导致的 preload 污染。
+- **N-3 · 凭据独立文件 0600（🟡）**：新增 `weread/lib/credential_store.lua` —— `weread-credentials-v1` 行式格式（%XX 转义，键集白名单 + 值 sanitize 拒绝 CR/LF/控制符），`O_WRONLY|O_CREAT|O_EXCL` + 0600 创建，tmp+rename 原子落盘（ffi 与 `io.open`+chmod 双路径）；`settings.lua` 启动时旧键自动搬迁（失败保留旧路径），get/set/清除全部路由至凭据文件。15 用例（0600 权限、转义往返、格式错误载荷、sanitize 拒绝）+ `settings_spec` +5（搬迁成功/失败/读取路由/清除/版本降级清凭据）。
+- **B-4 · EPUB 发布前「开包验数」**：纯 Lua 解析 zip EOCD 记录的条目数，`write_epub`（单章）与 `save_book_epub_streamed`（流式整本）在 rename 发布前比对预期最小条目数，截断/空归档不落盘、不覆盖既有完好 EPUB（新增 `Content.verify_epub_package`，8 用例：zip 注释、诱饵 EOCD 字节、超小文件、缺 EOCD、缺文件）。
+- **N-6**：传输错误分类器注释点明 timeout 分层（连接超时 vs 成对总超时的瞬态判定依据）。
+- **N-7**：菜单项 `enabled_func` 在同步进行中（`progress_sync:status()` 的 pulling/uploading）返回 false 置灰，防同步中途重入。
+- **N-5**：README 用例计数改为日期限定表述（见上文与「开发与测试」）。
+- **B-8 · AGENTS.md**：工程纪律成文化——测试随修同行、module-map 同步登记、Lua 5.1 语法子集、spec 运行时装桩约束、凭据/网络红线（禁绕过 client 直连）、发布纪律（版本号/build_commit/README/门禁清单）。
 
 ### v7.6（2026-10-05）· 上游 v1.6.0 借鉴批次 A+B（B1/B2/B3/B4/B5/B7/B8 + build_commit 门禁）
 
@@ -489,7 +502,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v7.6 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v8.0 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |
@@ -506,7 +519,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 ## 安全提示
 
-登录凭证（cookies、API key）存储于 KOReader 设置文件中，位于设备内部存储/SD 卡上，USB 连接可读取。请勿将设备或设置文件随意交给他人；分享日志或备份前请检查是否含凭证。后续版本计划加密存储。
+登录凭证存储于**独立的 0600 权限凭据文件**（v8.0 起，`weread-credentials-v1` 行式格式；旧版 KOReader 设置文件中的 cookies 在升级后自动搬迁，搬迁失败时保留原路径以不丢登录态）。文件位于设备内部存储/SD 卡上，USB 连接可读取。请勿将设备或设置文件随意交给他人；分享日志或备份前请检查是否含凭证文件。
 
 ## 许可证
 
@@ -515,6 +528,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 ## 开发与测试
 
 - 单元测试：`luarocks install busted && busted spec`；静态检查：`luarocks install luacheck && luacheck weread spec tools main.lua _meta.lua`。
+- 模块映射门禁：`python3 tools/check_module_map.py` —— `module-map.json` 是「模块 → spec 覆盖」映射的唯一事实源（每模块须有 spec 或逐条写明豁免理由）；新增/删除/改名模块须在同一变更内登记，孤儿 spec 同样 fail（N-2，CI 同步执行）。用例计数以各变更日志标注的日期为准。
 - CI（`.github/workflows/ci.yml`）使用**标准 Lua 5.1** 作为兼容性哨兵：新增 `spec/*.lua` 必须遵守 Lua 5.1 语法子集（禁止 `\x`/`\z` 转义、`goto`、整除 `//` 等新语法），本地 LuaJIT/5.3+ 不报错的问题会在 CI 拦下。
 - **全局副作用声明**：插件加载时会把 `socket.dns.toip` patch 为 IPv4 优先解析（`weread/lib/ipv4_dns.lua`，K4 无 IPv6 栈下的 EAFNOSUPPORT 防御）——该 patch 对**整个 KOReader 进程**生效，其他插件的 HTTP 请求同样走 A 记录优先；任何异常自动回退原实现。
 - 依赖以 `luarocks install --tree .luarocks` 安装或依赖 CI 的排除配置；`.luarocks/`、`.luacheck_cache` 已在 `.gitignore` 中。

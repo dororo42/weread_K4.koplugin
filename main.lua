@@ -26,7 +26,7 @@ local WeReadPlugin = WidgetContainer:extend{
     version = "0.6.0-k4-v7.6",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "e369459",
+    build_commit = "b889456",
 }
 
 function WeReadPlugin:onNetworkConnected()

@@ -148,6 +148,14 @@ end
 -- EXCLUDES offline-class errors ("Network is unreachable", name resolution):
 -- retrying those synchronously is futile, they belong to the reconnect
 -- event flow (see read_report/progress_sync F-06).
+-- N-6 (2026-10-20 audit, doc-clarity): the shared transient-transport
+-- taxonomy. NOTE the layering: "timeout" is part of the taxonomy (a timeout
+-- IS a transient transport failure), but RETRY POLICY for it is decided by
+-- each call site — client.lua's transport retry excludes it because the F-21
+-- total deadline is already spent (retrying would double the UI-thread
+-- freeze), while downloader/read_report own timeout recovery at their level.
+-- Do not "fix" the timeout entry by removing it: callers that legitimately
+-- want the full taxonomy depend on it being here.
 local TRANSIENT_TRANSPORT_PATTERNS = {
     "timeout",
     "wantread",

@@ -38,6 +38,11 @@ end
 -- tolerance while capping the worst-case freeze (K4 tuning: reduced from
 -- 10s; weak-network recovery relies on retry, not long waits).
 local DEFAULT_TIMEOUT_SECONDS = 8
+-- N-1 (2026-10-20 audit): default ceiling for binary downloads (covers,
+-- illustrations). Bounded by the sink in request(), not by a post-download
+-- check — on K4's 256MB the body is already in memory by then. Generous for
+-- real artwork; callers with tighter needs pass their own max_bytes.
+local MAX_BINARY_BYTES = 8 * 1024 * 1024
 local Client = {}
 Client.__index = Client
 
@@ -328,6 +333,8 @@ function Client:request(opts)
     req_opts.redirect = false
     local diagnostic_api = req_opts.diagnostic_api
     req_opts.diagnostic_api = nil
+    -- N-1: the sink bound is consumed above; never forward it to http.request.
+    req_opts.max_bytes = nil
 
     -- P0-A (2026-09-18, crash-report E3): resolution-class transport errors
     -- (IPv6 literal on an AF_INET socket, fast DNS failures) are transient
@@ -356,11 +363,32 @@ function Client:request(opts)
         return PluginUtil.is_transient_transport_error(text)
     end
     local results
+    -- N-1 (2026-10-20 audit): binary downloads carry a response ceiling. The
+    -- bounded sink aborts MID-BODY — a lying Content-Length cannot bypass it —
+    -- which is the only placement that protects K4's 256MB before the F-21
+    -- total deadline even fires (welite W-3: post-download size checks arrive
+    -- after the memory is already spent). Applied only when the caller asked
+    -- for a bound and supplied no sink of its own; caller-owned sinks keep
+    -- their exact semantics (they may stream to disk).
+    local max_bytes = tonumber(opts.max_bytes)
+    if max_bytes and max_bytes <= 0 then max_bytes = nil end
     for attempt = 1, 2 do
         local sink_to_use = opts.sink
         if not sink_to_use then
             response = {}
-            sink_to_use = socketutil.table_sink(response)
+            if max_bytes then
+                local received = 0
+                sink_to_use = function(chunk)
+                    received = received + #chunk
+                    if received > max_bytes then
+                        error("binary response exceeds the "
+                            .. tostring(max_bytes) .. "-byte limit")
+                    end
+                    table.insert(response, chunk)
+                end
+            else
+                sink_to_use = socketutil.table_sink(response)
+            end
         end
         req_opts.sink = sink_to_use
         req_opts.source = body and ltn12.source.string(body) or nil
@@ -434,7 +462,7 @@ function Client:request(opts)
     return response, code, resp_headers or {}, status
 end
 
-function Client:request_follow(opts, max_redirects)
+function Client:request_follow(opts, max_redirects, url_validator)
     local request_opts = deepcopy(opts or {})
     max_redirects = max_redirects or request_opts.maxredirects or 5
     request_opts.maxredirects = nil
@@ -442,6 +470,17 @@ function Client:request_follow(opts, max_redirects)
 
     for _redirect_index = 0, max_redirects do
         request_opts.url = url
+        -- N-1 (2026-10-20 audit): when the caller supplies a per-hop
+        -- validator (image allowlists), EVERY hop — the first included —
+        -- must pass it. Credential scoping below already keeps cookies off
+        -- foreign origins, but nothing stopped a whitelisted CDN from
+        -- redirecting the fetch to an arbitrary host, turning the device
+        -- into a fetcher for it (welite B-6 lesson: re-validate each hop,
+        -- not just the first).
+        if url_validator and not url_validator(url) then
+            error("redirect target not allowed: "
+                .. PluginUtil.display_error(url))
+        end
         local text, code, headers, status = self:request(request_opts)
         local is_redirect = code == 301 or code == 302 or code == 303
             or code == 307 or code == 308
@@ -549,17 +588,28 @@ function Client:get_public_text(url, opts)
     }
 end
 
+-- N-1 (2026-10-20 audit): every binary download is bounded (request's sink
+-- aborts mid-body at max_bytes, default MAX_BINARY_BYTES) and, when the
+-- caller passes opts.url_validator, every redirect hop is re-validated
+-- against it. Both close the welite-audit gaps "download path has no
+-- response ceiling" (W-3) and "only the first hop is whitelisted" (B-6).
 function Client:get_binary(url, opts)
     opts = opts or {}
+    local url_validator = opts.url_validator
     local req_opts = merge_req_opts(opts, {
         maxredirects = 5,
+        max_bytes = tonumber(opts.max_bytes) or MAX_BINARY_BYTES,
         headers = {
             ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "*/*",
             ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://weread.qq.com/",
         }
     })
+    -- The validator is consumed by request_follow below; never forward it.
+    req_opts.url_validator = nil
     local text, code, resp_headers = self:request_follow(
-        merge_req_opts(req_opts, { url = url, method = "GET" })
+        merge_req_opts(req_opts, { url = url, method = "GET" }),
+        nil,
+        url_validator
     )
     if code and code >= 200 and code < 300 then
         return text, code, resp_headers
