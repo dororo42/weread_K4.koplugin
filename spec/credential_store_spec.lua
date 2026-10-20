@@ -138,3 +138,45 @@ describe("CredentialStore.sanitize", function()
         assert.is_nil(CredentialStore.sanitize({ api_key = string.rep("x", 8193) }))
     end)
 end)
+
+-- Regression (2026-10-20 device crash): the v8.1 first release required
+-- credential_store at main.lua load time; its unguarded load-time probe
+-- accessed ffi.C.O_EXCL, KOReader's ffi/posix_h.lua does NOT declare that
+-- symbol, the probe threw "missing declaration for symbol 'O_EXCL'", and
+-- KOReader's plugin loader silently skipped the whole plugin ("Plugin
+-- loaded weread_K4" never appears; the menu entry vanishes entirely).
+describe("CredentialStore with hostile ffi (posix_h missing declarations)", function()
+    before_each(reset)
+
+    it("requires cleanly and degrades to io.open+chmod", function()
+        -- ffi loads, but ffi.C THROWS on every undeclared symbol — the
+        -- exact shape observed on the K4.
+        package.preload["ffi"] = function()
+            local C = setmetatable({}, {
+                __index = function(_, symbol)
+                    error("missing declaration for symbol '"
+                        .. tostring(symbol) .. "'")
+                end,
+            })
+            return { C = C, new = function() return 0 end }
+        end
+        package.loaded["weread.lib.credential_store"] = nil
+        -- The require itself must not throw (the v8.1 regression did).
+        local HostileStore = require("weread.lib.credential_store")
+        local store = assert(HostileStore.new(TEST_PATH))
+        local ok, err = store:save({ api_key = "wrk-fallback" })
+        assert.is_true(ok)
+        assert.is_nil(err)
+        -- The fallback still enforces 0600 and round-trips.
+        assert.equals("600", file_mode(TEST_PATH))
+        assert.equals("wrk-fallback", store:load().api_key)
+    end)
+
+    teardown(function()
+        -- Drop the hostile stub and the module loaded under it so later
+        -- specs get a clean environment.
+        package.preload["ffi"] = nil
+        package.loaded["ffi"] = nil
+        package.loaded["weread.lib.credential_store"] = nil
+    end)
+end)

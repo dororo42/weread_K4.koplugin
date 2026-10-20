@@ -47,12 +47,44 @@ local FILE_LIMIT = 1024 * 1024
 -- Per-value cap, matching welite's store.lua validation.
 local VALUE_LIMIT = 8192
 
--- Linux values; posix_h supplies the real ones when ffi is present.
+-- Linux fallback values (O_WRONLY=1, O_CREAT=64, O_EXCL=128 on x86/ARM).
 local O_WRONLY, O_CREAT, O_EXCL = 1, 64, 128
+-- The ffi direct-syscall write path is enabled ONLY when EVERY symbol it
+-- touches is actually declared. Load-time probing MUST be pcall-wrapped:
+-- accessing an undeclared ffi.C symbol THROWS ("missing declaration for
+-- symbol ..."), and this module sits in main.lua's require chain — an
+-- unguarded throw silently disabled the WHOLE plugin on device
+-- (2026-10-20 crash log: "credential_store.lua:55: missing declaration for
+-- symbol 'O_EXCL'" — KOReader's ffi/posix_h.lua does not declare O_EXCL).
+-- When probing fails we fall back to io.open + chmod (0600 still enforced).
+local ffi_available = false
+local undeclared_symbols = {}
 if ok_ffi and ffi.C then
-    O_WRONLY = tonumber(ffi.C.O_WRONLY) or O_WRONLY
-    O_CREAT = tonumber(ffi.C.O_CREAT) or O_CREAT
-    O_EXCL = tonumber(ffi.C.O_EXCL) or O_EXCL
+    local probes = {
+        O_WRONLY = function() return tonumber(ffi.C.O_WRONLY) or O_WRONLY end,
+        O_CREAT = function() return tonumber(ffi.C.O_CREAT) or O_CREAT end,
+        O_EXCL = function() return tonumber(ffi.C.O_EXCL) or O_EXCL end,
+        open = function() return ffi.C.open end,
+        write = function() return ffi.C.write end,
+        fsync = function() return ffi.C.fsync end,
+        close = function() return ffi.C.close end,
+    }
+    local resolved, all_declared = {}, true
+    for name, probe in pairs(probes) do
+        local ok, value = pcall(probe)
+        if not ok or value == nil then
+            all_declared = false
+            table.insert(undeclared_symbols, name)
+        else
+            resolved[name] = value
+        end
+    end
+    if all_declared then
+        O_WRONLY = resolved.O_WRONLY
+        O_CREAT = resolved.O_CREAT
+        O_EXCL = resolved.O_EXCL
+        ffi_available = true
+    end
 end
 -- The three flags are distinct bits, so the sum equals bit.bor here.
 local OPEN_FLAGS = O_WRONLY + O_CREAT + O_EXCL
@@ -63,6 +95,13 @@ local function log_warn(...)
     if ok_logger and logger and type(logger.warn) == "function" then
         logger.warn(...)
     end
+end
+
+if #undeclared_symbols > 0 then
+    log_warn(
+        "credential_store: ffi/posix_h lacks declarations (",
+        table.concat(undeclared_symbols, ", "),
+        "); falling back to io.open+chmod for the 0600 credential file")
 end
 
 -- Escape every control character and '%' as %XX; unescape reverses it.
@@ -228,7 +267,7 @@ function CredentialStore:save(data)
 
     local tmp = self.path .. ".tmp"
     os.remove(tmp)
-    if ok_ffi and ffi.C then
+    if ffi_available then
         -- Device path (LuaJIT): open(2) with an explicit 0600 mode.
         local fd = ffi.C.open(tmp, OPEN_FLAGS,
             ffi.new("unsigned int", CredentialStore.CREATE_MODE))
@@ -251,10 +290,11 @@ function CredentialStore:save(data)
             return nil, "write failed"
         end
     else
-        -- Non-LuaJIT fallback (busted/CI only — device always has ffi):
-        -- io.open plus an explicit chmod. The path is plugin-constructed
-        -- (settings dir + fixed filename) and %q-quoted, so there is no
-        -- injection surface; this branch never executes on device.
+        -- Fallback (B-3 follow-up, 2026-10-20): reached when ffi is absent
+        -- (busted/CI) OR when ffi exists but ffi/posix_h lacks the symbol
+        -- declarations probed above (REAL device case). io.open plus an
+        -- explicit chmod; the path is plugin-constructed (settings dir +
+        -- fixed filename) and %q-quoted, so there is no injection surface.
         local fh = io.open(tmp, "wb")
         if not fh then
             return nil, "open failed"
