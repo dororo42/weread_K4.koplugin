@@ -9,3 +9,6 @@ wereadr_*.md
 *.zip
 # luacheck cache file (cache = true in .luacheckrc).
 .luacheck_cache
+
+# Handoff kits stay local-only (agent-handoff: never committed/pushed).
+handoffs/
