@@ -22,10 +22,11 @@
 ---
 ## 安装
 
-1. 将 `weread_K4.koplugin` 文件夹复制到 KOReader 的 `plugins` 目录：
+1. 解压发布包（`weread_K4.koplugin-vX.zip`）——解压即得 `weread_K4.koplugin/` 文件夹；将其复制到 KOReader 的 `plugins` 目录：
    ```
    koreader/plugins/weread_K4.koplugin/
    ```
+   > 注意：`weread_K4.koplugin/`（含 `_meta.lua`）必须直接位于 `plugins/` 下。若解压后 `main.lua` 散落在 `plugins/` 根部，KOReader 将找不到插件（v8.1 首个发布包即有此缺陷，已于重发中修正为包内自带顶层目录）。
 2. 重启 KOReader，在菜单中找到 `工具 → 微信读书`。
 
 > 已在 **KOReader 2026.07.1**（"Sailing Walrus" 修正版）+ Kindle 4 / Kindle 5（非触摸）实测验证。
