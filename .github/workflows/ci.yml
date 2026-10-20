@@ -36,10 +36,14 @@ jobs:
 
       - uses: leafo/gh-actions-luarocks@v5
 
-      - name: Install busted + luacheck
+      - name: Install busted + luacheck + mock-service runtime (B-3)
         run: |
           luarocks install busted
           luarocks install luacheck
+          # B-3: the fault-injection specs (spec/mock_service_spec.lua) drive
+          # the REAL luasocket transport against dev/mock_gateway.py.
+          luarocks install luasocket
+          luarocks install luajson
 
       - name: Syntax sentinel (strict Lua 5.1 luac -p)
         # Same compatibility sentinel as the runtime above: post-5.1 syntax

@@ -33,11 +33,14 @@ Lua 5.1 + LuaJIT ffi, runs on device; specs run on plain Lua 5.1 under busted.
 ## Commands
 
 ```sh
-~/.luarocks/bin/busted spec          # unit tests (295+ specs)
+~/.luarocks/bin/busted spec          # unit tests (309 specs as of v8.1)
 ~/.luarocks/bin/luacheck weread spec tools main.lua _meta.lua
 luac -p $(git ls-files '*.lua')      # strict 5.1 syntax sentinel
 python3 tools/check_module_map.py    # module-map gate
 ```
+
+Note: `spec/mock_service_spec.lua` (B-3) additionally needs the `luasocket`
+and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 ## Release discipline
 

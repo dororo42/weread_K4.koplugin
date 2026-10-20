@@ -311,14 +311,23 @@ describe("Client:request transient retry (F-23)", function()
     it("does NOT retry offline-class errors", function()
         script_responses({ { error = "Network is unreachable" } })
         local client = new_client()
-        client:request({ url = "https://weread.qq.com/a", method = "GET" })
+        -- B-3 (2026-10-20 audit): transport failure now RAISES in both
+        -- shapes (the luasocket return shape used to be silently swallowed
+        -- into a nil code — see the client.lua fix); assert on the raise.
+        local ok, err = pcall(client.request, client,
+            { url = "https://weread.qq.com/a", method = "GET" })
+        assert.is_falsy(ok)
+        assert.is_not_nil(tostring(err):find("Network is unreachable", 1, true))
         assert.equals(1, #http_requests)
     end)
 
     it("does NOT retry timeouts (already consumed the total budget)", function()
         script_responses({ { error = "timeout" } })
         local client = new_client()
-        client:request({ url = "https://weread.qq.com/a", method = "GET" })
+        local ok, err = pcall(client.request, client,
+            { url = "https://weread.qq.com/a", method = "GET" })
+        assert.is_falsy(ok)
+        assert.is_not_nil(tostring(err):find("timeout", 1, true))
         assert.equals(1, #http_requests)
     end)
 end)

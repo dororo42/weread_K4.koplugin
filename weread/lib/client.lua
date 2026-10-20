@@ -239,6 +239,31 @@ local function clear_cross_origin_headers(headers)
     end
 end
 
+-- B-3 (2026-10-20 audit, ported from welite's mock service design): a
+-- test-only origin override for the CI fault-injection gateway
+-- (dev/mock_gateway.py). When set, every https://*.weread.qq.com URL is
+-- rewritten to the given origin (e.g. http://127.0.0.1:PORT) so specs can
+-- drive the REAL luasocket transport against slow/dropping/empty servers.
+-- Production code never calls set_test_origin; nil restores live behaviour.
+local test_origin
+function Client.set_test_origin(origin)
+    if origin == nil then
+        test_origin = nil
+        return
+    end
+    origin = tostring(origin):gsub("/+$", "")
+    test_origin = origin ~= "" and origin or nil
+end
+
+local function rewrite_test_url(url)
+    if not test_origin or type(url) ~= "string" then
+        return url
+    end
+    -- Matches the bare origin ("weread.qq.com") and any subdomain
+    -- ("i.weread.qq.com"); CDN hosts (wered.127.net etc.) are untouched.
+    return (url:gsub("^https://[%w%-]*%.?weread%.qq%.com", test_origin))
+end
+
 function Client:new(settings)
     return setmetatable({
         settings = settings,
@@ -286,13 +311,18 @@ end
 
 function Client:request(opts)
     opts = opts or {}
+    -- B-3: the mock-gateway specs rewrite weread origins to the local
+    -- gateway; capture weread-ness BEFORE the rewrite so cookie handling
+    -- keeps its live semantics (is_weread_url itself requires https).
+    local was_weread = is_weread_url(opts.url)
+    opts.url = rewrite_test_url(opts.url)
     local body = opts.body
     local response
     local headers = {
         ["User-Agent"] = WeRead.USER_AGENT,
         ["Accept"] = "application/json, text/plain, */*"
     }
-    local is_handle_cookie = not opts.skip_cookie and is_weread_url(opts.url)
+    local is_handle_cookie = not opts.skip_cookie and was_weread
 
     if is_handle_cookie then
         local cookies = self.settings:get("cookies", {})
@@ -417,15 +447,24 @@ function Client:request(opts)
             "error=", err_text
         )
     end
-    if not results[1] then
+    -- B-3 (2026-10-20 audit): transport failure reaches this point in TWO
+    -- shapes — pcall-raise (results[1]=false, results[2]=err) and luasocket
+    -- return (results={true, nil, err}). The old guard (`if not results[1]`)
+    -- only caught the first: in the return shape, results[3] ("closed") then
+    -- flowed into raw_code, request() RETURNED a nil code, and post_json's
+    -- 2xx check masked the transport failure as a generic "HTTP nil"
+    -- (observed live against the drop-mode mock gateway). Both shapes must
+    -- surface the real error.
+    if not results[1] or results[2] == nil then
+        local err_text = tostring(results[2] ~= nil and results[2] or results[3])
         logger.err(
             "HTTP transport failed:",
             "method=", tostring(req_opts.method),
             "url=", tostring(req_opts.url),
             "api=", tostring(diagnostic_api or "unknown"),
-            "error=", tostring(results[2])
+            "error=", err_text
         )
-        error(results[2])
+        error(err_text)
     end
     local _, raw_code, resp_headers, status = results[2], results[3], results[4], results[5]
     if status == nil and type(raw_code) == "string" then
@@ -466,7 +505,7 @@ function Client:request_follow(opts, max_redirects, url_validator)
     local request_opts = deepcopy(opts or {})
     max_redirects = max_redirects or request_opts.maxredirects or 5
     request_opts.maxredirects = nil
-    local url = request_opts.url
+    local url = rewrite_test_url(request_opts.url)
 
     for _redirect_index = 0, max_redirects do
         request_opts.url = url

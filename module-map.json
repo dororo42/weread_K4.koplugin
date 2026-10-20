@@ -17,7 +17,11 @@
       "specs": ["spec/path_guard_spec.lua"]
     },
     "weread/lib/client.lua": {
-      "specs": ["spec/client_redirect_spec.lua", "spec/remarkable_borrow_p1_spec.lua"]
+      "specs": [
+        "spec/client_redirect_spec.lua",
+        "spec/mock_service_spec.lua",
+        "spec/remarkable_borrow_p1_spec.lua"
+      ]
     },
     "weread/lib/content.lua": {
       "specs": [

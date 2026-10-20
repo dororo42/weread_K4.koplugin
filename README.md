@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v8.0）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v8.1）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -108,7 +108,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v8.0）          （菜单末尾）
+└── 关于（v0.6.0-k4-v8.1）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -122,6 +122,17 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v8.1（2026-10-20）· B-3 mock 故障注入服务：CI 级「慢/断/空」服务端回归（N-8/B-3）
+
+> 独立审查报告 §六·6（N-8/B-3，报告最后一项可在 CI 落地的条目）。新增 `dev/mock_gateway.py`（Python stdlib，`/__admin/` 故障注入控制面）+ `spec/mock_service_spec.lua`（6 用例，**真实 luasocket 传输**，非 socket.http 桩）。截至 2026-10-20：新增 **6** 个用例（总计 **309**），luacheck 0 警告，module-map 门禁 0 孤儿。
+
+- **dev/mock_gateway.py**：`ok / slow（delay_ms 滴灌）/ drop（收包后断连不响应）/ empty（200 空 body）/ error（注入状态码）` 五种模式 + `/__admin/requests` 请求日志，覆盖报告验收场景「慢/断/空服务端」。
+- **client.lua 测试钩子**：`Client.set_test_origin(origin)`（v8.1 新增，仅测试调用）把 `https://*.weread.qq.com` 重写到本地网关 origin，使 mock spec 驱动**真实 socket 栈**（cookie 语义经 `was_weread` 前置判断保持不变）。
+- **顺带修复的真实缺陷**：`request()` 的传输失败在 luasocket「return (nil, err)」形态下被旧守卫 `if not results[1]` 漏过，`results[3]`（如 "closed"）流入 raw_code，最终被 post_json 的非 2xx 检查伪装成 "HTTP nil"——调用方完全看不到真实原因。现两种形态统一 raise 真实错误文本（F-23 两个用例同步对齐断言）。
+- **spec 用例**：正常往返（含服务端日志核对）、断连→重试→补传（drop 分类为瞬态 + 恢复后同一载荷补传成功）、慢滴灌被 block 超时真实切断（0.3s，elapsed<4s）、空 200 body 干净降级、注入 502 透传、origin 重写只覆盖 weread 主域/子域。
+- **装桩技术要点**：http.lua 会对每个连接 `c:settimeout(_M.TIMEOUT)` 覆盖 socket 自带超时，故 socketutil 桩改为直接改写 `socket.http.TIMEOUT` 使 block 截止时间走 luasocket 自身机制；F-21 总截止时间的跨 chunk 记账仍是设备侧 socketutil 职责（由桩语义用例覆盖）。
+- **CI**：新增 `luarocks install luasocket luajson`（mock spec 运行时依赖）。
 
 ### v8.0（2026-10-20）· 独立审查 🟡 修复批次 + 工程纪律固化（N-1/N-2/N-3/N-5/N-6/N-7/B-4/B-8）
 
@@ -502,7 +513,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v8.0 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v8.1 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |
@@ -529,6 +540,7 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 - 单元测试：`luarocks install busted && busted spec`；静态检查：`luarocks install luacheck && luacheck weread spec tools main.lua _meta.lua`。
 - 模块映射门禁：`python3 tools/check_module_map.py` —— `module-map.json` 是「模块 → spec 覆盖」映射的唯一事实源（每模块须有 spec 或逐条写明豁免理由）；新增/删除/改名模块须在同一变更内登记，孤儿 spec 同样 fail（N-2，CI 同步执行）。用例计数以各变更日志标注的日期为准。
+- mock 故障注入（B-3，v8.1 起）：`spec/mock_service_spec.lua` 需真实 `luasocket` + `luajson`（`luarocks install luasocket luajson`），运行时自动拉起 `python3 dev/mock_gateway.py`（端口可用 `WEREAD_MOCK_PORT` 覆写，默认 18473）；慢/断/空服务端行为由此获得 CI 级回归。
 - CI（`.github/workflows/ci.yml`）使用**标准 Lua 5.1** 作为兼容性哨兵：新增 `spec/*.lua` 必须遵守 Lua 5.1 语法子集（禁止 `\x`/`\z` 转义、`goto`、整除 `//` 等新语法），本地 LuaJIT/5.3+ 不报错的问题会在 CI 拦下。
 - **全局副作用声明**：插件加载时会把 `socket.dns.toip` patch 为 IPv4 优先解析（`weread/lib/ipv4_dns.lua`，K4 无 IPv6 栈下的 EAFNOSUPPORT 防御）——该 patch 对**整个 KOReader 进程**生效，其他插件的 HTTP 请求同样走 A 记录优先；任何异常自动回退原实现。
 - 依赖以 `luarocks install --tree .luarocks` 安装或依赖 CI 的排除配置；`.luarocks/`、`.luacheck_cache` 已在 `.gitignore` 中。
