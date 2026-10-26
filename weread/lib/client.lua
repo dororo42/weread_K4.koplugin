@@ -16,12 +16,16 @@ do
     local ok_ipv4, module = pcall(require, "weread.lib.ipv4_dns")
     if ok_ipv4 and module then
         ipv4_dns = module
-        local ok_patch, patch_err = pcall(function()
+        local ok_patch, patch_result, patch_err = pcall(function()
             local socket = require("socket")
             return ipv4_dns.apply(socket)
         end)
         if not ok_patch then
             logger.warn("IPv4 DNS patch skipped:", tostring(patch_err))
+        elseif patch_result == false then
+            -- N2 (2026-10-26 unified review v3): a silent no-patch leaves
+            -- AAAA-first resolution unguarded; make the fallback observable.
+            logger.warn("IPv4 DNS patch not applied: socket surface missing")
         end
     end
 end
@@ -361,6 +365,12 @@ function Client:request(opts)
     -- Redirects are handled explicitly by request_follow so credentials can be
     -- rebuilt for every destination instead of being copied across origins.
     req_opts.redirect = false
+    -- N2 (2026-10-26 unified review v3): force tcp4 sockets. The K4 has no
+    -- IPv6 stack; when getaddrinfo still surfaces an AAAA literal the C-layer
+    -- getaddrinfo/connect blocks far beyond any Lua timeout (observed 60-69s
+    -- freezes on 10/25). socket.tcp4 makes the family explicit; pcall keeps
+    -- exotic LuaSocket builds alive.
+    pcall(function() req_opts.create = require("socket").tcp4 end)
     local diagnostic_api = req_opts.diagnostic_api
     req_opts.diagnostic_api = nil
     -- N-1: the sink bound is consumed above; never forward it to http.request.

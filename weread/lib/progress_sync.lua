@@ -749,8 +749,35 @@ function ProgressSync:_schedule_pull_retry(options, retry_token)
         -- (on_network_connected) owns the offline case; fixed-delay retries
         -- only run when the link came back on their own watch.
         if self.is_online and not self.is_online() then
-            log("info", "pull retry skipped: still offline; reconnect will re-trigger",
-                "book=", tostring(self.current_book_id))
+            -- N1 (2026-10-26 unified review v3): 10/25 showed the reconnect
+            -- event may never fire (out-of-band link recovery), leaving the
+            -- pull stuck until resume/reopen. Keep waiting for the link but
+            -- re-queue on a slower cadence, bounded so a permanently dead
+            -- radio cannot loop forever. Offline waiting does NOT consume a
+            -- retry attempt (only real failed fetches do).
+            self._offline_waits = (options._offline_waits or 0) + 1
+            if self._offline_waits > 10 then
+                log("warn", "pull retry gave up waiting for the network:",
+                    "book=", tostring(self.current_book_id),
+                    "waited=", tostring(self._offline_waits * 60) .. "s")
+                self._offline_waits = nil
+                return
+            end
+            log("info", "pull retry waiting for the network:",
+                "wait_round=", tostring(self._offline_waits),
+                "next_check_s=60", "book=", tostring(self.current_book_id))
+            self.scheduler:scheduleIn(60, function()
+                if generation ~= self.generation then return end
+                if retry_token ~= self.pull_retry_token then return end
+                if self.verified or self.pulling then return end
+                if self.state == "awaiting_choice" then return end
+                self:_pull({
+                    manual = false,
+                    retry = attempt,
+                    retry_token = retry_token,
+                    _offline_waits = self._offline_waits,
+                })
+            end)
             return
         end
         self:_pull({

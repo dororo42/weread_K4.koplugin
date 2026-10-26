@@ -27,6 +27,14 @@ git archive --format=zip --prefix="weread_K4.koplugin/" -o "$out" HEAD -- \
 # built outside this script (files scattered, plugin vanished) — checksums
 # only make sense together with the rule: ALWAYS build via this script, never
 # by hand. Release notes must quote the digest line below.
+# P0-A (2026-10-26 unified review v3): refuse to package a dirty tree — the
+# v8.1 release shipped an uncommitted main.lua (version field diverged from
+# every git commit, log line numbers untraceable).
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "REFUSING to build: worktree is dirty (uncommitted changes would ship untraceable code)" >&2
+    git status --porcelain >&2
+    exit 1
+fi
 sha256sum "$out" | tee "${out}.sha256"
 
 echo "built ${out} (from $(git rev-parse --short HEAD), _meta version ${version})"
