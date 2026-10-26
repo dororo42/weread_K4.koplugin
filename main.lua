@@ -9,6 +9,7 @@ local LibraryDB = require("weread.lib.library_db")
 local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
 local PluginUtil = require("weread.lib.plugin_util")
+local PositionMapper = require("weread.lib.position_mapper")
 local ProgressSync = require("weread.lib.progress_sync")
 local ProgressSyncDialog = require("weread.ui.progress_sync_dialog")
 local QRLogin = require("weread.lib.qr_login")
@@ -21,12 +22,16 @@ local _ = PluginUtil.tr
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread_K4",
     is_doc_only = false,
-    -- Keep in sync with _meta.lua (KOReader reads _meta for the plugin list;
-    -- self.version is what the in-plugin "About" dialog displays).
-    version = "0.6.0-k4-v7.6",
+    -- P0-a (2026-10-26 unified review v2): keep in sync with _meta.lua —
+    -- tools/check_version_sync.py (CI gate) fails on drift. The v7.6/v8.1
+    -- window drifted because batch bumps only touched _meta.lua; the About
+    -- dialog then advertised v7.6 on a v8.1 device (welite report finding
+    -- #1 / v2 report §3.2). self.version is what the in-plugin "About"
+    -- dialog displays.
+    version = "0.6.0-k4-v8.2",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "92952e0",
+    build_commit = "ca8b322",
 }
 
 function WeReadPlugin:onNetworkConnected()
@@ -179,9 +184,11 @@ function WeReadPlugin:init()
             return self:runOnlineTask(_("Sync progress"), callback)
         end,
         goto_fraction = function(fraction)
-            local percent = math.floor(
-                math.max(0, math.min(1, tonumber(fraction) or 0))
-                    * 100 + 0.5)
+            -- W-3 (2026-10-26 unified review v2): percent stays fractional —
+            -- the old floor(x*100+0.5) integer rounding could cross a page
+            -- boundary (target page 29 landed on 28, welite quality-audit
+            -- #12). Math lives in PositionMapper for spec coverage.
+            local percent = PositionMapper.fraction_to_percent(fraction)
             return pcall(function()
                 if self.ui and self.ui.rolling
                     and self.ui.rolling.onGotoPercent then
@@ -237,6 +244,19 @@ function WeReadPlugin:init()
     -- numbers back to a source revision (79-line drift between the v7.0
     -- device build and HEAD). Log the release-base commit alongside the
     -- version; update build_commit at every release bump.
+    -- R-1 (2026-10-26 unified review v2): strict the native wifi icon's
+    -- semantics (radio + operational + address) at the NetworkMgr layer.
+    -- Probe-guarded: any unexpected surface keeps stock behavior.
+    do
+        local ok_net, NetworkMgr = pcall(require, "ui/network/manager")
+        if ok_net and type(NetworkMgr) == "table" then
+            local StrictWifi = require("weread.lib.strict_wifi")
+            if not StrictWifi.install(NetworkMgr) then
+                logger.warn("strict wifi install skipped: "
+                    .. "unexpected NetworkMgr surface")
+            end
+        end
+    end
     logger.info("initialized:", "version=", self.version,
         "build_commit=", tostring(self.build_commit or "unknown"))
 end

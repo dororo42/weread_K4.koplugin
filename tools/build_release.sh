@@ -22,5 +22,12 @@ git archive --format=zip --prefix="weread_K4.koplugin/" -o "$out" HEAD -- \
     main.lua _meta.lua reader_menu_order.lua README.md LICENSE NOTICE \
     weread tools/clear_stale_backlog.lua
 
+# P0-b (2026-10-26 unified review v2): every release package ships with its
+# sha256 digest next to it. The v8.1 first release was a hand-made flat zip
+# built outside this script (files scattered, plugin vanished) — checksums
+# only make sense together with the rule: ALWAYS build via this script, never
+# by hand. Release notes must quote the digest line below.
+sha256sum "$out" | tee "${out}.sha256"
+
 echo "built ${out} (from $(git rev-parse --short HEAD), _meta version ${version})"
 unzip -l "$out" | tail -3

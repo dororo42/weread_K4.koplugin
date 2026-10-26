@@ -127,7 +127,14 @@ function M:showOffline(label)
 end
 
 function M:runOnlineTask(label, callback, delay)
-    if not self:isNetworkOnline() then
+    -- F-3 (2026-10-26 unified review v2): the pre-check used to call
+    -- isNetworkOnline(), whose blocking DNS resolution ran on the calling
+    -- (UI) thread before the task was even scheduled — every menu action
+    -- paid a DNS stall while the radio was half-up. Use the non-blocking
+    -- link-state check instead; a link without real internet (captive
+    -- portal, AAAA wobble) now fails inside the scheduled task with a real
+    -- transport error, which the callback error path below reports.
+    if not self:isNetworkConnected() then
         self:showOffline(label)
         return false
     end

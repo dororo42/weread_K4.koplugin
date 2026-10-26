@@ -299,3 +299,232 @@ describe("progress_sync pull retry offline skip (F-06)", function()
         assert.equals(1, #pulled)
     end)
 end)
+
+-- W-2 (2026-10-26 unified review v2, welite report finding #3): the upload
+-- chain now carries an account fingerprint. A snapshot captured under
+-- account A must never be uploaded or applied after the credentials switch
+-- to account B mid-flight (the async subprocess window / busy-retry loop).
+describe("progress_sync upload account fingerprint (W-2)", function()
+    local POSITION = { book_id = "B1", percent = 50 }
+
+    -- Mutable credential store shared between the test and the double.
+    local function make_self(creds, upload_backend)
+        local scheduled = {}
+        local obj = {
+            generation = 1,
+            uploading = false,
+            state = "idle",
+            current_book_id = "B1",
+            now = function() return 1000 end,
+            detect_book = function() return "B1" end,
+            is_online = function() return true end,
+            settings = {
+                get = function(_self, key, default)
+                    if key == "cookies" then return creds.cookies end
+                    if key == "wr_ticket" then return creds.ticket end
+                    if key == "wr_wrpa" then return creds.wrpa end
+                    return default
+                end,
+            },
+            read_report = {
+                upload_position_async = upload_backend,
+            },
+            run_online = function(_label, cb)
+                cb()
+                return true
+            end,
+            scheduler = {
+                scheduleIn = function(_self, delay, fn)
+                    scheduled[#scheduled + 1] = { delay = delay, fn = fn }
+                end,
+            },
+            notify = function() end,
+        }
+        obj._persist_calls = {}
+        obj._persist = function(self2, book_id, patch)
+            self2._persist_calls[#self2._persist_calls + 1] =
+                { book_id = book_id, patch = patch }
+        end
+        return setmetatable(obj, { __index = PS }), scheduled
+    end
+
+    it("builds the fingerprint from sorted cookies + ticket + wrpa", function()
+        local creds = {
+            cookies = { wr_s = "b", wr_fp = "a" },
+            ticket = "t1",
+            wrpa = "p1",
+        }
+        local obj = make_self(creds, function() return true, "async" end)
+        -- sorted: wr_fp before wr_s
+        assert.equals("wr_fp=a;wr_s=b;ticket=t1;wrpa=p1", obj:_auth_fingerprint())
+    end)
+
+    it("returns nil (guard unavailable) when settings lack get()", function()
+        local obj = {
+            settings = {},
+        }
+        setmetatable(obj, { __index = PS })
+        assert.is_nil(obj:_auth_fingerprint())
+    end)
+
+    it("aborts a busy retry when the account switched meanwhile", function()
+        local creds = { cookies = { s = "a" }, ticket = "t", wrpa = "p" }
+        local backend_calls = 0
+        local obj, scheduled = make_self(creds, function()
+            backend_calls = backend_calls + 1
+            return false, { error_kind = "busy" }
+        end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        assert.equals(1, backend_calls)
+        -- account switch between the first attempt and the busy retry
+        creds.cookies = { s = "b" }
+        scheduled[#scheduled].fn()
+        assert.is_false(obj.uploading)      -- aborted, not left in flight
+        assert.equals(1, backend_calls)     -- retry never re-entered the backend
+    end)
+
+    it("drops an accepted result that outlived its account", function()
+        local creds = { cookies = { s = "a" }, ticket = "t", wrpa = "p" }
+        local on_complete
+        local obj = make_self(creds, function(_book, _book_id, _pos, _off, cb)
+            on_complete = cb
+            return true, "async"
+        end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        assert.is_true(obj.uploading) -- async job in flight owns the result
+        creds.cookies = { s = "b" }
+        on_complete(true, { accepted = true })
+        assert.is_false(obj.uploading)
+        -- the accepted result must NOT have been applied
+        assert.not_equals("verified", obj.state)
+        for _, call in ipairs(obj._persist_calls) do
+            assert.is_nil(call.patch.last_uploaded_position)
+        end
+    end)
+
+    it("applies the result normally when the account is unchanged", function()
+        local creds = { cookies = { s = "a" }, ticket = "t", wrpa = "p" }
+        local on_complete
+        local obj = make_self(creds, function(_book, _book_id, _pos, _off, cb)
+            on_complete = cb
+            return true, "async"
+        end)
+        obj:_upload_snapshot(POSITION, "test", false)
+        on_complete(true, { accepted = true })
+        assert.equals("verified", obj.state)
+        local last = obj._persist_calls[#obj._persist_calls]
+        assert.is_not_nil(last.patch.last_uploaded_position)
+    end)
+end)
+
+-- W-1 (2026-10-26 unified review v2, welite v1.0.6 lesson): a quick reopen
+-- of the SAME book skips the open pull — the close path just uploaded (or
+-- persisted) the freshest local position and the server may lag behind, so
+-- an immediate full remote compare could throw the user back to a stale
+-- remote position.
+describe("progress_sync reopen continuity (W-1)", function()
+    local POSITION = { book_id = "B1", percent = 42, chapter_uid = "c1" }
+
+    local function make_self(opts)
+        local scheduled = {}
+        local obj = {
+            generation = 0,
+            pulling = false,
+            uploading = false,
+            verified = false,
+            dirty = false,
+            state = "idle",
+            current_book_id = nil,
+            now = function() return opts.now or 1000 end,
+            _last_closed_book = opts.last_closed_book,
+            _last_closed_at = opts.last_closed_at,
+            detect_book = function() return "B1" end,
+            get_book = function() return nil end, -- no upload backlog
+            capture_local = function()
+                return opts.position or POSITION, nil
+            end,
+            settings = {
+                get = function(_self, key, default)
+                    if key == "sync" then return { pull_on_open = true } end
+                    return default
+                end,
+            },
+            is_online = function() return true end,
+            scheduler = {
+                scheduleIn = function(_self, delay, fn)
+                    scheduled[#scheduled + 1] = { delay = delay, fn = fn }
+                end,
+            },
+            notify = function() end,
+        }
+        obj._persist_calls = {}
+        obj._persist = function(self2, book_id, patch)
+            self2._persist_calls[#self2._persist_calls + 1] =
+                { book_id = book_id, patch = patch }
+        end
+        obj._pulled = {}
+        obj._pull = function(self2, pull_opts)
+            self2._pulled[#self2._pulled + 1] = pull_opts
+        end
+        return setmetatable(obj, { __index = PS }), scheduled
+    end
+
+    it("skips the open pull when the same book reopens within the window", function()
+        local obj, scheduled = make_self({
+            last_closed_book = "B1",
+            last_closed_at = 990, -- 10s before "now"
+        })
+        obj:on_reader_ready()
+        scheduled[1].fn()
+        assert.equals(0, #obj._pulled)          -- open pull skipped
+        assert.equals("unverified", obj.state)  -- honestly unconfirmed
+        assert.equals("B1", obj.current_book_id)
+        assert.equals(42, obj.local_position.percent)
+    end)
+
+    it("pulls when a different book reopens immediately", function()
+        local obj, scheduled = make_self({
+            last_closed_book = "OTHER",
+            last_closed_at = 999,
+        })
+        obj:on_reader_ready()
+        scheduled[1].fn()
+        assert.equals(1, #obj._pulled)
+        assert.is_false(obj._pulled[1].manual)
+    end)
+
+    it("pulls when the reopen exceeds the continuity window", function()
+        local obj, scheduled = make_self({
+            last_closed_book = "B1",
+            last_closed_at = 900, -- 100s before "now" (> 30s window)
+        })
+        obj:on_reader_ready()
+        scheduled[1].fn()
+        assert.equals(1, #obj._pulled)
+    end)
+
+    it("pulls when the book was never closed in this session", function()
+        local obj, scheduled = make_self({})
+        obj:on_reader_ready()
+        scheduled[1].fn()
+        assert.equals(1, #obj._pulled)
+    end)
+
+    it("still persists the freshly captured position on a skipped pull", function()
+        local obj, scheduled = make_self({
+            last_closed_book = "B1",
+            last_closed_at = 995,
+            position = { book_id = "B1", percent = 55, chapter_uid = "c2" },
+        })
+        obj:on_reader_ready()
+        scheduled[1].fn()
+        local persisted = false
+        for _, call in ipairs(obj._persist_calls) do
+            if call.patch.last_local_position
+                and call.patch.last_local_position.percent == 55 then
+                persisted = true
+            end
+        end
+        assert.is_true(persisted)
+    end)
+end)

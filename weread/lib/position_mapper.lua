@@ -294,4 +294,15 @@ function PositionMapper.same_position(left, right, tolerance)
             - (tonumber(right.chapter_offset) or 0)) <= 1
 end
 
+-- W-3 (2026-10-26 unified review v2, welite quality-audit #12 lesson):
+-- convert a 0..1 progress fraction into the percent passed to
+-- ReaderRolling:onGotoPercent. The old call site rounded to an integer
+-- percent (floor(x*100+0.5)); the half-percent loss can cross a page
+-- boundary, so "jump to page 29" reproducibly landed on page 28 (the same
+-- bug welite fixed by de-integer-fying). Keep the percent fractional;
+-- KOReader's position lookup accepts it.
+function PositionMapper.fraction_to_percent(fraction)
+    return clamp(fraction, 0, 1) * 100
+end
+
 return PositionMapper

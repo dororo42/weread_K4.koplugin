@@ -125,12 +125,15 @@
     "weread/lib/stats_ledger.lua": {
       "specs": ["spec/stats_ledger_spec.lua"]
     },
+    "weread/lib/strict_wifi.lua": {
+      "specs": ["spec/strict_wifi_spec.lua"]
+    },
     "weread/ui/cache.lua": {
       "specs": ["spec/path_guard_spec.lua"]
     },
     "weread/ui/common.lua": {
       "specs": [],
-      "reason": "KOReader widget glue (dialog/toast helpers around UIManager); requires the live widget runtime. Logic-free forwarding to global_state/logger."
+      "reason": "KOReader widget glue (dialog/toast helpers around UIManager); requires the live widget runtime. Connectivity prechecks are thin pcall wrappers over NetworkMgr (isNetworkOnline/isNetworkConnected, F-3 chose the link-state one); the decision-bearing callers (progress_sync, read_report, downloader) carry their own specs."
     },
     "weread/ui/download_dialog.lua": {
       "specs": [],

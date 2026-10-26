@@ -16,6 +16,14 @@ local BUSY_RETRY_LIMIT = 10
 local PULL_RETRY_DELAY_SECONDS = 15
 local PULL_MAX_RETRIES = 3
 local SAME_THRESHOLD_PERCENT = 2
+-- W-1 (2026-10-26 unified review v2, welite v1.0.6 lesson): a quick reopen
+-- of the SAME book inside this window skips the open pull. The close path
+-- just uploaded (or persisted) the freshest local position; the server may
+-- not reflect it yet, so an immediate full remote compare can hand the user
+-- a stale remote position (the "reopen throws me back" bug class welite
+-- fixed across v1.0.3/v1.0.6). The position captured at reopen is strictly
+-- fresher than anything the pull could return.
+local REOPEN_CONTINUITY_SECONDS = 30
 -- Coalescing window for settings:flush() from _persist. Short enough that a
 -- crash loses at most one interval of progress state; long enough to avoid a
 -- flash write per progress update.
@@ -432,11 +440,43 @@ function ProgressSync:_apply_remote(remote, context, options)
     return true
 end
 
+-- W-2 (2026-10-26 unified review v2, welite report finding #3): account
+-- fingerprint for the upload chain. read_report carries the same helper
+-- (read_report.lua `_auth_fingerprint`); the upload pipeline had no such
+-- check, so a snapshot captured under account A could be accepted/applied
+-- after the user switched to account B mid-flight (async subprocess window
+-- or busy-retry loop). Mirrors read_report's construction: sorted cookie
+-- key=value pairs + wr_ticket + wr_wrpa. Returns nil when the injected
+-- settings double lacks a get() (spec doubles / exotic embeds): callers
+-- treat nil as "guard unavailable" and behave exactly as before this fix.
+function ProgressSync:_auth_fingerprint()
+    local settings = self.settings
+    if type(settings) ~= "table" or type(settings.get) ~= "function" then
+        return nil
+    end
+    local cookies = settings:get("cookies", {}) or {}
+    local keys = {}
+    for key in pairs(cookies) do
+        keys[#keys + 1] = tostring(key)
+    end
+    table.sort(keys)
+    local parts = {}
+    for _i, key in ipairs(keys) do
+        parts[#parts + 1] = key .. "=" .. tostring(cookies[key])
+    end
+    parts[#parts + 1] = "ticket=" .. tostring(settings:get("wr_ticket", ""))
+    parts[#parts + 1] = "wrpa=" .. tostring(settings:get("wr_wrpa", ""))
+    return table.concat(parts, ";")
+end
+
 function ProgressSync:_upload_snapshot(position, reason, show_result)
     if type(position) ~= "table" then return false end
     local upload_generation = self.generation
-    local book_id = tostring(position.book_id or self.current_book_id or "")
-    local upload_book_id = book_id
+    -- W-2: fingerprint captured at upload start; attempt/on_complete abort
+    -- when it changes (account switch mid-flight must not apply results).
+    local upload_auth = self:_auth_fingerprint()
+    local upload_book_id = tostring(position.book_id or self.current_book_id or "")
+    local book_id = upload_book_id
     if book_id == "" then return false end
     if self.uploading then
         -- Another upload is in flight; persist for later retry (M-L2 fix)
@@ -468,6 +508,13 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
             self.uploading = false
             return
         end
+        -- W-2: the account must be the one the snapshot was captured under.
+        if upload_auth ~= nil
+            and self:_auth_fingerprint() ~= upload_auth then
+            self.uploading = false
+            log("warn", "upload aborted: auth fingerprint changed mid-flight")
+            return
+        end
         if not self.is_online() then
             self.uploading = false
             self.state = "offline"
@@ -494,6 +541,13 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
                 if upload_generation ~= self.generation
                     or tostring(self.detect_book() or "") ~= upload_book_id then
                     self.uploading = false
+                    return
+                end
+                -- W-2: never apply a result that outlived its account.
+                if upload_auth ~= nil
+                    and self:_auth_fingerprint() ~= upload_auth then
+                    self.uploading = false
+                    log("warn", "upload result dropped: auth fingerprint changed mid-flight")
                     return
                 end
                 self.uploading = false
@@ -982,6 +1036,21 @@ function ProgressSync:on_reader_ready()
                 self.state = "unverified"
                 return
             end
+            -- W-1: quick same-book reopen — trust the just-captured local
+            -- position and skip this open's full remote compare once. The
+            -- close path uploaded/persisted the newest state moments ago;
+            -- a pull now risks applying a stale server position over it.
+            -- Manual sync, suspend/resume rechecks and later opens all pull
+            -- as usual. State stays honestly "unverified" (no remote
+            -- confirmation happened this round).
+            if book_id == tostring(self._last_closed_book or "")
+                and (self.now() - (self._last_closed_at or 0))
+                    < REOPEN_CONTINUITY_SECONDS then
+                self.state = "unverified"
+                log("info", "reopen continuity: skipping open pull",
+                    "book=", book_id)
+                return
+            end
             self:_pull({ manual = false })
         end
         ready_flow()
@@ -1011,6 +1080,10 @@ function ProgressSync:on_close_document()
             self:_upload_snapshot(position, "document_close", false)
         end
     end
+    -- W-1: remember what closed and when, so on_reader_ready can grant a
+    -- short same-book reopen continuity window (skip the stale-remote pull).
+    self._last_closed_book = tostring(self.current_book_id or "")
+    self._last_closed_at = self.now()
     self.generation = self.generation + 1
     self.current_book_id = nil
     self.verified = false

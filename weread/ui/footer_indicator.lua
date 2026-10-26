@@ -16,6 +16,10 @@
 -- Semantics note: the native icon reflects NetworkMgr:isWifiOn() (radio/link
 -- state), not Internet reachability (NetworkMgr:isOnline() does a blocking
 -- DNS lookup and must stay off the UI loop -- see ui/common.lua).
+-- R-1 (2026-10-26 unified review v2): isWifiOn itself is wrapped by
+-- weread/lib/strict_wifi.lua at plugin init (radio + operational + address),
+-- so the glyph no longer shows "connected" while the radio is up but no AP
+-- is associated.
 local logger = require("weread.lib.logger")
 
 -- MODE declaration order in readerfooter.lua v2026.07.1 (module-local there).

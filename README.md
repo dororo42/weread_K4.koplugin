@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v8.1）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v8.2）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -104,12 +104,12 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 进度管理（打开时拉取进度 / 关闭时上传进度）
 │   ├── 下载设置（书籍图片 / 公众号文章图片 / 章节预下载）
 │   ├── 账号管理（账号状态 / 手动登录 / 立即续期 Cookie / 清除账号数据）
-│   └── Wifi状态（勾选后显示目前本机联网状态）
+│   └── Wifi状态（勾选后显示 Wi-Fi 射频/连接状态，非互联网可达性）
 ├── （阅读微信读书缓存书籍时插入）
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v8.1）          （菜单末尾）
+└── 关于（v0.6.0-k4-v8.2）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -123,6 +123,27 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v8.2（2026-10-26）· 统一独立审查报告 v2（双报告核实版）修复批次：发布工程 P0 + 同步正确性 P1/P2
+
+> 依据《weread_K4.koplugin 统一独立审查报告（v2 · 双报告核实版）》（2026-10-26，WiFi 图标报告 × welite 借鉴报告 × 实机 crash 日志三方交叉核实，全部代码坐标已逐条复核属实）。新增 **22** 个用例（总计 **332**，busted 实测 it() 口径；与 v8.1 记载的 309 差 1 为口径差），luacheck 0 警告，module-map/version-sync 门禁 0 孤儿 0 漂移。
+
+**P0 · 发布工程（报告定性的当前最薄弱环节）**
+- **P0-a · version 字段单一来源化**（welite 发现 #1 + 报告 §3.2）：v7.6→v8.1 期间批次推进只更新 `_meta.lua`，`main.lua` 的 About 版本停在 v7.6（设备日志 `initialized: version= v7.6` vs 实跑 v8.1 的破案现场）。新增 `tools/check_version_sync.py` 门禁（CI 新步骤）：两处 version 字面量不一致即 fail；本批次起两处同步写 v8.2。决策：不改成运行时 `require("_meta")`——KOReader 插件发现阶段对 `_meta` 有依赖自由约束（依赖无关），CI 门禁是零设备风险的确定性方案（报告原文并列两案）。
+- **P0-b · 发布包 sha256**（welite 发现 #5）：`tools/build_release.sh` 产出 `${out}.sha256`；v8.1 首发曾因手工平铺 zip 致插件完全消失（099ee6b），checksum + 「禁止手工打包」是最防线。README 安装说明不变。
+
+**P1 · 同步正确性与图标语义**
+- **W-3 · 跳页小数化**（welite 发现 #2 / quality-audit #12）：`goto_fraction` 的 `floor(x*100+0.5)` 整数化会跨页界（目标第 29 页到第 28 页，welite 实测复现）。计算提为纯函数 `PositionMapper.fraction_to_percent`（spec 覆盖），percent 保持小数直传 `onGotoPercent`。需真机回归确认 K4 翻页落点。
+- **W-2 · 上传链账号指纹**（welite 发现 #3）：`progress_sync._upload_snapshot` 前置采集 `_auth_fingerprint`（镜像 read_report 同名构造：排序 cookie + wr_ticket + wr_wrpa），busy 重试预检与异步 `on_complete` 双检——账号中途切换的快照/结果一律丢弃，不再可能把 A 账号进度应用到 B 账号。settings 注入体缺 get() 时守卫自动降级为旧行为。
+- **R-1 · Wi-Fi 图标语义严格化**（wifi 报告 R-1）：原生图标沿用 `NetworkMgr:isWifiOn()`（K4=仅查 wlan0 存在），10/25 飞行离线段「射频开、无 AP 关联」时图标全天谎报已连接。新增 `weread/lib/strict_wifi.lua`：init 时包装 `isWifiOn` = 射频开 ∧ `sysfsInterfaceOperational` ∧ `ifHasAnAddress`（三原语均已确认存在于设备 KOReader manager.lua:221-285）；探针缺失/报错一律降级为原语义，绝不引入新故障面；幂等安装。
+
+**P2 · 体验与文案**
+- **W-1 · 换章衔接豁免**（welite 发现 #4 / v1.0.6 思路）：`on_close_document` 记录 `(最后关闭的书, 时刻)`；`on_reader_ready` 同书 30s 内重开时信任刚采集的本地位置、跳过本次打开的全量远端比较（关书刚上传、服务端未及反映，立即 pull 会拿陈旧远端把用户甩回去）。状态诚实置 `unverified`；手动同步/挂起重检/超窗重开不受影响。
+- **F-3 · 离线预检挪出 UI 线程**（wifi 报告 F-3）：`runOnlineTask` 预检从阻塞 DNS 的 `isNetworkOnline()` 改为链路态快查 `isNetworkConnected()`；无真实互联网的链路（ captive portal / AAAA 摇摆）改为任务体内报真实传输错误。
+- **R-2 · 菜单文案对齐**（wifi 报告 R-2）：菜单项「Network status icon in status bar」→「Wi-Fi status icon in status bar」；README 菜单结构同步「Wi-Fi 射频/连接状态，非互联网可达性」。
+
+**P3 · 已知问题登记（未动代码，理由如下）**
+- **T-1 · EAFNOSUPPORT 间歇失败**：K4 内核无 IPv6 栈，上游 AAAA 摇摆交 AF_INET socket 报「Address family not supported」（10/25 实测两阵发，68.6s/69.8s tick 拖长后 14:28 自愈、count=26 攒批补报零丢失）。`ipv4_dns.lua` 已过滤 A 记录 + Client 单发重试已在实机验证自愈。报告标注「可选优化：重试强制 IPv4」——**评估后不采纳**：强制跳过 AAAA 要么移除已验证的自愈路径，要么在 AAAA-only 环境引入新失败模式（违反 ipv4_dns「绝不引入新故障面」设计契约），收益低频；登记本条目备查，重试行为不变。
 
 ### v8.1（2026-10-20）· B-3 mock 故障注入服务：CI 级「慢/断/空」服务端回归（N-8/B-3）
 
@@ -510,11 +531,19 @@ K4 分支的初始稳定版本，基于官方 v0.6.0 做了以下适配：
 
 本分支不跟随 v1.0，因为上述功能依赖触摸交互或资源，不适合 K4 非触摸设备。
 
+## 已知问题与限制
+
+> 独立登记备查（v8.2 起，来源：统一审查报告 v2 §2.3 T-1 与实机日志）。
+
+- **T-1 · EAFNOSUPPORT 间歇失败（自愈，零丢失）**：K4 内核无 IPv6 栈；上游 DNS 偶发返回 IPv6 字面量交给 AF_INET socket 时，请求报「Address family not supported by protocol」。既有防线：`ipv4_dns.lua` 将解析过滤为 A 记录（有 A 记录时）+ Client 对解析类错误立即单发重试。2026-10-25 实机出现两阵发（单 tick 拖长 68.6s/69.8s），14:28:31 自愈，count=26 攒批补报成功零丢失。**重试强制 IPv4 经评估不采纳**（会移除已验证的自愈路径或在 AAAA-only 环境引入新失败面）；后续如再现，优先在 crash 日志核对 `ipv4_dns` 过滤是否命中。
+- **发布工程纪律（P0-b）**：设备包一律由 `tools/build_release.sh` 产出（自带顶层 `weread_K4.koplugin/` 目录 + `${out}.sha256` 校验和），禁止手工打包——v8.1 首发的平铺 zip 曾让插件完全消失；设备包若含未提交状态即脱离 git archive 可追溯性，发布前确认工作区干净（CI F-22 门禁同源）。
+- **Wi-Fi 图标语义（R-1 之后）**：图标 = 射频开 ∧ 接口 operational ∧ 有地址；仍不等价于「微信读书服务可达」（captive portal 场景图标亮但请求失败）。后台同步的离线判定以链路态检查为准，与图标语义分层（v2 报告 §2.2「双轨判定」）。
+
 ## 与主线 v1.0.0 的差别
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v8.1 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v8.2 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |

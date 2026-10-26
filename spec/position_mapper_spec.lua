@@ -51,3 +51,31 @@ describe("PositionMapper.compare shared baseline (F-17)", function()
         assert.equals("local_ahead", comparison)
     end)
 end)
+
+-- W-3 (2026-10-26 unified review v2, welite quality-audit #12 lesson): the
+-- jump-target percent stays fractional. The old call site computed
+-- floor(fraction*100+0.5); the half-point loss crosses page boundaries, so
+-- "jump to page 29" reproducibly landed on page 28. main.lua's
+-- goto_fraction now passes fraction_to_percent(fraction) straight through.
+describe("PositionMapper.fraction_to_percent (W-3)", function()
+    it("keeps the percent fractional", function()
+        assert.is_true(math.abs(PM.fraction_to_percent(0.2949) - 29.49) < 1e-9)
+        assert.is_true(math.abs(PM.fraction_to_percent(0.999) - 99.9) < 1e-9)
+    end)
+
+    it("no longer rounds to the nearest integer percent", function()
+        -- the old integer pipeline would have produced 29 for this input
+        assert.is_true(PM.fraction_to_percent(0.2949) > 29
+            and PM.fraction_to_percent(0.2949) < 30)
+    end)
+
+    it("clamps out-of-range fractions", function()
+        assert.equals(0, PM.fraction_to_percent(-0.5))
+        assert.equals(100, PM.fraction_to_percent(1.5))
+    end)
+
+    it("treats garbage as zero", function()
+        assert.equals(0, PM.fraction_to_percent(nil))
+        assert.equals(0, PM.fraction_to_percent("not-a-number"))
+    end)
+end)

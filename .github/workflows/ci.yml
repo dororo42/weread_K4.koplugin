@@ -65,6 +65,12 @@ jobs:
         # modules without a reason, dead spec references and orphan specs.
         run: python3 tools/check_module_map.py
 
+      - name: Version-sync gate (P0-a)
+        # P0-a (2026-10-26 unified review v2): main.lua and _meta.lua must
+        # carry the same release version — the v7.6/v8.1 drift left the About
+        # dialog (and two audit reports) quoting a stale version.
+        run: python3 tools/check_version_sync.py
+
       - name: build_commit must be an ancestor of HEAD (F-07)
         run: |
           BC=$(grep -o 'build_commit = "[0-9a-f]*"' main.lua | cut -d'"' -f2)
