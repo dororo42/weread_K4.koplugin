@@ -861,6 +861,10 @@ end
 function ReadReport:_schedule_next(generation, task, delay)
     if self.generation == generation and self.task == task then
         delay = delay or self:_interval()
+        -- 风控（2026-10-07 分析）：±10% 抖动打散恒定间隔——真实 web 心跳
+        -- 有自然抖动，精确 ±0s 的节拍是最易识别的自动化特征。覆盖 tick/
+        -- 退避/补报全部路径（delay 均经此函数下发）。
+        delay = delay * (0.9 + (math.random() * 0.2))
         self.next_tick_expected = self.now() + delay
         self.scheduler:scheduleIn(delay, task)
     end

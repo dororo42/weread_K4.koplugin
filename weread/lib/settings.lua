@@ -107,6 +107,15 @@ local function clear_auth_store(store)
     store:saveSetting("wr_ticket", "")
     store:saveSetting("wr_wrpa", "")
     store:saveSetting("account", deepcopy(defaults.account))
+    -- 风控/WeLite v1.0.4 同源（2026-10-07 分析）：账号切换必须一并清除按
+    -- 账号累计的阅读时间记录——watermarks（含 pending_backlog）与 ledgers
+    -- 只按 book_id 键控，不清则旧账号的离线时长会以新账号身份进入上报。
+    local rr = store:readSetting("read_report")
+    if type(rr) == "table" then
+        rr.watermarks = nil
+        rr.ledgers = nil
+        store:saveSetting("read_report", rr)
+    end
 end
 
 -- N-3: the 0600-file counterpart of clear_auth_store. Clears the in-memory
