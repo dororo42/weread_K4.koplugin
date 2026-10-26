@@ -61,8 +61,8 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 ## Current Handoff
 
-- Latest: `handoffs/2026-10-20-1612-weread-k4-v8-audit-batch/HANDOFF.md`
-- Branch: main @ 92952e0
-- Status: v8.1 已提交（B-3 mock 服务落地）；剩余仅真机项——真机回归（凭据 0600 搬迁/下载/菜单置灰/EPUB 验数）与 sha256 真机基准
+- Latest: `handoffs/2026-10-26-103312-weread-k4-v8-2-audit-v2-batch/HANDOFF.md`
+- Branch: main @ 437f424
+- Status: v8.2 已提交（统一审查报告 v2 全项修复，门禁全绿 332 用例）；剩余仅真机项——真机回归（W-3 跳页落点/W-1 同书重开/R-1 图标语义/凭据 0600 搬迁）+ CI 首绿确认 + sha256 真机基准（延后）
 
-任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 agent-handoff 维护，手工交接时请同步更新。
+任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
