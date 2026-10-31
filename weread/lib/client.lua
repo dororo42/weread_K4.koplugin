@@ -365,12 +365,14 @@ function Client:request(opts)
     -- Redirects are handled explicitly by request_follow so credentials can be
     -- rebuilt for every destination instead of being copied across origins.
     req_opts.redirect = false
-    -- N2 (2026-10-26 unified review v3): force tcp4 sockets. The K4 has no
-    -- IPv6 stack; when getaddrinfo still surfaces an AAAA literal the C-layer
-    -- getaddrinfo/connect blocks far beyond any Lua timeout (observed 60-69s
-    -- freezes on 10/25). socket.tcp4 makes the family explicit; pcall keeps
-    -- exotic LuaSocket builds alive.
-    pcall(function() req_opts.create = require("socket").tcp4 end)
+    -- N2 REVERTED (2026-10-31 device regression): passing create=tcp4 here
+    -- overrides https.lua's own socket factory, so the plain tcp4 socket was
+    -- used WITHOUT LuaSec wrapping → every request went plaintext to port 443
+    -- (server: "400 The plain HTTP request was sent to HTTPS port"; all weread
+    -- requests failed on device since v8.3). The E3 freeze must instead be
+    -- fixed with a create function that RETURNS A LUASEC-WRAPPED socket
+    -- (socket.tcp4() + ssl.wrap with proper params) — deferred until that can
+    -- be tested on device.
     local diagnostic_api = req_opts.diagnostic_api
     req_opts.diagnostic_api = nil
     -- N-1: the sink bound is consumed above; never forward it to http.request.
