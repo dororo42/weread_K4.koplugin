@@ -125,7 +125,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
-### v8.3.1（2026-10-31）· 热修重打包
+### v8.4（2026-10-31）· 热修重打包（原 v8.3.1）
 
 - **回退 N2 `create=tcp4`**：自定义 create 绕过 LuaSec 包装，明文 socket 直发 443 → 设备全请求 400（"plain HTTP request sent to HTTPS port"），10/31 实机复现后回退。E3 冻结根治改期（需 create 返回 LuaSec 包装 socket）。
 - 已通过 SSH 热修设备端 client.lua；本包为含热修的重发布（v8.3 的 zip 不含此修复，勿用）。
