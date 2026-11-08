@@ -69,9 +69,9 @@ local function fake_plugin()
             page_num = 1,
             onNextPage = noop,
         }
-        function menu:switchItemTable(_title, new_items, itemnumber)
-            self.item_table = new_items
-            self.last_itemnumber = itemnumber
+        function menu.switchItemTable(menu_self, _new_title, new_items, itemnumber)
+            menu_self.item_table = new_items
+            menu_self.last_itemnumber = itemnumber
         end
         self.shelf_menu = menu
         return menu
