@@ -205,8 +205,10 @@
       ]
     },
     "weread/ui/library.lua": {
-      "specs": [],
-      "reason": "KOReader bookshelf UI: presentation over weread.lib.book_store/content (both spec-covered); interactive behaviour verified on device."
+      "specs": [
+        "spec/library_shelf_refresh_spec.lua"
+      ],
+      "reason": "KOReader bookshelf UI: in-place background-sync refresh is covered by a behavior-level spec; remaining presentation over weread.lib.book_store/content is spec-covered or verified on device."
     },
     "weread/ui/login_hint.lua": {
       "specs": [
@@ -230,8 +232,10 @@
       "reason": "KOReader stats view widget: presentation over weread.lib.read_stats (spec-covered)."
     },
     "weread/ui/reader_navigation.lua": {
-      "specs": [],
-      "reason": "KOReader page-event glue: forwards reader events to progress_sync/downloader (spec-covered); no decisions of its own beyond delegation."
+      "specs": [
+        "spec/reader_navigation_spec.lua"
+      ],
+      "reason": "weread-only wraps and converged menu: menu assembly, exit broadcast and wrap idempotency are spec-covered; remaining page-event glue delegates to spec-covered modules."
     },
     "weread/lib/k4tls.lua": {
       "specs": [

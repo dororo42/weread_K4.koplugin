@@ -34,11 +34,17 @@ local M = {}
 -- map; any Keyboard-shortcuts customization is respected too). All other
 -- hotkeys pass through untouched.
 function M:initHotkeyOverride()
-    local hotkeys = self.ui and self.ui.hotkeys
-    if not hotkeys or self._hotkeys_patched then return end
+    -- 2026-11-08 audit fix: guard on the UI, not on this plugin instance.
+    -- ReaderUI rebuilds create fresh instances over the same ui; an
+    -- instance-level flag let every rebuild wrap the same methods again —
+    -- notably onClose, which schedules a 0.2s bookshelf callback per layer.
+    local ui = self.ui
+    if not ui or ui._weread_wraps_installed then return end
+    local hotkeys = ui.hotkeys
+    if not hotkeys then return end
     local orig = hotkeys.onHotkeyAction
     if not orig then return end
-    self._hotkeys_patched = true
+    ui._weread_wraps_installed = true
     hotkeys.onHotkeyAction = function(hotkeys_self, hotkey)
         if hotkey == "modifier_plus_down" then
             local ok, result = xpcall(function()
@@ -97,8 +103,12 @@ function M:initHotkeyOverride()
                     return true
                 end
                 if not ok then
+                    -- Falling back to KOReader's full menu is deliberate
+                    -- (v9.3), but it breaks the convergence promise — log it
+                    -- as an error so the degradation is never silent.
                     local logger = require("weread.lib.logger")
-                    logger.warn("weread-only menu failed:", tostring(shown))
+                    logger.err("weread-only menu failed, falling back to full menu:",
+                        tostring(shown))
                 end
                 return orig_method(menu_self, ...)
             end
@@ -183,6 +193,12 @@ function M:showWereadOnlyMenu()
     table.insert(items, {
         text = _("Exit KOReader"),
         callback = self:safeCallback(_("Exit KOReader"), function()
+            -- Same posture as Reading style: dismiss the standalone list
+            -- before the app-wide event so no orphan widget is left behind.
+            if self._weread_only_menu then
+                pcall(function() UIManager:close(self._weread_only_menu) end)
+                self._weread_only_menu = nil
+            end
             UIManager:broadcastEvent(Event:new("Exit"))
         end),
     })

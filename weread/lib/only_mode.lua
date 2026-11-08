@@ -9,8 +9,9 @@
 -- the flag is consumed exactly once per KOReader session.
 --
 -- The path literal must stay in sync with kual/bin/k4weread.sh in the
--- K4weread repository (writer side; that repo's check_marker_path.py pins
--- its side, this module pins ours via this comment + the spec).
+-- K4weread repository (writer side). Both sides are now machine-checked:
+--   * this repo: spec/only_mode_spec.lua pins the production literal;
+--   * peer repo: tools/check_marker_path.py --peer-repo compares both.
 --
 -- Flag handling is advisory: every filesystem access is guarded so a probe
 -- surprise can never break plugin init (same posture as credential_store's
@@ -43,15 +44,30 @@ M._fs = {
 -- caches modules, so both the FM and Reader instances see the same table).
 M._session_active = false
 
+-- 2026-11-08 audit: a flag that was observed but could not be deleted would
+-- otherwise stay on disk and hijack a later session started without the KUAL
+-- full-mode escape hatch. Retry the cleanup on every later init.
+M._pending_remove = false
+
 function M.flag_path()
     return M.FLAG_DIR .. "/" .. M.FLAG_NAME
 end
 
 -- One-shot detection: consumes the flag when present and arms the session.
 -- Idempotent: once armed, later calls are served from module state and never
--- touch the filesystem. Returns whether weread-only mode is active.
+-- touch the filesystem (except a deferred cleanup retry, see below).
+-- Returns whether weread-only mode is active.
 function M.detect_and_consume()
-    if M._session_active then return true end
+    if M._session_active then
+        if M._pending_remove then
+            local ok_retry, removed = pcall(M._fs.remove, M.flag_path())
+            if ok_retry and removed then
+                M._pending_remove = false
+                logger.info("weread-only stale flag removed on retry")
+            end
+        end
+        return true
+    end
 
     local path = M.flag_path()
     local ok, exists = pcall(M._fs.exists, path)
@@ -64,9 +80,11 @@ function M.detect_and_consume()
 
     -- The flag was observed: arm the session even if the delete fails
     -- (deletion is best-effort cleanup; the user asked for this mode).
-    local ok_rm, err = pcall(M._fs.remove, path)
-    if not ok_rm then
-        logger.warn("weread-only flag removal failed:", tostring(err))
+    local ok_rm, removed = pcall(M._fs.remove, path)
+    if not ok_rm or not removed then
+        M._pending_remove = true
+        logger.err("weread-only flag removal failed, cleanup deferred:",
+            tostring(removed))
     end
 
     M._session_active = true
@@ -81,6 +99,7 @@ end
 -- Test hook: restores pristine state for independent spec runs.
 function M._reset()
     M._session_active = false
+    M._pending_remove = false
 end
 
 return M

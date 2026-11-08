@@ -227,7 +227,12 @@ function M:showShelfPage()
     end
     buildItems = function()
         local items = self:shelfToolbarItems(true, refresh)
-        self._shelf_sorted = sortBooks(books, self.settings:get("shelf").sort_order)
+        -- 2026-11-08 audit fix: read the LIVE list on every rebuild. A
+        -- background sync replaces self.shelf_books via _applyShelfBooks, so
+        -- the `books` local captured at first paint would keep serving the
+        -- stale shelf while the cache indicators were refreshed.
+        self._shelf_sorted = sortBooks(self.shelf_books or books,
+            self.settings:get("shelf").sort_order)
         local built, has_more, next_start =
             loadChunk(1, ShelfTrim.chunk_size(list_items_per_page()))
         self._shelf_chunk_next = has_more and next_start or nil

@@ -33,8 +33,10 @@ local WeReadPlugin = WidgetContainer:extend{
     -- #1 / v2 report §3.2). self.version is what the in-plugin "About"
     -- dialog displays.
     version = "0.6.0-k4-v9.7",
-    -- F-07: short hash of the commit the current release batch is based on
-    -- (updated at every release bump; purely diagnostic).
+    -- F-07: short hash of the commit the current release batch is BASED ON
+    -- (updated at every release bump; purely diagnostic). This is NOT the
+    -- current source HEAD — engineering commits after a release leave it
+    -- pointing at the previous batch (v9.7 -> v9.6 baseline) on purpose.
     build_commit = "8621a81",
 }
 
@@ -299,7 +301,7 @@ function WeReadPlugin:init()
         end
     end
     logger.info("initialized:", "version=", self.version,
-        "build_commit=", tostring(self.build_commit or "unknown"))
+        "release_base=", tostring(self.build_commit or "unknown"))
 end
 
 Mixin.apply(WeReadPlugin, {

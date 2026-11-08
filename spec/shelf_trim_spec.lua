@@ -132,6 +132,11 @@ describe("weread.lib.shelf_trim", function()
             assert.is_false(ShelfTrim.is_fresh(settings, 1000 + ShelfTrim.FRESH_SECONDS))
         end)
 
+        it("treats future timestamps as stale (clock rollback)", function()
+            local settings = fake_settings({ [ShelfTrim.SETTINGS_KEY] = 2000 })
+            assert.is_false(ShelfTrim.is_fresh(settings, 1000))
+        end)
+
         it("mark_synced round-trips through settings", function()
             local state = {}
             local settings = fake_settings(state)

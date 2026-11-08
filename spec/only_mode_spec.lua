@@ -12,15 +12,29 @@
 
 local OnlyMode = require("weread.lib.only_mode")
 
+-- Cross-repo contract (2026-11-08 audit): the suite below replaces FLAG_DIR
+-- with a fake path in before_each, so it could never catch a drift in the
+-- production literal. Capture it at load time and pin it here; the writer
+-- side is checked by K4weread's check_marker_path.py --peer-repo.
+local PRODUCTION_FLAG = OnlyMode.flag_path()
+
+describe("weread.lib.only_mode production handshake contract", function()
+    it("pins the device marker path shared with K4weread", function()
+        assert.equals("/mnt/us/k4weread/launch.flag", PRODUCTION_FLAG)
+    end)
+end)
+
 describe("weread.lib.only_mode", function()
-    local saved_fs, saved_active, saved_dir, saved_name
+    local saved_fs, saved_active, saved_dir, saved_name, saved_pending
 
     before_each(function()
         saved_fs = OnlyMode._fs
         saved_active = OnlyMode._session_active
         saved_dir = OnlyMode.FLAG_DIR
         saved_name = OnlyMode.FLAG_NAME
+        saved_pending = OnlyMode._pending_remove
         OnlyMode._session_active = false
+        OnlyMode._pending_remove = false
         OnlyMode.FLAG_DIR = "/tmp/weread-spec-fake"
         OnlyMode.FLAG_NAME = "launch.flag"
     end)
@@ -30,6 +44,7 @@ describe("weread.lib.only_mode", function()
         OnlyMode._session_active = saved_active
         OnlyMode.FLAG_DIR = saved_dir
         OnlyMode.FLAG_NAME = saved_name
+        OnlyMode._pending_remove = saved_pending
     end)
 
     -- Minimal fake fs: `state` is a set of existing paths; every call is
@@ -95,6 +110,28 @@ describe("weread.lib.only_mode", function()
             OnlyMode._fs = fs
             assert.is_true(OnlyMode.detect_and_consume())
             assert.is_true(OnlyMode.is_active())
+        end)
+
+        it("retries a failed removal on a later init", function()
+            local calls, fs = fake_fs({ ["/tmp/weread-spec-fake/launch.flag"] = true })
+            fs.remove = function()
+                calls.remove[#calls.remove + 1] = "failed"
+                return nil, "busy"
+            end
+            OnlyMode._fs = fs
+            assert.is_true(OnlyMode.detect_and_consume())
+            assert.is_true(OnlyMode._pending_remove)
+
+            OnlyMode._fs = {
+                exists = function() return false end,
+                remove = function(path)
+                    calls.remove[#calls.remove + 1] = path
+                    return true
+                end,
+            }
+            assert.is_true(OnlyMode.detect_and_consume())
+            assert.is_false(OnlyMode._pending_remove)
+            assert.equals(2, #calls.remove)
         end)
 
         it("never throws when the filesystem probe errors", function()

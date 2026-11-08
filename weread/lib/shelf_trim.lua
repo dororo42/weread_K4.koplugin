@@ -78,7 +78,10 @@ function M.is_fresh(settings, now)
         return false
     end
     now = tonumber(now) or os.time()
-    return (now - at) < M.FRESH_SECONDS
+    -- 2026-11-08 audit: a future timestamp (clock rollback / bad write)
+    -- used to be "fresh" forever and suppressed every later sync.
+    local age = now - at
+    return age >= 0 and age < M.FRESH_SECONDS
 end
 
 -- Best-effort record of a successful shelf sync (device write cost is one

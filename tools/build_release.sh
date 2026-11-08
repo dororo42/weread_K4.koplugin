@@ -18,6 +18,25 @@ version=$(grep -o 'version = "[^"]*"' _meta.lua | cut -d'"' -f2)
 suffix=${version##*-}            # "0.6.0-k4-v8.1" -> "v8.1"
 out="weread_K4.koplugin-${suffix}.zip"
 
+# 2026-11-08 audit: git archive HEAD silently omits uncommitted fixes, and a
+# version literal lagging behind HEAD ships unreleased code under an old
+# version name. Refuse both — a release must be a clean, tagged commit.
+if [ -n "$(git status --porcelain)" ]; then
+    echo "error: working tree is not clean; commit fixes and specs together" >&2
+    git status --porcelain >&2
+    exit 1
+fi
+if ! git rev-parse -q --verify "refs/tags/${suffix}^{commit}" >/dev/null; then
+    echo "error: no tag ${suffix} for version ${version}" >&2
+    exit 1
+fi
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/${suffix}^{commit}")" ]; then
+    echo "error: HEAD != tag ${suffix}; bump the version before packaging" >&2
+    echo "  HEAD: $(git rev-parse --short HEAD)" >&2
+    echo "  tag : $(git rev-parse --short "refs/tags/${suffix}^{commit}")" >&2
+    exit 1
+fi
+
 git archive --format=zip --prefix="weread_K4.koplugin/" -o "$out" HEAD -- \
     main.lua _meta.lua reader_menu_order.lua README.md LICENSE NOTICE \
     weread tools/clear_stale_backlog.lua
