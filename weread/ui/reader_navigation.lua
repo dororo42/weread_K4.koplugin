@@ -1,5 +1,6 @@
 -- End-of-book navigation dialog integration.
 local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
+local Event = require("ui/event")
 local PluginUtil = require("weread.lib.plugin_util")
 -- v9.0 (K4weread): weread-only launch mode session state.
 local OnlyMode = require("weread.lib.only_mode")
@@ -155,6 +156,17 @@ function M:showWereadOnlyMenu()
     if type(items) ~= "table" or #items == 0 then
         return false
     end
+    -- v9.5: program exit. The converged session has no KOReader menu, so
+    -- the standalone menu carries its own exit entry broadcasting the same
+    -- Exit event the native menus use (ui/elements/common_exit_menu_table.lua,
+    -- device v2026.07). Appended here only — the full-mode menu keeps its
+    -- own native exit.
+    table.insert(items, {
+        text = _("Exit KOReader"),
+        callback = self:safeCallback(_("Exit KOReader"), function()
+            UIManager:broadcastEvent(Event:new("Exit"))
+        end),
+    })
     self:showList(_("WeRead"), items, _("No items."))
     return true
 end

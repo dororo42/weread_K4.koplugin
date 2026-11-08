@@ -32,10 +32,10 @@ local WeReadPlugin = WidgetContainer:extend{
     -- dialog then advertised v7.6 on a v8.1 device (welite report finding
     -- #1 / v2 report §3.2). self.version is what the in-plugin "About"
     -- dialog displays.
-    version = "0.6.0-k4-v9.4",
+    version = "0.6.0-k4-v9.5",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "2f5069b",
+    build_commit = "9ac2123",
 }
 
 function WeReadPlugin:onNetworkConnected()

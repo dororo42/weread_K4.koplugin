@@ -125,6 +125,14 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
+### v9.5（2026-11-08）· weread-only 菜单补退出项
+
+> 收敛后的 weread-only 会话没有 KOReader 菜单，程序需要自己的出口。纯装配批（366 用例基线不变）。
+
+- **微信读书菜单（weread-only 独立渲染）末尾新增「Exit KOReader」**：广播 KOReader 原生退出事件 `Event:new("Exit")`（与原生菜单同一事件，`ui/elements/common_exit_menu_table.lua` 设备实证）——设置照常落盘、会话干净结束。仅独立渲染时追加，完整模式的 KOReader 菜单保持原生退出，不重复。
+- 退出链与 v9.3 守卫互洽：真退出时 UI 循环停止，关书回书架的计划回调永不执行。
+- 门禁：busted 366 全绿、luacheck 0 警告、双语法哨兵、module-map 47 模块 0 孤儿、version-sync 通过。
+
 ### v9.4（2026-11-08）· 首启逻辑修复：未登录设备直达二维码登录
 
 > 用户逻辑评审发现：全新设备（从未登录）weread-only 首启时，无上一本书 → 回退书架，但书架被 `requireLogin` 门控、自身不可达，登录提示只是失败副作用。新增 **4** 个用例（总计 **366**）。
