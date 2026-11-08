@@ -125,6 +125,15 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
+### v9.3（2026-11-08）· weread-only 收口批：关书直达书架 + Menu 收敛
+
+> weread-only 模式最后两个延后项收口（纯 UI 装配，无新模块；362 用例回归基线不变）。全部拦截点经 KOReader v2026.07 设备源码实证。
+
+- **关书直达书架**：wrap `ReaderUI.onClose`（Back 关书的公共路径）——0.2s 后在**仍存活的 FileManager 侧插件实例**（`registerModule` 的 `self[name]=module` 语义，readerui.lua:94-99 实证）上打开书架。双守卫：`ReaderUI.instance` 仍存活 = 新文档接管（ScreenKB+Back 切书，不弹书架）；UIManager 循环已死（菜单退出 → quit）= 计划回调永不执行（真退出不回弹）。跨实例交接全程 pcall。
+- **Menu 收敛**：weread-only 会话中 Menu 键 = **微信读书菜单**（`getMainMenuItems()` 现建表，书架/搜索/上报/统计/设置全部在列），KOReader 全量顶部菜单退出 only 会话。K4 非触摸走 `KeyPressShowMenu`（readermenu.lua:69-84 分支实证），触摸走 `PressMenu`，双处理器按存在性 wrap，失败回落原行为。
+- 逃生路径不变：KUAL → Start KOReader (full)；书架 Back 落文件管理器，硬件 Home 可退出。
+- 门禁：busted 362 全绿、luacheck 0 警告、双语法哨兵、module-map 47 模块 0 孤儿、version-sync 通过。
+
 ### v9.2（2026-11-08）· 书架轻量剪裁批：分页懒加载 + 缓存新鲜度
 
 > 真机数据（2026-11-08 crash.log）：用户书架 **10157 本**——旧全量路径 = 每本过滤+下载态检查+闭包构建（万次）+ `/shelf/sync` TLS 往返实测 8s + `cacheShelf` SQLite 写实测约 20s。新增 **13** 个用例（总计 **362**），luacheck 0 警告，module-map 47 模块 0 孤儿。

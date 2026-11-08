@@ -3,6 +3,7 @@ local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
 local PluginUtil = require("weread.lib.plugin_util")
 -- v9.0 (K4weread): weread-only launch mode session state.
 local OnlyMode = require("weread.lib.only_mode")
+local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
 
 local _ = PluginUtil.tr
@@ -76,6 +77,86 @@ function M:initHotkeyOverride()
             return result
         end
     end
+
+    -- v9.3: weread-only Menu convergence — the Menu key opens the plugin's
+    -- own menu tree (Bookshelf/Search/.../Settings) instead of KOReader's
+    -- full top menu. ReaderMenu owns the Menu key: non-touch devices (K4)
+    -- bind KeyPressShowMenu -> onKeyPressShowMenu, touch binds PressMenu ->
+    -- onPressMenu (readermenu.lua:69-84, device v2026.07); wrap whichever
+    -- exists. getMainMenuItems() builds live item tables (fresh callbacks
+    -- each press), and the KOReader Menu widget renders sub_item_table
+    -- nesting natively.
+    if OnlyMode.is_active() and type(self.ui.menu) == "table" then
+        local function wrap_menu_opener(field, orig_method)
+            self.ui.menu[field] = function(menu_self, ...)
+                local ok, shown = pcall(function()
+                    return self:showWereadOnlyMenu()
+                end)
+                if ok and shown then
+                    return true
+                end
+                if not ok then
+                    local logger = require("weread.lib.logger")
+                    logger.warn("weread-only menu failed:", tostring(shown))
+                end
+                return orig_method(menu_self, ...)
+            end
+        end
+        if type(self.ui.menu.onKeyPressShowMenu) == "function" then
+            wrap_menu_opener("onKeyPressShowMenu", self.ui.menu.onKeyPressShowMenu)
+        end
+        if type(self.ui.menu.onPressMenu) == "function" then
+            wrap_menu_opener("onPressMenu", self.ui.menu.onPressMenu)
+        end
+    end
+
+    -- v9.3: document close lands on the bookshelf instead of the file
+    -- manager. ReaderUI:onClose is the common doc-close path (Back key);
+    -- 0.2s later the bookshelf opens on the still-alive FileManager-side
+    -- plugin instance (registerModule stores it as self[name] =
+    -- ui_module — readerui.lua:94-99, device v2026.07). Two guards keep
+    -- this honest: a live ReaderUI.instance means a NEW document took over
+    -- (ScreenKB+Back previous-document switch — never pop the shelf over
+    -- it), and a dead UIManager loop (menu exit → quit) means the
+    -- scheduled callback simply never runs — no shelf after a real exit.
+    if OnlyMode.is_active() and type(self.ui.onClose) == "function" then
+        local orig_close = self.ui.onClose
+        self.ui.onClose = function(readerui_self, ...)
+            UIManager:scheduleIn(0.2, function()
+                local ok_fm, FileManager = pcall(require, "apps/filemanager/filemanager")
+                local fm = ok_fm and FileManager and FileManager.instance or nil
+                local fm_plugin = fm and fm.weread_K4 or nil
+                if not (fm_plugin and type(fm_plugin.showBookshelf) == "function") then
+                    return
+                end
+                local ok_rui, ReaderUI = pcall(require, "apps/reader/readerui")
+                if ok_rui and ReaderUI and ReaderUI.instance then
+                    return
+                end
+                local ok, err = xpcall(function()
+                    return fm_plugin:showBookshelf()
+                end, debug.traceback)
+                if not ok then
+                    local logger = require("weread.lib.logger")
+                    logger.warn("weread-only post-close shelf failed:", tostring(err))
+                end
+            end)
+            return orig_close(readerui_self, ...)
+        end
+    end
+end
+
+-- v9.3: the weread-only "necessary menu" — the plugin's own menu tree
+-- rendered as a standalone list. Same item tables the KOReader top menu
+-- shows under WeRead, so callbacks/enabled_func/submenus keep working;
+-- KOReader chrome (other tools/tabs) stays out of the weread-only session.
+function M:showWereadOnlyMenu()
+    local items = self:getMainMenuItems()
+    if type(items) ~= "table" or #items == 0 then
+        return false
+    end
+    self:showList(_("WeRead"), items, _("No items."))
+    return true
 end
 
 -- Dispatcher entry point used by KOReader gesture/profile actions. The quick
