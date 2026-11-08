@@ -72,4 +72,24 @@ function M.pick(settings, fs)
     return path
 end
 
+-- v9.4: weread-only autostart entry decision. Returns:
+--   "book"  → a readable last-read book exists (works offline; reading a
+--             cached book never required login, so book beats login)
+--   "login" → fresh/never-logged-in device — the QR login must be the
+--             explicit first-run landing (a bookshelf attempt would just be
+--             gated by requireLogin and never render)
+--   "shelf" → logged in, nothing to reopen
+-- `logged_in` is the caller's credential predicate (cookie AND api key),
+-- mirroring requireLogin(true, true).
+function M.pick_entry(settings, fs, logged_in)
+    local path = M.pick(settings, fs)
+    if path then
+        return "book", path
+    end
+    if not logged_in then
+        return "login"
+    end
+    return "shelf"
+end
+
 return M

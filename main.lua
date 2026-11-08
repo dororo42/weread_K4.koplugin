@@ -32,10 +32,10 @@ local WeReadPlugin = WidgetContainer:extend{
     -- dialog then advertised v7.6 on a v8.1 device (welite report finding
     -- #1 / v2 report §3.2). self.version is what the in-plugin "About"
     -- dialog displays.
-    version = "0.6.0-k4-v9.3",
+    version = "0.6.0-k4-v9.4",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "753a84b",
+    build_commit = "2f5069b",
 }
 
 function WeReadPlugin:onNetworkConnected()
@@ -259,10 +259,20 @@ function WeReadPlugin:init()
     -- bookshelf) live in initHotkeyOverride, keyed off OnlyMode.is_active().
     if OnlyMode.detect_and_consume() and not (self.ui and self.ui.document) then
         UIManager:scheduleIn(0.2, function()
-            local path = LastRead.pick(self.settings)
             local ok, result = xpcall(function()
-                if path then
+                -- v9.4: entry decision — book / QR login / bookshelf. The
+                -- login branch mirrors requireLogin(true, true): a fresh
+                -- (never-logged-in) device gets the QR code as its explicit
+                -- first-run landing instead of a bookshelf attempt that the
+                -- login gate would silently swallow.
+                local logged_in = self.settings:is_cookie_configured()
+                    and self.settings:is_api_configured()
+                local entry, path = LastRead.pick_entry(self.settings, nil, logged_in)
+                if entry == "book" then
                     return self:openFile(path)
+                elseif entry == "login" then
+                    logger.info("weread-only first run: not logged in, opening QR login")
+                    return self.qr_login:start()
                 end
                 return self:showBookshelf()
             end, debug.traceback)

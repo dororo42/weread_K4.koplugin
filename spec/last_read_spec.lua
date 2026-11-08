@@ -117,4 +117,40 @@ describe("weread.lib.last_read", function()
             end)
         end)
     end)
+
+    describe("pick_entry", function()
+        -- v9.4: weread-only autostart entry decision — book beats login
+        -- beats shelf. A fresh (never-logged-in) device must land on the QR
+        -- login explicitly instead of a bookshelf attempt that requireLogin
+        -- would gate.
+        local PATH_KEY = LastRead.SETTINGS_KEY
+
+        it("opens the book when a readable last book exists (even logged out)", function()
+            local settings = fake_settings({
+                [PATH_KEY] = { path = "/mnt/us/book.epub" },
+            })
+            assert.equals("book",
+                LastRead.pick_entry(settings, fake_fs({ ["/mnt/us/book.epub"] = true }), false))
+        end)
+
+        it("lands on QR login for a fresh, never-logged-in device", function()
+            local settings = fake_settings({})
+            assert.equals("login", LastRead.pick_entry(settings, fake_fs({}), false))
+        end)
+
+        it("lands on the bookshelf when logged in without a last book", function()
+            local settings = fake_settings({})
+            assert.equals("shelf", LastRead.pick_entry(settings, fake_fs({}), true))
+        end)
+
+        it("falls back past a vanished book (login wins over shelf when logged out)", function()
+            local settings = fake_settings({
+                [PATH_KEY] = { path = "/mnt/us/gone.epub" },
+            })
+            assert.equals("login",
+                LastRead.pick_entry(settings, fake_fs({}), false))
+            assert.equals("shelf",
+                LastRead.pick_entry(settings, fake_fs({}), true))
+        end)
+    end)
 end)
