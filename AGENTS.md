@@ -61,8 +61,8 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 ## Current Handoff
 
-- Latest: `handoffs/2026-11-08-165419-weread-k4-v9-6-closure/HANDOFF.md`
-- Branch: main @ 8621a81
+- Latest: `handoffs/2026-11-08-172106-weread-k4-v9-7-sync/HANDOFF.md`
+- Branch: main @ 653d6db
 - Status: [TODO: 进行中 / 等待决策 / …]
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
