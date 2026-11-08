@@ -36,6 +36,7 @@
 ## 登录
 
 - **扫码登录**为推荐方式，扫码前需在微信读书 App 中开通微信读书 Skill 并获取 API Key。
+- **不扫码也能退出**（2026-11-08 修复，未发版）：二维码弹出时屏幕会提示 `Back: cancel login  |  Menu: exit KOReader`。按 **Back** 取消本次登录（`cancel()` 递增 generation，停止 0.5s 轮询并清除临时 cookie）；按 **Menu** 先取消再广播原生 `Exit` 事件，直接退出 KOReader 回 Kindle 桌面/KUAL。**首次登录**与 **Cookie 续期**两条路径同样生效。此前 `QRMessage` 的 `AnyKeyPressed` 只关窗且吞掉 Menu，无文档时 weread-only 收敛菜单也不可达，用户不扫码只能等 300s 超时。
 - 【手动登录】（USB 模板导入）保留作备用。USB 连接后编辑 `koreader/settings/weread_manual_login.lua` 模板文件，重启或「立即导入」
 ---
 ## 快捷菜单
@@ -123,6 +124,15 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### 未发版修复（2026-11-08 晚）· 二维码登录退出机制
+
+> 用户真机反馈：Cookie 续期重新扫码、首次登录弹二维码时，不扫码无法退出。此修复**未发版**（`_meta.lua` / `main.lua` 仍为 `0.6.0-k4-v9.8`），随下一批次发版。
+
+- **根因**：设备侧 `QRMessage` 是 modal `InputContainer`，其 `init()` 用 `AnyKeyPressed` 吞掉所有按键且仅关窗；项目侧没有绑定任何退出动作。首次登录发生在无文档的 FM 上下文，weread-only 收敛菜单（含 `Exit KOReader`）不可达，用户不扫码只能等 300s 超时。
+- **修复**：`qr_login.lua` 的 `_show_qr` 覆盖 `key_events` 为 `Close`（Back → 取消）与 `ExitApp`（Menu → 先 `cancel()` 再广播原生 `Exit` 事件），按真机 `readermenu.lua` 的两层绑定格式；显示时给出按键提示。取消走 `cancel()` 递增 generation，已排队的 0.5s 轮询全部成为 no-op。
+- **测试**：`spec/qr_login_spec.lua` 新增 5 例（键绑定 / 提示 / Back 停轮询 / Menu 广播 Exit / 程序关闭不二次取消）；全套 **445** 用例全绿，`luacheck` 0 告警，`luac -p` 通过。
+- **边界**：`start()` 的 `showBusy`（获取二维码阶段，`dismissable=false`）仍不可取消，但已有 10/20s 网络超时；OTP 输入框沿用自带 Cancel 按钮；真机 D10 验收待执行。
 
 ### v9.8（2026-11-08）· 审查修复与 P1-A 传输层接线
 

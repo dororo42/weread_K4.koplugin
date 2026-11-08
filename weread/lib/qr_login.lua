@@ -433,28 +433,66 @@ function QRLogin:_show_qr(uid, generation)
     local screen_height = Device.screen:getHeight()
     local qr_size = math.floor(math.min(screen_width, screen_height) * 0.72)
     local dialog
+
+    -- 2026-11-08: QRMessage is a modal InputContainer whose init() swallows
+    -- EVERY key (AnyKeyPressed only closes the widget). On the non-touch K4
+    -- the converged weread-only menu — and with it "Exit KOReader" — is
+    -- unreachable while the QR is shown; first-run / cookie-renewal also have
+    -- no open document, so the ReaderUI menu wraps do not exist there either.
+    -- Without scanning, the user was stuck until the 300s timeout. Replace the
+    -- catch-all with two explicit physical-key exits and advertise them.
+    local function dismiss(show_message)
+        if self.qr_dialog ~= dialog then
+            return
+        end
+        if self.programmatic_close or generation ~= self.generation then
+            return
+        end
+        -- cancel() bumps the generation: every queued 0.5s poll becomes a no-op.
+        self:cancel()
+        if show_message ~= false then
+            self.host:showTransientInfo(_("QR login cancelled."), 2)
+        end
+    end
+
     dialog = QRMessage:new{
         text = BASE_URL .. "/web/confirm?uid=" .. WeRead.urlencode(uid),
-        -- QRMessage centers its framed content on the screen. Keeping the frame
-        -- smaller than the viewport makes it a dismissible popup instead of a
-        -- full-screen QR surface; tapping the modal surface (or pressing a key)
-        -- cancels the login flow through dismiss_callback.
+        -- Keep the frame smaller than the viewport so it stays a popup.
         width = qr_size,
         height = qr_size,
-        dismiss_callback = function()
-            if self.qr_dialog == dialog then
-                self.qr_dialog = nil
-            end
-            if not self.programmatic_close and generation == self.generation then
-                self:cancel()
-                self.host:showTransientInfo(_("QR login cancelled."), 2)
-            end
-        end,
+        dismiss_callback = dismiss,
         scale_factor = 0.9,
     }
+
+    if Device:hasKeys() then
+        -- Same two-level shape KOReader core uses (readermenu.lua:79):
+        -- { { "<key>" } }; Device.input.group.Back is the { "Back" } array.
+        dialog.key_events = {
+            Close = { Device.input.group.Back },
+            ExitApp = { { "Menu" } },
+        }
+        dialog.onClose = function(_widget)
+            dismiss()
+            return true
+        end
+        dialog.onExitApp = function(_widget)
+            -- Cancel first (drop cookies, stop polling), then use the same
+            -- native Exit event the converged menu broadcasts. Require on
+            -- demand so specs that stub fewer KOReader modules still load.
+            dismiss(false)
+            local Event = require("ui/event")
+            UIManager:broadcastEvent(Event:new("Exit"))
+            return true
+        end
+    end
+
     self.qr_dialog = dialog
     UIManager:show(dialog)
     self.host:refreshUI()
+    if Device:hasKeys() then
+        self.host:showTransientInfo(
+            _("Back: cancel login  |  Menu: exit KOReader"), 5)
+    end
 
     UIManager:scheduleIn(0.5, function()
         if generation == self.generation and self.qr_dialog == dialog then
