@@ -167,6 +167,11 @@
         "spec/settings_spec.lua"
       ]
     },
+    "weread/lib/shelf_trim.lua": {
+      "specs": [
+        "spec/shelf_trim_spec.lua"
+      ]
+    },
     "weread/lib/stats_ledger.lua": {
       "specs": [
         "spec/stats_ledger_spec.lua"

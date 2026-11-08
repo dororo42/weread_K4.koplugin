@@ -11,6 +11,8 @@ local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local GlobalState = require("weread.lib.global_state")
+-- v9.2 (K4weread): shelf weight trim (chunked rendering + freshness gate).
+local ShelfTrim = require("weread.lib.shelf_trim")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 local log_error = PluginUtil.log_error
@@ -62,6 +64,12 @@ function M:showBookshelf()
     local cached_shelf = self.library_db and self.library_db:getShelf() or nil
     if type(cached_shelf) == "table" and #cached_shelf > 0 then
         self:_presentShelf(cached_shelf)
+        -- v9.2: freshness gate — a sync costs ~8s TLS + ~20s SQLite write on
+        -- a 10k-book shelf; skip it while the cache is young.
+        if ShelfTrim.is_fresh(self.settings, os.time()) then
+            logger.info("shelf cache fresh, skipping background sync")
+            return
+        end
         UIManager:scheduleIn(0.5, function()
             local ok, result = pcall(function()
                 return self.client:get_shelf()
@@ -71,6 +79,7 @@ function M:showBookshelf()
                 if self.library_db then
                     pcall(function() self.library_db:cacheShelf(result.books) end)
                 end
+                ShelfTrim.mark_synced(self.settings, os.time())
                 logger.info("background shelf refresh: cached",
                     "books=", tostring(#result.books))
             elseif not ok then
@@ -111,6 +120,9 @@ function M:showBookshelf()
         if self.library_db then
             pcall(function() self.library_db:cacheShelf(all_books) end)
         end
+        -- v9.2: record the sync time so the offline-first background
+        -- refresh can honor the freshness window.
+        ShelfTrim.mark_synced(self.settings, os.time())
         self:_presentShelf(all_books)
     end)
 end
@@ -177,42 +189,33 @@ function M:showShelfPage()
     local function refresh()
         menu:switchItemTable(nil, buildItems())
     end
+    -- v9.2: chunked loading. The sorted list is built once per pass; each
+    -- pass renders one chunk of matched books (per-book filter + downloaded
+    -- check + closure construction were the dominant cost on a 10k-book
+    -- shelf). Further chunks load lazily via the onNextPage wrap below.
+    local function loadChunk(start_index, chunk)
+        local saved_books = self.settings:get("books", {})
+        self._shelf_saved_books = saved_books
+        local downloaded_cache = {}
+        local function matcher(book)
+            return self:bookMatchesFilters(book, saved_books, downloaded_cache)
+        end
+        local matched, has_more, next_start =
+            ShelfTrim.take_chunk(self._shelf_sorted, matcher, start_index, chunk)
+        local built = {}
+        for _i, book in ipairs(matched) do
+            built[#built + 1] = self:buildShelfItem(book, saved_books, downloaded_cache)
+        end
+        return built, has_more, next_start
+    end
     buildItems = function()
         local items = self:shelfToolbarItems(true, refresh)
-        local sorted = sortBooks(books, self.settings:get("shelf").sort_order)
-        local saved_books = self.settings:get("books", {})
-        local downloaded_cache = {}
-        self._shelf_saved_books = saved_books
-        for _i, book in ipairs(sorted) do
-            if self:bookMatchesFilters(book, saved_books, downloaded_cache) then
-                local book_id = book.book_id or book.bookId
-                local is_cached = self:isBookDownloaded(book, saved_books, downloaded_cache)
-                local right_text
-                if book.readUpdateTime and book.readUpdateTime > 0 then
-                    right_text = os.date("%Y-%m-%d", book.readUpdateTime)
-                elseif book.finishReading == 1 then
-                    right_text = _("Done")
-                else
-                    right_text = ""
-                end
-                local function rightStatus(cached)
-                    if cached then
-                        return right_text ~= "" and "✓  " .. right_text or "✓"
-                    end
-                    return right_text
-                end
-                table.insert(items, {
-                    text = book.title or book.bookId or _("Untitled"),
-                    mandatory = rightStatus(is_cached),
-                    mandatory_func = function()
-                        local current = self._shelf_saved_books and self._shelf_saved_books[book_id]
-                        return rightStatus(self:bookRecordHasDownload(current))
-                    end,
-                    callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
-                        self:showBookRecord(book)
-                    end),
-                })
-            end
+        self._shelf_sorted = sortBooks(books, self.settings:get("shelf").sort_order)
+        local built, has_more, next_start =
+            loadChunk(1, ShelfTrim.chunk_size(list_items_per_page()))
+        self._shelf_chunk_next = has_more and next_start or nil
+        for _i, item in ipairs(built) do
+            table.insert(items, item)
         end
         return items
     end
@@ -224,6 +227,63 @@ function M:showShelfPage()
     end
     self.shelf_menu = menu
     self._shelf_refresh = refresh
+    -- v9.2: lazy-load — paging past the loaded window appends the next
+    -- chunk in place. switchItemTable with an itemnumber keeps the current
+    -- page (nil resets to page 1; verified against device KOReader
+    -- v2026.07 menu.lua:1180-1204).
+    local function extendChunks()
+        local built, has_more, next_start =
+            loadChunk(self._shelf_chunk_next, ShelfTrim.chunk_size(list_items_per_page()))
+        for _i, item in ipairs(built) do
+            table.insert(menu.item_table, item)
+        end
+        self._shelf_chunk_next = has_more and next_start or nil
+        local keep = (menu.page - 1) * (menu.perpage or 1) + 1
+        menu:switchItemTable(nil, menu.item_table, keep)
+    end
+    local orig_next_page = menu.onNextPage
+    menu.onNextPage = function(menu_self)
+        if self._shelf_chunk_next and menu_self.page >= menu_self.page_num then
+            local ok, err = pcall(extendChunks)
+            if not ok then
+                logger.warn("shelf lazy-load failed:", log_error(err))
+                self._shelf_chunk_next = nil
+            end
+        end
+        return orig_next_page(menu_self)
+    end
+end
+
+-- v9.2: per-book shelf item construction (extracted verbatim from
+-- showShelfPage's former full-shelf loop so the chunked loader reuses it).
+function M:buildShelfItem(book, saved_books, downloaded_cache)
+    local book_id = book.book_id or book.bookId
+    local is_cached = self:isBookDownloaded(book, saved_books, downloaded_cache)
+    local right_text
+    if book.readUpdateTime and book.readUpdateTime > 0 then
+        right_text = os.date("%Y-%m-%d", book.readUpdateTime)
+    elseif book.finishReading == 1 then
+        right_text = _("Done")
+    else
+        right_text = ""
+    end
+    local function rightStatus(cached)
+        if cached then
+            return right_text ~= "" and "✓  " .. right_text or "✓"
+        end
+        return right_text
+    end
+    return {
+        text = book.title or book.bookId or _("Untitled"),
+        mandatory = rightStatus(is_cached),
+        mandatory_func = function()
+            local current = self._shelf_saved_books and self._shelf_saved_books[book_id]
+            return rightStatus(self:bookRecordHasDownload(current))
+        end,
+        callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
+            self:showBookRecord(book)
+        end),
+    }
 end
 
 function M:refreshShelfCacheIndicators()

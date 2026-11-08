@@ -125,6 +125,15 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
+### v9.2（2026-11-08）· 书架轻量剪裁批：分页懒加载 + 缓存新鲜度
+
+> 真机数据（2026-11-08 crash.log）：用户书架 **10157 本**——旧全量路径 = 每本过滤+下载态检查+闭包构建（万次）+ `/shelf/sync` TLS 往返实测 8s + `cacheShelf` SQLite 写实测约 20s。新增 **13** 个用例（总计 **362**），luacheck 0 警告，module-map 47 模块 0 孤儿。
+
+- **书架分页懒加载**：新纯逻辑模块 `weread/lib/shelf_trim.lua`（13 用例）——`showShelfPage` 每次只构建一个 chunk（每页数 × 3 页）的条目，翻到已加载窗口末页时**自动追加下一 chunk**（`onNextPage` wrap 原地扩展；`switchItemTable` 带 itemnumber 保持当前页，KOReader v2026.07 设备源码 menu.lua:1180-1204 实证）。前置工具条与过滤器刷新语义不变（刷新即重置到首 chunk）。per-book 条目构建提取为 `buildShelfItem` 复用。
+- **缓存新鲜度门控**：`shelf_synced_at`（unix 秒）——离线优先路径的**后台 `/shelf/sync` 在 5 分钟窗口内跳过**（省 8s+20s）；在线成功路径（内联与后台）都记录同步时间。时间戳损坏/缺失降级为"过期"，照常同步。
+- K4weread 菜单中文化（B2）按用户指示**不执行**，维持 ASCII。
+- 门禁：busted 362 全绿、luacheck 0 警告、双语法哨兵、module-map 47 模块 0 孤儿、version-sync 通过。
+
 ### v9.1（2026-11-08）· K4weread 真机反馈批：默认进上一本书 + 书架离线优先
 
 > 真机反馈（2026-11-08，K4 设备 crash.log 时间线定位）：v9.0 启动直达书架但书架先做在线 `/shelf/sync`（K4 上 TLS 往返秒级）导致"反应慢"，且用户期望默认直接进上一本阅读的书。新增 **10** 个用例（总计 **349**），luacheck 0 警告，module-map 46 模块 0 孤儿。
