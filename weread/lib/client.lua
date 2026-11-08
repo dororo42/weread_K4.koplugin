@@ -1,7 +1,7 @@
 local ltn12 = require("ltn12")
 local logger = require("weread.lib.logger")
 local socketutil = require("socketutil")
-local http = require("socket.http")
+local transport = require("weread.lib.transport")
 local Cookie = require("weread.lib.cookie")
 local WeRead = require("weread.lib.protocol")
 
@@ -414,6 +414,12 @@ function Client:request(opts)
     -- their exact semantics (they may stream to disk).
     local max_bytes = tonumber(opts.max_bytes)
     if max_bytes and max_bytes <= 0 then max_bytes = nil end
+    -- k4tls 传输（K4WereadRust P1-A）：超时/限额直传 C ABI；socket.http 路径
+    -- 忽略这些字段。默认后端 auto——libk4tls.so 不可加载时逐字回退 LuaSec
+    -- （R2 回退开关），真机 bench（R4）通过前不翻默认。
+    req_opts.block_timeout = block_timeout
+    req_opts.total_timeout = total_timeout
+    req_opts.transport_max_bytes = max_bytes
     for attempt = 1, 2 do
         local sink_to_use = opts.sink
         if not sink_to_use then
@@ -434,7 +440,7 @@ function Client:request(opts)
         end
         req_opts.sink = sink_to_use
         req_opts.source = body and ltn12.source.string(body) or nil
-        results = { pcall(http.request, req_opts) }
+        results = { pcall(transport.request, req_opts) }
         socketutil:reset_timeout()
         -- Failure shapes: pcall error → (false, err); http.request failure
         -- → (true, nil, err). Normalize to the error value.

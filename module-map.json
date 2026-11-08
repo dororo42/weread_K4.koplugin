@@ -232,6 +232,16 @@
     "weread/ui/reader_navigation.lua": {
       "specs": [],
       "reason": "KOReader page-event glue: forwards reader events to progress_sync/downloader (spec-covered); no decisions of its own beyond delegation."
+    },
+    "weread/lib/k4tls.lua": {
+      "specs": [
+        "spec/k4tls_spec.lua"
+      ]
+    },
+    "weread/lib/transport.lua": {
+      "specs": [
+        "spec/transport_spec.lua"
+      ]
     }
   }
 }
