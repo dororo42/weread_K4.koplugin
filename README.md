@@ -125,6 +125,14 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
+### v9.6（2026-11-08）· 书架后台刷新原地重绘（最后一个延后项收口）
+
+> v9.1 刻意延后的"后台刷新只写缓存、不重绘已开书架页"——v9.2 的分页基建（保持页码的 switchItemTable）到位后可以安全收口。新增 **2** 个用例（总计 **368**）。
+
+- **原地重绘**：后台 `/shelf/sync` 成功后——缓存落库 + 记账之外，新数据经 `_applyShelfBooks`（从 `_presentShelf` 提取的桶拆分）更新内存书单，再走既有 `refreshShelfCacheIndicators` 重建条目表。**翻页位置保持**（`shelf_trim.keep_page_itemnumber`，3 用例；nil 会跳回第 1 页，设备 menu.lua:1180-1204 实证）；已加载 chunk 状态重置、继续翻页懒加载续上。书架菜单已关闭时重绘为无害 no-op（既有守卫）。
+- **附带修复**：书架内工具条刷新（缓存指示器更新）同样不再跳回第 1 页——此前每次下载完成都会把浏览位置甩回首页。
+- 门禁：busted 368 全绿、luacheck 0 警告、双语法哨兵、module-map 47 模块 0 孤儿、version-sync 通过。
+
 ### v9.5（2026-11-08）· weread-only 菜单补退出项
 
 > 收敛后的 weread-only 会话没有 KOReader 菜单，程序需要自己的出口。纯装配批（366 用例基线不变）。

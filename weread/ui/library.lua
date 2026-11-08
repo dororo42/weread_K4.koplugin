@@ -80,6 +80,12 @@ function M:showBookshelf()
                     pcall(function() self.library_db:cacheShelf(result.books) end)
                 end
                 ShelfTrim.mark_synced(self.settings, os.time())
+                -- v9.6: refresh the OPEN shelf view in place — re-run the
+                -- bucket split on the fresh list and rebuild the item table
+                -- (page-preserving via refresh()). No-op when the shelf
+                -- menu is closed (refreshShelfCacheIndicators guards).
+                self:_applyShelfBooks(result.books)
+                self:refreshShelfCacheIndicators()
                 logger.info("background shelf refresh: cached",
                     "books=", tostring(#result.books))
             elseif not ok then
@@ -131,6 +137,18 @@ end
 -- SQLite cache). Splits regular books / public accounts and shows them.
 function M:_presentShelf(all_books)
     self:closeBusy()
+    self:_applyShelfBooks(all_books)
+    if #self.shelf_mp > 0 then
+        self:showShelfTabs()
+    else
+        self:showShelfPage()
+    end
+end
+
+-- v9.6: bucket split + filter state, extracted from _presentShelf so the
+-- background sync can refresh the OPEN shelf view in place (see
+-- showBookshelf) without re-running the tab/page presentation.
+function M:_applyShelfBooks(all_books)
     local shelf = self.settings:get("shelf")
     self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
     self.shelf_regular = {}
@@ -143,11 +161,6 @@ function M:_presentShelf(all_books)
         end
     end
     self.shelf_books = self.shelf_regular
-    if #self.shelf_mp > 0 then
-        self:showShelfTabs()
-    else
-        self:showShelfPage()
-    end
 end
 
 local function sortBooks(books, sort_order)
@@ -187,7 +200,11 @@ function M:showShelfPage()
     end
     local menu, buildItems
     local function refresh()
-        menu:switchItemTable(nil, buildItems())
+        -- v9.6: keep the browsing page across rebuilds (cache-indicator
+        -- updates and background-sync redraws must not yank the user back
+        -- to page 1; the loaded-chunk state resets and re-extends lazily).
+        menu:switchItemTable(nil, buildItems(),
+            ShelfTrim.keep_page_itemnumber(menu.page, menu.perpage))
     end
     -- v9.2: chunked loading. The sorted list is built once per pass; each
     -- pass renders one chunk of matched books (per-book filter + downloaded

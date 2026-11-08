@@ -84,6 +84,21 @@ describe("weread.lib.shelf_trim", function()
         end)
     end)
 
+    describe("keep_page_itemnumber", function()
+        -- v9.6: the itemnumber that makes Menu:switchItemTable keep the
+        -- current page (nil resets to page 1; device menu.lua:1180-1204).
+        it("maps the first item of the current page", function()
+            assert.equals(29, ShelfTrim.keep_page_itemnumber(3, 14))
+            assert.equals(1, ShelfTrim.keep_page_itemnumber(1, 14))
+        end)
+
+        it("normalizes absurd inputs (page floor, perpage floor)", function()
+            assert.equals(1, ShelfTrim.keep_page_itemnumber(0, 14))
+            -- perpage clamps to 1: page 2's first item is item 2
+            assert.equals(2, ShelfTrim.keep_page_itemnumber(2, 0))
+        end)
+    end)
+
     describe("freshness", function()
         local saved_key
 

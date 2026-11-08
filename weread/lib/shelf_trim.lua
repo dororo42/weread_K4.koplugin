@@ -58,6 +58,16 @@ function M.take_chunk(sorted, matcher, start_index, chunk_size)
     return matched, false, nil
 end
 
+-- v9.6: the itemnumber that makes Menu:switchItemTable keep the current
+-- page during an in-place refresh (nil would reset to page 1 — device
+-- menu.lua:1180-1204). Page 1 of the reloaded data clamps identically when
+-- the fresh list is shorter than the loaded position.
+function M.keep_page_itemnumber(page, perpage)
+    page = math.max(1, tonumber(page) or 1)
+    perpage = math.max(1, tonumber(perpage) or 1)
+    return (page - 1) * perpage + 1
+end
+
 -- True when the cached shelf is young enough to skip a background sync.
 -- Corrupted or missing timestamps degrade to stale (sync runs).
 function M.is_fresh(settings, now)
