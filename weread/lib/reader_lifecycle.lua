@@ -6,6 +6,8 @@ local UIManager = require("ui/uimanager")
 local Event = require("ui/event")
 local PluginUtil = require("weread.lib.plugin_util")
 local GlobalState = require("weread.lib.global_state")
+-- v9.1 (K4weread): last-read WeRead book tracking (weread-only autostart).
+local LastRead = require("weread.lib.last_read")
 local WeRead = require("weread.lib.protocol")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
@@ -98,6 +100,15 @@ function M:onReaderReady()
     -- B4: open-speed instrumentation (entry / after progress sync / end).
     local perf_started = PluginUtil.reader_open_perf("reader_ready:start", nil)
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
+
+    -- v9.1 (K4weread): remember the last opened WeRead book so the
+    -- weread-only launch mode can reopen it directly (main.lua). Only books
+    -- detectWeReadBook recognizes count; non-WeRead documents never touch
+    -- the record. Best-effort: record() is pcall-guarded inside.
+    if self.ui.document and self.ui.document.file
+        and self:detectWeReadBook() then
+        LastRead.record(self.settings, self.ui.document.file)
+    end
 
     -- v5.0: apply a pending whole-book chapter jump now that the document has
     -- finished loading. jumpToChapter/openChapter record the chapter's

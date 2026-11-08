@@ -125,6 +125,15 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
+### v9.1（2026-11-08）· K4weread 真机反馈批：默认进上一本书 + 书架离线优先
+
+> 真机反馈（2026-11-08，K4 设备 crash.log 时间线定位）：v9.0 启动直达书架但书架先做在线 `/shelf/sync`（K4 上 TLS 往返秒级）导致"反应慢"，且用户期望默认直接进上一本阅读的书。新增 **10** 个用例（总计 **349**），luacheck 0 警告，module-map 46 模块 0 孤儿。
+
+- **默认打开上一本微信书**：新纯逻辑模块 `weread/lib/last_read.lua`（10 用例）——`onReaderReady` 在 `detectWeReadBook` 命中时记录 `weread_only_last = { path = ... }`（非微信读书文档永不改写记录）；weread-only autostart 优先重开该书（fs 存在性校验，文件消失/记录损坏/探测异常一律回退书架）。
+- **书架离线优先**：`showBookshelf` 有 SQLite 缓存时**立即呈现缓存书架**（零网络等待），在线 `/shelf/sync` 改为 0.5s 后台静默刷新、只更新缓存供下次打开使用；无缓存（首次 ever）保持原内联路径。离线失败分支与错误弹窗逻辑保持不变。
+- **autostart 提速**：延迟 1s → 0.2s（落在首个 UI 循环 tick 之后，文档打开直接替换刚绘制的文件管理器）。
+- 门禁：busted 349 全绿、luacheck 0 警告、双语法哨兵、module-map 46 模块 0 孤儿、version-sync 通过。
+
 ### v9.0（2026-11-08）· K4weread weread-only 启动模式
 
 > 配套新项目 [K4weread](https://github.com/dororo42/K4weread)（KUAL 扩展）：Kindle 桌面 → KUAL → K4weread → **Start WeRead only**，一键进入"只有微信读书 + 必要设置"的阅读程序。依据《K4weread 可行性评估报告》（2026-11-08，路线 A）。新增 **7** 个用例（总计 **339**），luacheck 0 警告，module-map 45 模块 0 孤儿。

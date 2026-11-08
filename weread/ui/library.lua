@@ -53,6 +53,32 @@ function M:showBookshelf()
     if not self:requireLogin(true, true) then
         return
     end
+    -- v9.1 (K4weread): offline-first. The SQLite-cached shelf (kept fresh by
+    -- every successful online load) paints immediately; the online
+    -- /shelf/sync runs in the background and only refreshes the cache for
+    -- the next open. Inline network before first paint was the measured K4
+    -- bookshelf lag (2026-11-08 device log: TLS round trip before
+    -- _presentShelf). No cache yet (first ever open) keeps the inline path.
+    local cached_shelf = self.library_db and self.library_db:getShelf() or nil
+    if type(cached_shelf) == "table" and #cached_shelf > 0 then
+        self:_presentShelf(cached_shelf)
+        UIManager:scheduleIn(0.5, function()
+            local ok, result = pcall(function()
+                return self.client:get_shelf()
+            end)
+            if ok and type(result) == "table"
+                and type(result.books) == "table" then
+                if self.library_db then
+                    pcall(function() self.library_db:cacheShelf(result.books) end)
+                end
+                logger.info("background shelf refresh: cached",
+                    "books=", tostring(#result.books))
+            elseif not ok then
+                logger.warn("background shelf refresh failed:", log_error(result))
+            end
+        end)
+        return
+    end
     self:showBusy(_("Loading bookshelf..."))
     self:runOnlineTask(_("Bookshelf"), function()
         local ok, result = pcall(function()

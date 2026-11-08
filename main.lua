@@ -10,6 +10,8 @@ local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
 -- v9.0 (K4weread): weread-only launch mode (marker flag consume + autostart).
 local OnlyMode = require("weread.lib.only_mode")
+-- v9.1 (K4weread): default entry reopens the last-read WeRead book.
+local LastRead = require("weread.lib.last_read")
 local PluginUtil = require("weread.lib.plugin_util")
 local PositionMapper = require("weread.lib.position_mapper")
 local ProgressSync = require("weread.lib.progress_sync")
@@ -30,10 +32,10 @@ local WeReadPlugin = WidgetContainer:extend{
     -- dialog then advertised v7.6 on a v8.1 device (welite report finding
     -- #1 / v2 report §3.2). self.version is what the in-plugin "About"
     -- dialog displays.
-    version = "0.6.0-k4-v9.0",
+    version = "0.6.0-k4-v9.1",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "64fc420",
+    build_commit = "2542fed",
 }
 
 function WeReadPlugin:onNetworkConnected()
@@ -246,16 +248,22 @@ function WeReadPlugin:init()
     -- touches /mnt/us/k4weread/launch.flag before starting KOReader; the
     -- first plugin instance to init consumes it (OneShot: FM instance runs
     -- first, Reader instances re-init per document open and must see the
-    -- armed state without the file) and opens the bookshelf. Deferred one
-    -- second: FM inits during FileManager construction, the bookshelf
-    -- widget must come up after the FM has finished rendering. The guard
-    -- skips the autostart when a document is already open (direct
-    -- koreader.sh <file> launches never carry the K4weread handshake).
-    -- Reader-side extras (Home -> bookshelf) live in initHotkeyOverride,
-    -- keyed off OnlyMode.is_active().
+    -- armed state without the file).
+    -- v9.1: the default entry is the LAST-READ WeRead book (recorded on
+    -- ReaderReady, see reader_lifecycle); the bookshelf is the fallback and
+    -- the Home destination. 0.2s lands just past the first UI loop tick so
+    -- the document open replaces the freshly painted file manager instead
+    -- of stacking a modal on half-built UI. The guard skips the autostart
+    -- when a document is already open (direct koreader.sh <file> launches
+    -- never carry the K4weread handshake). Reader-side extras (Home ->
+    -- bookshelf) live in initHotkeyOverride, keyed off OnlyMode.is_active().
     if OnlyMode.detect_and_consume() and not (self.ui and self.ui.document) then
-        UIManager:scheduleIn(1, function()
+        UIManager:scheduleIn(0.2, function()
+            local path = LastRead.pick(self.settings)
             local ok, result = xpcall(function()
+                if path then
+                    return self:openFile(path)
+                end
                 return self:showBookshelf()
             end, debug.traceback)
             if not ok then

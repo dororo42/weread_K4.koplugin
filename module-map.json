@@ -85,6 +85,11 @@
         "spec/ko_stats_spec.lua"
       ]
     },
+    "weread/lib/last_read.lua": {
+      "specs": [
+        "spec/last_read_spec.lua"
+      ]
+    },
     "weread/lib/library_db.lua": {
       "specs": [],
       "reason": "Device-only sqlite/ffi storage wrapper; requires the on-device database runtime. Schema behaviour is exercised on device; consumers (migrations, main wiring) are gated by luac -p and device smoke tests."
