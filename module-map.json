@@ -14,7 +14,9 @@
       "reason": "Declarative KOReader menu-order table (data, no logic); consumed by KOReader's menu framework on device."
     },
     "weread/lib/book_store.lua": {
-      "specs": ["spec/path_guard_spec.lua"]
+      "specs": [
+        "spec/path_guard_spec.lua"
+      ]
     },
     "weread/lib/client.lua": {
       "specs": [
@@ -34,20 +36,31 @@
       ]
     },
     "weread/lib/cookie.lua": {
-      "specs": ["spec/cookie_spec.lua", "spec/client_redirect_spec.lua"]
+      "specs": [
+        "spec/cookie_spec.lua",
+        "spec/client_redirect_spec.lua"
+      ]
     },
     "weread/lib/credential_store.lua": {
-      "specs": ["spec/credential_store_spec.lua", "spec/settings_spec.lua"]
+      "specs": [
+        "spec/credential_store_spec.lua",
+        "spec/settings_spec.lua"
+      ]
     },
     "weread/lib/crypto.lua": {
       "specs": [],
       "reason": "ffi-backed device-only primitives (LuaJIT ffi/libcrypto): cannot load under the plain Lua 5.1 spec runtime. Contract is pinned by spec/protocol_spec.lua via a deterministic stub, and the real implementations are exercised on device."
     },
     "weread/lib/downloader.lua": {
-      "specs": ["spec/downloader_resume_spec.lua", "spec/prefetch_guard_spec.lua"]
+      "specs": [
+        "spec/downloader_resume_spec.lua",
+        "spec/prefetch_guard_spec.lua"
+      ]
     },
     "weread/lib/footnotes.lua": {
-      "specs": ["spec/footnotes_spec.lua"]
+      "specs": [
+        "spec/footnotes_spec.lua"
+      ]
     },
     "weread/lib/foreground_barrier.lua": {
       "specs": [],
@@ -58,13 +71,19 @@
       "reason": "Trivial shared-state table holder (get/set of a single state table consumed by foreground_barrier/reader_lifecycle/ui.common); no branches to test."
     },
     "weread/lib/i18n.lua": {
-      "specs": ["spec/i18n_spec.lua"]
+      "specs": [
+        "spec/i18n_spec.lua"
+      ]
     },
     "weread/lib/ipv4_dns.lua": {
-      "specs": ["spec/ipv4_dns_spec.lua"]
+      "specs": [
+        "spec/ipv4_dns_spec.lua"
+      ]
     },
     "weread/lib/ko_stats.lua": {
-      "specs": ["spec/ko_stats_spec.lua"]
+      "specs": [
+        "spec/ko_stats_spec.lua"
+      ]
     },
     "weread/lib/library_db.lua": {
       "specs": [],
@@ -82,20 +101,37 @@
       "specs": [],
       "reason": "Trivial OOP helper (class/inherit one-liner); no branches."
     },
+    "weread/lib/only_mode.lua": {
+      "specs": [
+        "spec/only_mode_spec.lua"
+      ]
+    },
     "weread/lib/plugin_util.lua": {
-      "specs": ["spec/client_redirect_spec.lua", "spec/path_guard_spec.lua"]
+      "specs": [
+        "spec/client_redirect_spec.lua",
+        "spec/path_guard_spec.lua"
+      ]
     },
     "weread/lib/position_mapper.lua": {
-      "specs": ["spec/position_mapper_spec.lua"]
+      "specs": [
+        "spec/position_mapper_spec.lua"
+      ]
     },
     "weread/lib/progress_sync.lua": {
-      "specs": ["spec/progress_sync_spec.lua"]
+      "specs": [
+        "spec/progress_sync_spec.lua"
+      ]
     },
     "weread/lib/protocol.lua": {
-      "specs": ["spec/protocol_spec.lua"]
+      "specs": [
+        "spec/protocol_spec.lua"
+      ]
     },
     "weread/lib/qr_login.lua": {
-      "specs": ["spec/qr_login_spec.lua", "spec/remarkable_borrow_p1_spec.lua"]
+      "specs": [
+        "spec/qr_login_spec.lua",
+        "spec/remarkable_borrow_p1_spec.lua"
+      ]
     },
     "weread/lib/read_report.lua": {
       "specs": [
@@ -105,7 +141,9 @@
       ]
     },
     "weread/lib/read_stats.lua": {
-      "specs": ["spec/ko_stats_spec.lua"]
+      "specs": [
+        "spec/ko_stats_spec.lua"
+      ]
     },
     "weread/lib/reader_lifecycle.lua": {
       "specs": [],
@@ -120,16 +158,24 @@
       "reason": "Device-only directory scan for cache cleanup (consumed by ui.cache); touches the on-device cache tree layout. Path traversal safety is covered by spec/path_guard_spec.lua which gates the shared path utilities it uses."
     },
     "weread/lib/settings.lua": {
-      "specs": ["spec/settings_spec.lua"]
+      "specs": [
+        "spec/settings_spec.lua"
+      ]
     },
     "weread/lib/stats_ledger.lua": {
-      "specs": ["spec/stats_ledger_spec.lua"]
+      "specs": [
+        "spec/stats_ledger_spec.lua"
+      ]
     },
     "weread/lib/strict_wifi.lua": {
-      "specs": ["spec/strict_wifi_spec.lua"]
+      "specs": [
+        "spec/strict_wifi_spec.lua"
+      ]
     },
     "weread/ui/cache.lua": {
-      "specs": ["spec/path_guard_spec.lua"]
+      "specs": [
+        "spec/path_guard_spec.lua"
+      ]
     },
     "weread/ui/common.lua": {
       "specs": [],
@@ -144,14 +190,18 @@
       "reason": "KOReader end-of-book dialog widget: presentation-only, actions delegate to progress_sync/reader_navigation which carry their own specs."
     },
     "weread/ui/footer_indicator.lua": {
-      "specs": ["spec/footer_indicator_spec.lua"]
+      "specs": [
+        "spec/footer_indicator_spec.lua"
+      ]
     },
     "weread/ui/library.lua": {
       "specs": [],
       "reason": "KOReader bookshelf UI: presentation over weread.lib.book_store/content (both spec-covered); interactive behaviour verified on device."
     },
     "weread/ui/login_hint.lua": {
-      "specs": ["spec/login_hint_spec.lua"]
+      "specs": [
+        "spec/login_hint_spec.lua"
+      ]
     },
     "weread/ui/menu.lua": {
       "specs": [],

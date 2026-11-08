@@ -8,6 +8,8 @@ local Downloader = require("weread.lib.downloader")
 local LibraryDB = require("weread.lib.library_db")
 local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
+-- v9.0 (K4weread): weread-only launch mode (marker flag consume + autostart).
+local OnlyMode = require("weread.lib.only_mode")
 local PluginUtil = require("weread.lib.plugin_util")
 local PositionMapper = require("weread.lib.position_mapper")
 local ProgressSync = require("weread.lib.progress_sync")
@@ -28,10 +30,10 @@ local WeReadPlugin = WidgetContainer:extend{
     -- dialog then advertised v7.6 on a v8.1 device (welite report finding
     -- #1 / v2 report §3.2). self.version is what the in-plugin "About"
     -- dialog displays.
-    version = "0.6.0-k4-v8.4",
+    version = "0.6.0-k4-v9.0",
     -- F-07: short hash of the commit the current release batch is based on
     -- (updated at every release bump; purely diagnostic).
-    build_commit = "ca8b322",
+    build_commit = "64fc420",
 }
 
 function WeReadPlugin:onNetworkConnected()
@@ -240,6 +242,27 @@ function WeReadPlugin:init()
     UIManager:scheduleIn(0, function()
         self:initHotkeyOverride()
     end)
+    -- v9.0 (K4weread): weread-only launch mode. The K4weread KUAL extension
+    -- touches /mnt/us/k4weread/launch.flag before starting KOReader; the
+    -- first plugin instance to init consumes it (OneShot: FM instance runs
+    -- first, Reader instances re-init per document open and must see the
+    -- armed state without the file) and opens the bookshelf. Deferred one
+    -- second: FM inits during FileManager construction, the bookshelf
+    -- widget must come up after the FM has finished rendering. The guard
+    -- skips the autostart when a document is already open (direct
+    -- koreader.sh <file> launches never carry the K4weread handshake).
+    -- Reader-side extras (Home -> bookshelf) live in initHotkeyOverride,
+    -- keyed off OnlyMode.is_active().
+    if OnlyMode.detect_and_consume() and not (self.ui and self.ui.document) then
+        UIManager:scheduleIn(1, function()
+            local ok, result = xpcall(function()
+                return self:showBookshelf()
+            end, debug.traceback)
+            if not ok then
+                logger.warn("weread-only autostart failed:", tostring(result))
+            end
+        end)
+    end
     -- F-07 (2026-10-05 audit): device crash logs had no way to map log line
     -- numbers back to a source revision (79-line drift between the v7.0
     -- device build and HEAD). Log the release-base commit alongside the

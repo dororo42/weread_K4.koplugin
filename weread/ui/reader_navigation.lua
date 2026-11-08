@@ -1,6 +1,8 @@
 -- End-of-book navigation dialog integration.
 local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
 local PluginUtil = require("weread.lib.plugin_util")
+-- v9.0 (K4weread): weread-only launch mode session state.
+local OnlyMode = require("weread.lib.only_mode")
 local WeRead = require("weread.lib.protocol")
 
 local _ = PluginUtil.tr
@@ -49,6 +51,30 @@ function M:initHotkeyOverride()
             end
         end
         return orig(hotkeys_self, hotkey)
+    end
+
+    -- v9.0 (K4weread): in weread-only mode, Home opens the bookshelf instead
+    -- of the file manager. Plain Home is not in hotkeys.koplugin's defaults
+    -- (verified against KOReader v2026.07: ReaderUI registers key_events.Home
+    -- itself — readerui.lua:551 — and onHome -> onClose + showFileManager,
+    -- :929), so the interception point is a ReaderUI instance-method wrap,
+    -- the same pattern as the hotkeys wrap above. The bookshelf opens over
+    -- the reading view (document stays open, progress untouched); Back
+    -- returns to the reading position. Guarded: without an onHome surface
+    -- the stock behavior is kept.
+    if OnlyMode.is_active() and type(self.ui.onHome) == "function" then
+        local orig_home = self.ui.onHome
+        self.ui.onHome = function(readerui_self, ...)
+            local logger = require("weread.lib.logger")
+            local ok, result = xpcall(function()
+                return self:showBookshelf()
+            end, debug.traceback)
+            if not ok then
+                logger.err("weread-only Home failed:", tostring(result))
+                return orig_home(readerui_self, ...)
+            end
+            return result
+        end
     end
 end
 

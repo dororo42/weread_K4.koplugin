@@ -125,6 +125,17 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ## 版本变更日志
 ## 版本变更日志
 
+### v9.0（2026-11-08）· K4weread weread-only 启动模式
+
+> 配套新项目 [K4weread](https://github.com/dororo42/K4weread)（KUAL 扩展）：Kindle 桌面 → KUAL → K4weread → **Start WeRead only**，一键进入"只有微信读书 + 必要设置"的阅读程序。依据《K4weread 可行性评估报告》（2026-11-08，路线 A）。新增 **7** 个用例（总计 **339**），luacheck 0 警告，module-map 45 模块 0 孤儿。
+
+- **weread-only 标记握手**：新模块 `weread/lib/only_mode.lua`（纯逻辑，7 用例）——消费 K4weread 扩展启动前落下的 `/mnt/us/k4weread/launch.flag`（读+删，一次 KOReader 会话只认一次；FM→Reader 实例交接靠模块级会话态，后续 init 不再触盘）。全部 fs 访问经可注入 `M._fs` 面 + pcall 守卫，探测异常一律保持正常模式，绝不破坏插件加载（同 credential_store 探测姿态）。标记路径与 K4weread 仓 `kual/bin/k4weread.sh` 双向字面量同步（对方仓 `check_marker_path.py` + 本注释钉死）。
+- **启动直达书架**：`main.lua` init 消费标记成功且无已打开文档时，延迟 1 秒（等 FileManager 构造完成）自动打开书架；xpcall 守卫，失败仅告警。
+- **Home → 书架（仅 weread-only 会话）**：`reader_navigation.initHotkeyOverride` 增补 `ReaderUI.onHome` 实例方法 wrap——单键 Home 不在 hotkeys.koplugin 绑定内（KOReader v2026.07 设备源码实证：`readerui.lua:551` key_events.Home、`:929` onHome→showFileManager），拦截点与既有 hotkeys wrap 同模式。书架盖在阅读视图上（不关书、进度不动），Back 返回阅读位。无 onHome 面或 xpcall 失败时回落原行为。
+- **快捷键保留**：本模式仅重定义 Home 一条（原文件管理器 → 书架）；其余 14 条（含 ScreenKB+Down 快捷菜单）结构性继承，速查表见上文。
+- **已知边界**：Back 关书后落 KOReader 文件管理器（非书架，跨实例交接留待后续）；Menu 仍为 KOReader 全量菜单（微信读书置顶）。降级兼容：插件 < v9.0 时 K4weread 扩展仍可当普通 KOReader 快捷入口。
+- 门禁：busted 339 全绿、luacheck 0 警告、双语法哨兵、module-map 45 模块 0 孤儿、version-sync 通过。
+
 ### v8.4（2026-10-31）· 热修重打包（原 v8.3.1）
 
 - **回退 N2 `create=tcp4`**：自定义 create 绕过 LuaSec 包装，明文 socket 直发 443 → 设备全请求 400（"plain HTTP request sent to HTTPS port"），10/31 实机复现后回退。E3 冻结根治改期（需 create 返回 LuaSec 包装 socket）。
