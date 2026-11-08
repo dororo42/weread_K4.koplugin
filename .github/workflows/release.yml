@@ -1,0 +1,38 @@
+name: release
+
+# Release assets are produced ONLY here (never by hand on a workstation).
+# Pushing a v* tag builds weread_K4.koplugin-v<ver>.zip + .sha256 and
+# publishes both as GitHub Release assets.
+# build_release.sh refuses a dirty worktree or a HEAD that differs from the
+# tag, so fetch-depth: 0 is required for the tag ref to be resolvable.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release package (zip + sha256)
+        run: bash tools/build_release.sh
+
+      - name: Verify checksum
+        run: sha256sum -c weread_K4.koplugin-v*.zip.sha256
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            weread_K4.koplugin-v*.zip weread_K4.koplugin-v*.zip.sha256 \
+            --verify-tag \
+            --title "weread_K4 ${GITHUB_REF_NAME}" \
+            --notes "weread_K4 ${GITHUB_REF_NAME} — assets built by the release workflow from the tagged commit."

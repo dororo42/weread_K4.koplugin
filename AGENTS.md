@@ -63,6 +63,6 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 - Latest: `handoffs/2026-11-08-172106-weread-k4-v9-7-sync/HANDOFF.md`
 - Branch: main @ b82d7ed
-- Status: 审查修复批次（2026-11-08）已完成并提交；P1-A 及绑定修复（`d644920` / `b82d7ed`）属未发版工程提交，`tag v9.7` 才是已发布版本，`tools/build_release.sh` 会拒绝非干净/非 tag 的 HEAD 打包；并发写入者已完成，工作区收敛。详见该 HANDOFF.md 末尾「审查后修复批次」。
+- Status: v9.8 发布批次（2026-11-08）：`0.6.0-k4-v9.8` 已递增，`tag v9.8` 与 GitHub Release 资产由 `release.yml` workflow 产出；`tools/build_release.sh` 仍拒绝非干净/非 tag 的 HEAD 打包。K4（B00E）已部署，K4B（B023）仍为 v8.4 待升级；真机 D1–D9 待按键验收。详见该 HANDOFF.md 末尾「审查后修复批次」。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
