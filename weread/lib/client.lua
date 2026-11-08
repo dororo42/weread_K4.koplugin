@@ -426,13 +426,17 @@ function Client:request(opts)
             response = {}
             if max_bytes then
                 local received = 0
-                sink_to_use = function(chunk)
-                    received = received + #chunk
-                    if received > max_bytes then
-                        error("binary response exceeds the "
-                            .. tostring(max_bytes) .. "-byte limit")
+                sink_to_use = function(chunk, err)
+                    if err then return nil, err end
+                    if chunk then
+                        received = received + #chunk
+                        if received > max_bytes then
+                            error("binary response exceeds the "
+                                .. tostring(max_bytes) .. "-byte limit")
+                        end
+                        table.insert(response, chunk)
                     end
-                    table.insert(response, chunk)
+                    return 1
                 end
             else
                 sink_to_use = socketutil.table_sink(response)

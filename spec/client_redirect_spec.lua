@@ -377,7 +377,8 @@ describe("Client:get_binary bounded download + per-hop validation (N-1)", functi
                 return nil, response.error
             end
             if response.body and opts.sink then
-                opts.sink(response.body)
+                assert.equals(1, opts.sink(response.body))
+                assert.equals(1, opts.sink(nil))
             end
             return true, response.code, response.headers or {}, tostring(response.code)
         end

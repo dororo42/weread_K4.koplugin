@@ -1,19 +1,8 @@
--- k4tls.lua — k4tls（rustls C ABI 库）的 LuaJIT FFI 绑定 + socket.http 兼容适配层。
--- 放置于 weread_K4.koplugin 的 weread/lib/ 下；被 client.lua 通过
--- weread.lib.transport 选择调用。设计约束见 K4WereadRust 仓 docs/INTEGRATION.md：
---   * 返回形状与 socket.http request(req_opts) 兼容：成功 (1, code, headers)；
---     失败 (1, nil, err) —— err 文本映射到 client.lua 现有重试分类（F-23/B-3）。
---   * 超时/限额语义对齐 socketutil：req_opts.block_timeout / total_timeout /
---     transport_max_bytes 由 client.lua 注入，luasocket 路径忽略之。
---   * 默认回退 LuaSec：k4tls .so 加载失败、ffi 不可用或后端被强制 "luasec"
---     时走 socket.http 原路径（R2 回退开关）。真机 bench（R4）通过前默认关闭。
--- 纯函数部分（headers/错误映射/sink 适配）不依赖 ffi，可在 host lua5.1 测试。
+-- k4tls 的 LuaJIT FFI 绑定；成功 (1, code, headers)，失败 (nil, err)。
 
 local M = {
     _NAME = "weread.lib.k4tls",
-    -- 后端选择：auto（可加载则用 k4tls）| luasec（强制原路径）。设备上可用
-    -- settings.reader.lua 的 weread_tls_backend 或环境变量 WEREAD_TLS_BACKEND 覆盖。
-    backend = "auto",
+    backend = "luasec",
     -- 库句柄（测试注入点）：非空时跳过 ffi.load
     _lib = nil,
     _loaded = false,
@@ -88,7 +77,8 @@ function M.source_to_body(source)
     if not source then return nil end
     local chunks = {}
     while true do
-        local chunk = source()
+        local chunk, err = source()
+        if err then return nil, err end
         if not chunk then break end
         chunks[#chunks + 1] = chunk
     end
@@ -140,7 +130,7 @@ function M._load(ffi)
     if dir then
         search[#search + 1] = dir .. "/libk4tls.so"
     end
-    for _i, name in ipairs(search) do
+    for _, name in ipairs(search) do
         local ok, handle = pcall(ffi.load, name)
         if ok and handle then
             cdef(ffi)
@@ -166,25 +156,21 @@ function M.version()
     return ffi.string(M._lib.k4tls_version())
 end
 
--- ---------------------------------------------------------------------------
--- socket.http 兼容请求入口
--- 返回：成功 (1, code, headers_table, status_line)；失败 (1, nil, err)
--- TOO_LARGE 与 Lua 有界 sink 同形：直接 raise（client.lua 的 pcall 捕获）。
--- ---------------------------------------------------------------------------
 function M.request(req_opts)
     if not M.is_available() then
-        return nil, nil, "k4tls unavailable" -- 调用方（transport 层）应回退 luasocket
+        return nil, "k4tls unavailable"
     end
     local ffi = require("ffi")
     local lib = M._lib
 
     local url = req_opts.url
     if type(url) ~= "string" or url:sub(1, 8) ~= "https://" then
-        return 1, nil, "k4tls: non-https url rejected"
+        return nil, "k4tls: non-https url rejected"
     end
     local method = req_opts.method or "GET"
     local header_list, nheaders = M.headers_table_to_list(req_opts.headers)
-    local body = M.source_to_body(req_opts.source)
+    local body, source_err = M.source_to_body(req_opts.source)
+    if source_err then return nil, source_err end
 
     local block_ms = tonumber(req_opts.block_timeout) or 8
     local total_ms = tonumber(req_opts.total_timeout) or block_ms * 2
@@ -218,36 +204,42 @@ function M.request(req_opts)
 
     local resp = ffi.new("k4tls_response_t")
     local rc = lib.k4tls_perform(req, resp)
-    local status = resp.status
-    local body_len = tonumber(resp.body_len)
-    local body_data = nil
-    if resp.body ~= nil and body_len > 0 then
-        body_data = ffi.copy(resp.body, body_len)
-    end
-    local blob = nil
-    if resp.headers_blob ~= nil then
-        blob = ffi.string(resp.headers_blob)
-    end
-    local err = ffi.string(resp.err)
-    lib.k4tls_free_response(resp)
-
     if rc ~= 0 then
-        -- -1 参数非法 / -99 内部 panic：不出 HTTP 语义
-        return 1, nil, "k4tls perform rc=" .. tostring(rc) .. (err ~= "" and (": " .. err) or "")
+        local err = ffi.string(resp.err)
+        return nil, "k4tls perform rc=" .. tostring(rc) .. (err ~= "" and (": " .. err) or "")
     end
+
+    ffi.gc(resp, lib.k4tls_free_response)
+    local copied, status, body_data, blob, err = pcall(function()
+        local body_len = tonumber(resp.body_len)
+        local data, headers_blob
+        if resp.body ~= nil and body_len > 0 then
+            data = ffi.string(resp.body, body_len)
+        end
+        if resp.headers_blob ~= nil then
+            headers_blob = ffi.string(resp.headers_blob)
+        end
+        return tonumber(resp.status), data, headers_blob, ffi.string(resp.err)
+    end)
+    lib.k4tls_free_response(resp)
+    ffi.gc(resp, nil)
+    if not copied then error(status, 0) end
+
     if status < 0 then
         if status == -16 then
-            -- 与 client.lua 有界 sink 同消息 → PluginUtil 分类一致
-            error("binary response exceeds the " .. tostring(max_bytes) .. "-byte limit")
+            return nil, "binary response exceeds the " .. tostring(max_bytes) .. "-byte limit"
         end
-        return 1, nil, M.error_text(status, err)
+        return nil, M.error_text(status, err)
     end
 
     local headers = M.headers_blob_to_table(blob)
     if req_opts.sink then
         if body_data and #body_data > 0 then
-            req_opts.sink(body_data)
+            local ok, sink_err = req_opts.sink(body_data)
+            if not ok then return nil, sink_err end
         end
+        local ok, sink_err = req_opts.sink(nil)
+        if not ok then return nil, sink_err end
     end
     return 1, status, headers, nil
 end
@@ -257,7 +249,7 @@ function M.select(backend)
     local chosen = backend or M.backend
     local env = os.getenv and os.getenv("WEREAD_TLS_BACKEND") or nil
     if env and env ~= "" then chosen = env end
-    if chosen == "luasec" then
+    if chosen ~= "auto" and chosen ~= "k4tls" then
         return nil, "backend forced to luasec"
     end
     if not M.is_available() then
