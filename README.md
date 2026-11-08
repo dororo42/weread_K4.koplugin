@@ -127,11 +127,11 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 ### v9.4（2026-11-08）· 首启逻辑修复：未登录设备直达二维码登录
 
-> 用户逻辑评审发现：全新设备（从未登录）weread-only 首启时，无上一本书 → 回退书架，但书架被 `requireLogin` 门控、自身不可达，登录提示只是失败副作用。新增 **4** 个用例（总计 **370**）。
+> 用户逻辑评审发现：全新设备（从未登录）weread-only 首启时，无上一本书 → 回退书架，但书架被 `requireLogin` 门控、自身不可达，登录提示只是失败副作用。新增 **4** 个用例（总计 **366**）。
 
 - **入口三分决策**：`last_read.pick_entry`（纯函数，4 用例）——**有可读的上一本书 → 直接开书**（读缓存书本不要求登录，book 优先于 login）；**未登录（缺 cookie 或 api key，与 requireLogin(true,true) 同判）→ 显式直达 `qr_login:start()` 二维码登录**（离线时有 showOffline 兜底对话框）；已登录无记录 → 书架。autostart 不再有隐式失败链。
 - 登录成功后的流程不变：Home=书架、Menu=微信读书菜单、关书回书架，全部照常。
-- 门禁：busted 370 全绿、luacheck 0 警告、双语法哨兵、module-map 47 模块 0 孤儿、version-sync 通过。
+- 门禁：busted 366 全绿、luacheck 0 警告、双语法哨兵、module-map 47 模块 0 孤儿、version-sync 通过。
 
 ### v9.3（2026-11-08）· weread-only 收口批：关书直达书架 + Menu 收敛
 
