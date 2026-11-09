@@ -11,6 +11,9 @@ local M = {
 -- ---------------------------------------------------------------------------
 -- 纯函数：错误码 → luasocket 语义文本（client.lua 重试分类的词表见
 -- plugin_util.TRANSIENT_TRANSPORT_PATTERNS 与 ipv4_dns.RESOLUTION_ERROR_PATTERNS）
+--
+-- -18/-19 是确定性参数错误：文本刻意不含任何词表关键词，也不拼接 detail
+-- （detail 可能含调用方传入的 URL/请求头），否则会被误判为可重试故障。
 -- ---------------------------------------------------------------------------
 
 local ERR_TEXT = {
@@ -21,6 +24,8 @@ local ERR_TEXT = {
     [-14] = "closed (k4tls write)",
     [-15] = "closed (k4tls read)",
     [-17] = "certificate verify failed (k4tls)",
+    [-18] = "k4tls invalid or unsupported url",
+    [-19] = "k4tls invalid request",
     [-99] = "k4tls internal error",
 }
 
@@ -30,7 +35,7 @@ function M.error_text(status, detail)
     if not base then
         return string.format("k4tls unknown error %d", status)
     end
-    if detail and detail ~= "" then
+    if status ~= -18 and status ~= -19 and detail and detail ~= "" then
         return base .. ": " .. tostring(detail)
     end
     return base
