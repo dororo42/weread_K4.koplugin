@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v9.8）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v9.9）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -110,7 +110,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v9.8）          （菜单末尾）
+└── 关于（v0.6.0-k4-v9.9）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -125,9 +125,9 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 ## 版本变更日志
 
-### 未发版修复（2026-11-10）· 登录恢复链三处断点 + 续期假阳性防护
+### v9.9（2026-11-10）· 登录恢复链三处断点修复 + 续期假阳性防护
 
-> 设备 K5 实证（2026-11-09）：服务器侧会话销毁（`-2012 登录超时`）后，renewal 端点仍返回 `succ=1` + 8 字符无效 wr_skey——UI 报「续期成功」但后续请求全被拒；重新扫码登录成功后，footer「登录已过期」常显永不解除，且时长上报停（`account_cleared`）无人重启。此修复**未发版**（版本仍 `0.6.0-k4-v9.8`），随下一批次发版；已部署 K5 runtime（md5 逐字校验），KOReader 重启后生效。
+> 设备 K5 实证（2026-11-09）：服务器侧会话销毁（`-2012 登录超时`）后，renewal 端点仍返回 `succ=1` + 8 字符无效 wr_skey——UI 报「续期成功」但后续请求全被拒；重新扫码登录成功后，footer「登录已过期」常显永不解除，且时长上报停（`account_cleared`）无人重启。本批随 `v9.9` 发版（`_meta.lua` / `main.lua` 递增，`build_commit = ebe8f0f`）；已于发版前部署 K5 runtime 并真机验证（23:40 read report success，footer 恢复 KOReader 默认）。
 
 - **续期假阳性**：`client.lua` 增 `RENEWAL_MIN_SKEY_LENGTH(16)` + `renewal_skey_value` helper（支持重复 Set-Cookie 头 table 形态）；`succ=1` 无可用 skey 判 `expired`；`stale` 分支共用 helper；顺带删除失败路径死赋值 `_renewal_outcome`（2026-11-09 审查 🟢-1）。
 - **restore 边沿**：`read_report.lua` 的 `reset_failure_streak('relogin')` 清锁存时同步触发 `on_session_restored`（exactly-once）——修复「relogin 先清锁存导致 accepted-report 边沿永不成立」的缺陷。
@@ -135,9 +135,9 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 - **续期 UI 解除**：`common.lua` 的 `renewCookieWithUI` 成功后 `reset_failure_streak('relogin')`（真成功才走到——假阳性已被上游拦截）。
 - **测试**：TDD 红基线 8 例全转绿；全套 **453** 用例 CI 全绿（run `42720908234`）；`luac -p` / version-sync / module-map 门禁通过。附带修正 `spec/transport_spec.lua` 2 例与 P1-A 收敛提交（`ed9c5da`）的语义对齐缺口（`d833874`，CI run `42720515059` 暴露）。
 
-### 未发版修复（2026-11-08 晚）· 二维码登录退出机制
+### v9.9（2026-11-10）· 二维码登录退出机制（随本版正式入库）
 
-> 用户真机反馈：Cookie 续期重新扫码、首次登录弹二维码时，不扫码无法退出。此修复**未发版**（`_meta.lua` / `main.lua` 仍为 `0.6.0-k4-v9.8`），随下一批次发版。
+> 用户真机反馈：Cookie 续期重新扫码、首次登录弹二维码时，不扫码无法退出。随 `v9.9` 发版正式入库。
 
 - **根因**：设备侧 `QRMessage` 是 modal `InputContainer`，其 `init()` 用 `AnyKeyPressed` 吞掉所有按键且仅关窗；项目侧没有绑定任何退出动作。首次登录发生在无文档的 FM 上下文，weread-only 收敛菜单（含 `Exit KOReader`）不可达，用户不扫码只能等 300s 超时。
 - **修复**：`qr_login.lua` 的 `_show_qr` 覆盖 `key_events` 为 `Close`（Back → 取消）与 `ExitApp`（Menu → 先 `cancel()` 再广播原生 `Exit` 事件），按真机 `readermenu.lua` 的两层绑定格式；显示时给出按键提示。取消走 `cancel()` 递增 generation，已排队的 0.5s 轮询全部成为 no-op。
