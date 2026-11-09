@@ -98,7 +98,14 @@ describe("weread.lib.transport deterministic selection", function()
             transport.backend = chosen
             local backend, reason = transport.resolve()
             assert.is_nil(backend)
-            assert.equals("luasec-fallback", reason)
+            -- k4tls-unavailable-fallback (2026-11-10, P1-A WIP alignment):
+            -- an EXPLICIT k4tls selection that cannot load must keep a
+            -- searchable reason so the deploy/gate check does not mistake
+            -- it for a normal LuaSec success; auto keeps luasec-fallback.
+            local expected_reason = chosen == "k4tls"
+                and "k4tls-unavailable-fallback" or "luasec-fallback"
+            assert.equals(expected_reason, reason)
+            assert.equals(expected_reason, transport.last_reason)
             check_request(transport, false)
         end)
         it("falls back if " .. chosen .. " cannot load the k4tls module", function()
@@ -107,7 +114,9 @@ describe("weread.lib.transport deterministic selection", function()
             transport.backend = chosen
             local backend, reason = transport.resolve()
             assert.is_nil(backend)
-            assert.equals("luasec-fallback", reason)
+            local expected_reason = chosen == "k4tls"
+                and "k4tls-unavailable-fallback" or "luasec-fallback"
+            assert.equals(expected_reason, reason)
             check_request(transport, false)
             assert.equals(0, state.probes)
         end)
