@@ -125,6 +125,16 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 ## 版本变更日志
 
+### 未发版修复（2026-11-10）· 登录恢复链三处断点 + 续期假阳性防护
+
+> 设备 K5 实证（2026-11-09）：服务器侧会话销毁（`-2012 登录超时`）后，renewal 端点仍返回 `succ=1` + 8 字符无效 wr_skey——UI 报「续期成功」但后续请求全被拒；重新扫码登录成功后，footer「登录已过期」常显永不解除，且时长上报停（`account_cleared`）无人重启。此修复**未发版**（版本仍 `0.6.0-k4-v9.8`），随下一批次发版；已部署 K5 runtime（md5 逐字校验），KOReader 重启后生效。
+
+- **续期假阳性**：`client.lua` 增 `RENEWAL_MIN_SKEY_LENGTH(16)` + `renewal_skey_value` helper（支持重复 Set-Cookie 头 table 形态）；`succ=1` 无可用 skey 判 `expired`；`stale` 分支共用 helper；顺带删除失败路径死赋值 `_renewal_outcome`（2026-11-09 审查 🟢-1）。
+- **restore 边沿**：`read_report.lua` 的 `reset_failure_streak('relogin')` 清锁存时同步触发 `on_session_restored`（exactly-once）——修复「relogin 先清锁存导致 accepted-report 边沿永不成立」的缺陷。
+- **登录完成收尾**：`qr_login.lua` 完成后 `maybe_start('relogin')` 重启被停止的 report + 无条件 `LoginHint.hide` 兜底（nil-safe 幂等）。
+- **续期 UI 解除**：`common.lua` 的 `renewCookieWithUI` 成功后 `reset_failure_streak('relogin')`（真成功才走到——假阳性已被上游拦截）。
+- **测试**：TDD 红基线 8 例全转绿；全套 **453** 用例 CI 全绿（run `42720908234`）；`luac -p` / version-sync / module-map 门禁通过。附带修正 `spec/transport_spec.lua` 2 例与 P1-A 收敛提交（`ed9c5da`）的语义对齐缺口（`d833874`，CI run `42720515059` 暴露）。
+
 ### 未发版修复（2026-11-08 晚）· 二维码登录退出机制
 
 > 用户真机反馈：Cookie 续期重新扫码、首次登录弹二维码时，不扫码无法退出。此修复**未发版**（`_meta.lua` / `main.lua` 仍为 `0.6.0-k4-v9.8`），随下一批次发版。
