@@ -673,6 +673,26 @@ function QRLogin:_complete(login_result, generation)
             pcall(self.host.read_report.reset_failure_streak,
                 self.host.read_report, "relogin")
         end
+        -- 2026-11-10 (device K5): the account-clear that precedes a
+        -- deliberate re-login stops the report entirely; completion must
+        -- re-arm it, or reading time keeps accumulating with no tick until
+        -- the next document open. maybe_start is a no-op without a live
+        -- book target (e.g. shelf-context login).
+        if self.host.read_report
+                and type(self.host.read_report.maybe_start) == "function" then
+            pcall(self.host.read_report.maybe_start,
+                self.host.read_report, "relogin")
+        end
+        -- 2026-11-10 (device K5): unconditional footer-hint teardown. The
+        -- restore edge can miss a relogin — the streak reset clears the
+        -- latched state BEFORE any later accepted report could flip the
+        -- was_session_expired guard, leaving the persisted hint stuck on
+        -- the footer. hide() is nil-safe (no snapshot / no footer ->
+        -- no-op); require on demand so leaner spec stubs still load.
+        local ok_hint, LoginHint = pcall(require, "weread/ui/login_hint")
+        if ok_hint and type(LoginHint.hide) == "function" then
+            pcall(LoginHint.hide, self.host.ui)
+        end
         self.host:refreshLoginMenu()
         self.host:showInfo(T(
             _("WeRead login successful.\n\nAccount: %1\nCookie: %2\nOfficial API key: %3"),

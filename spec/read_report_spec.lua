@@ -449,3 +449,30 @@ describe("ReadReport auth pause survives network recovery (F-06)", function()
         assert.equals(0, report.consecutive_failures)
     end)
 end)
+
+-- 2026-11-10 (device K5): a QR re-login clears the expired-session latch in
+-- reset_failure_streak, so the accepted-report edge in _record_success can
+-- never fire afterwards (was_session_expired is already false) — the
+-- persisted footer hint stayed stuck forever. A re-login is a known recovery
+-- signal and must fire the restore edge itself.
+describe("ReadReport relogin restore edge (2026-11-10 footer-stuck fix)", function()
+    it("reset_failure_streak('relogin') clears the latch AND fires on_session_restored once", function()
+        local report = new_report()
+        local restored = 0
+        report.on_session_restored = function() restored = restored + 1 end
+        report:_set_error("errCode=-2012", "auth", "x:")
+        assert.is_true(report.session_expired)
+        report:reset_failure_streak("relogin")
+        assert.is_false(report.session_expired)
+        assert.equals(1, restored)
+    end)
+
+    it("a relogin with no latched expired-state fires nothing", function()
+        local report = new_report()
+        local restored = 0
+        report.on_session_restored = function() restored = restored + 1 end
+        report:reset_failure_streak("relogin")
+        assert.is_false(report.session_expired)
+        assert.equals(0, restored)
+    end)
+end)

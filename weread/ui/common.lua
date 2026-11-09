@@ -252,6 +252,17 @@ function M:renewCookieWithUI()
     end
     self:runNetworkAction(_("Renew cookie"), function()
         self.client:renew_cookie()
+        -- 2026-11-10 (device K5): a confirmed renewal restores the session —
+        -- clear the auth-shaped pause and the latched expired-state the same
+        -- way a re-login does; reset_failure_streak fires the footer-hint
+        -- teardown via on_session_restored. The false-positive guard lives
+        -- in renew_cookie: a succ=1 without a usable wr_skey now raises, so
+        -- this path only runs for a genuinely recovered session.
+        if self.read_report
+                and type(self.read_report.reset_failure_streak) == "function" then
+            pcall(self.read_report.reset_failure_streak,
+                self.read_report, "relogin")
+        end
         logger.info("cookie renewed")
         return _("WeRead cookie renewed.")
     end)

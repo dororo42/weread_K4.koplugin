@@ -8,11 +8,11 @@
 -- fired from onCloseWidget.
 
 local qr_widgets = {}
-local ui_calls = { shown = {}, closed = {}, broadcasts = {}, scheduled = {}, transients = {} }
+local ui_calls = { shown = {}, closed = {}, broadcasts = {}, scheduled = {}, transients = {}, hint_hides = 0 }
 
 local function reset_ui_calls()
     qr_widgets = {}
-    ui_calls = { shown = {}, closed = {}, broadcasts = {}, scheduled = {}, transients = {} }
+    ui_calls = { shown = {}, closed = {}, broadcasts = {}, scheduled = {}, transients = {}, hint_hides = 0 }
 end
 
 package.preload["device"] = function()
@@ -43,6 +43,12 @@ package.preload["ui/widget/qrmessage"] = function()
             qr_widgets[#qr_widgets + 1] = widget
             return widget
         end,
+    }
+end
+package.preload["weread/ui/login_hint"] = function()
+    return {
+        hide = function() ui_calls.hint_hides = (ui_calls.hint_hides or 0) + 1 end,
+        show = function() end,
     }
 end
 package.preload["ui/uimanager"] = function()
@@ -217,5 +223,55 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
         dialog:onCloseWidget()
 
         assert.equals(2, obj.generation)
+    end)
+end)
+
+-- 2026-11-10 (device K5): a deliberate re-login stops the report with
+-- reason=account_cleared, and the relogin path clears the expired-session
+-- latch BEFORE any later accepted report — so the persisted footer hint
+-- stayed stuck forever and reading time kept accumulating with no tick.
+-- Login completion must re-arm the report and tear the hint down itself.
+describe("QRLogin completion teardown (2026-11-10 footer-stuck fix)", function()
+    local host, qr
+
+    before_each(function()
+        reset_ui_calls()
+        local report = {
+            reset_failure_streak = function(_s, reason)
+                ui_calls.report_calls = ui_calls.report_calls or {}
+                ui_calls.report_calls[#ui_calls.report_calls + 1] = { op = "reset", reason = reason }
+            end,
+            maybe_start = function(_s, reason)
+                ui_calls.report_calls = ui_calls.report_calls or {}
+                ui_calls.report_calls[#ui_calls.report_calls + 1] = { op = "start", reason = reason }
+            end,
+        }
+        host = {
+            ui = {},
+            read_report = report,
+            showBusy = function() end,
+            closeBusy = function() end,
+            refreshLoginMenu = function() end,
+            showInfo = function() end,
+            runOnlineTask = function(_h, _label, fn) fn() end,
+        }
+        qr = QRLogin:new(host, {}, {})
+        qr._complete_protocol = function()
+            return { name = "Ray", user_vid = "1", login_method = "qr",
+                login_time = 0, device_id = "", device_name = "" }
+        end
+    end)
+
+    it("restarts a report stopped by account_cleared and resets the streak", function()
+        qr:_complete({ succeed = true }, qr.generation)
+        local calls = ui_calls.report_calls or {}
+        assert.equals(2, #calls)
+        assert.same({ op = "reset", reason = "relogin" }, calls[1])
+        assert.same({ op = "start", reason = "relogin" }, calls[2])
+    end)
+
+    it("tears down the persisted footer hint unconditionally", function()
+        qr:_complete({ succeed = true }, qr.generation)
+        assert.equals(1, ui_calls.hint_hides)
     end)
 end)

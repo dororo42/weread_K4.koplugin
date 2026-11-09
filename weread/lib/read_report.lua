@@ -543,6 +543,15 @@ function ReadReport:reset_failure_streak(reason)
     if reason == "relogin" and self.session_expired then
         self.session_expired = false
         self.session_expired_at = nil
+        -- 2026-11-10 (device K5): the relogin path clears the latch HERE, so
+        -- the accepted-report edge in _record_success can never fire
+        -- afterwards (was_session_expired is already false) — the persisted
+        -- footer hint stayed stuck forever after a QR re-login. A re-login
+        -- is a known recovery signal: fire the restore edge directly (same
+        -- exactly-once semantics — only when the latch was actually set).
+        if type(self.on_session_restored) == "function" then
+            pcall(self.on_session_restored)
+        end
     end
     local failures = self.consecutive_failures or 0
     if failures > 0 or self.failure_streak_paused then

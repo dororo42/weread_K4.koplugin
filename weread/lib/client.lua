@@ -707,6 +707,27 @@ local function classify_renewal_error(text)
     return "stale"
 end
 
+-- 2026-11-10 device fix (K5): the renewal endpoint answers succ=1 even for a
+-- server-side dead session (-2012 "登录超时"), handing back a stub-length
+-- wr_skey (observed: 8 chars) that every later request rejects — the UI
+-- announced "cookie renewed" while the session stayed dead. A usable session
+-- key is far longer; anything shorter is "expired", not "replaced".
+local RENEWAL_MIN_SKEY_LENGTH = 16
+
+-- Extract the wr_skey value from a Set-Cookie header value. LuaSocket
+-- collapses repeated Set-Cookie headers into an array table, so both shapes
+-- are accepted (the old string-only check mis-classified that case).
+local function renewal_skey_value(set_cookie)
+    local blob
+    if type(set_cookie) == "table" then
+        blob = table.concat(set_cookie, "\n")
+    elseif type(set_cookie) == "string" then
+        blob = set_cookie
+    end
+    if not blob then return nil end
+    return blob:match("wr_skey=([^;,\r\n%s]+)")
+end
+
 function Client:renew_cookie()
     local outcome = { status = "network", http_ok = false }
     local ok, result, code, resp_headers = pcall(function()
@@ -741,18 +762,29 @@ function Client:renew_cookie()
         error("Cookie renewal network failure: " .. err_text)
     end
     outcome.http_ok = code and code >= 200 and code < 300 or false
+    -- Both branches need the header; take it once.
+    local set_cookie = header_value(resp_headers, "set-cookie")
+    local skey_value = renewal_skey_value(set_cookie)
+    local skey_usable = skey_value ~= nil
+        and #skey_value >= RENEWAL_MIN_SKEY_LENGTH
     if WeRead.is_success_response(result) then
+        -- False-positive guard (2026-11-10 device K5): succ=1 without a
+        -- usable session key is a dead-session renewal, not a recovery —
+        -- surface it as expired so the caller (and the UI) asks for a
+        -- fresh login instead of announcing success.
+        if not skey_usable then
+            outcome.status = "expired"
+            error("Cookie renewal rejected (expired): renewal returned succ=1 "
+                .. "without a usable session key")
+        end
         outcome.status = "replaced"
     else
         local err_code = result and (result.errCode or result.errcode or result.code) or nil
         local err_message = result and (result.errMsg or result.errmsg or result.message or result.msg) or nil
         -- Official STALE vs EXPIRED split for an HTTP-OK rejection: a -2013
-        -- WITH a replacement session key is STALE (store the new key first,
-        -- keep the session, back off); without one it is EXPIRED.
-        local set_cookie = header_value(resp_headers, "set-cookie")
-        local has_new_skey = type(set_cookie) == "string"
-            and set_cookie:lower():find("wr_skey=", 1, true) ~= nil
-        if has_new_skey then
+        -- WITH a usable replacement session key is STALE (store the new key
+        -- first, keep the session, back off); without one it is EXPIRED.
+        if skey_usable then
             outcome.status = "stale"
             -- Official STALE_SESSION_RESPONSE: store the replacement key
             -- first ("with a replacement session key"), then treat the tick
@@ -768,14 +800,12 @@ function Client:renew_cookie()
         else
             outcome.status = "expired"
         end
-        result._renewal_outcome = outcome
         error("Cookie renewal rejected (" .. outcome.status .. "): "
             .. "errCode=" .. tostring(err_code) .. " "
             .. tostring(err_message or "no message"))
     end
     result._renewal_outcome = outcome
     local updates = {}
-    local set_cookie = header_value(resp_headers, "set-cookie")
     if set_cookie then
         updates.cookies = Cookie.merge_set_cookie(
             self.settings:get("cookies", {}),

@@ -146,7 +146,7 @@ describe("B2 client.renew_cookie classification (reMarkable borrow)", function()
         local persisted = nil
         local client = new_client(function(c)
             c.post_json = function(_self, _url, _data, _opts)
-                return { succ = true, synckey = 1 }, 200, { ["set-cookie"] = "wr_skey=new; Path=/" }
+                return { succ = true, synckey = 1 }, 200, { ["set-cookie"] = "wr_skey=AbCdEfGhIjKlMnOpQrStUvWx; Path=/" }
             end
             c.settings.update_auth = function(_s, updates)
                 persisted = updates
@@ -216,7 +216,7 @@ describe("B2 client.renew_cookie classification (reMarkable borrow)", function()
         local client = new_client(function(c)
             c.post_json = function()
                 return { succ = false, errCode = -2013 }, 200,
-                    { ["set-cookie"] = "wr_skey=BRANDNEW; Path=/; Domain=.weread.qq.com" }
+                    { ["set-cookie"] = "wr_skey=AbCdEfGhIjKlMnOpQrStUvWx; Path=/; Domain=.weread.qq.com" }
             end
             c.settings.update_auth = function(_s, updates)
                 stored = updates
@@ -226,7 +226,7 @@ describe("B2 client.renew_cookie classification (reMarkable borrow)", function()
         assert.is_false(ok)
         assert.equals("stale", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
         assert.is_not_nil(stored)
-        assert.is_not_nil(stored.cookies and stored.cookies.wr_skey == "BRANDNEW")
+        assert.is_not_nil(stored.cookies and stored.cookies.wr_skey == "AbCdEfGhIjKlMnOpQrStUvWx")
     end)
 
     it("treats an HTTP-OK rejection without a new skey as expired (official EXPIRED)", function()
@@ -410,5 +410,67 @@ describe("B5 captive portal classification (reMarkable borrow)", function()
         local ok = pcall(function() return qr:_begin_protocol() end)
         assert.is_false(ok)
         assert.equals("captive_portal", qr.last_login_error_kind)
+    end)
+end)
+
+-- 2026-11-10 device fix (K5): the renewal endpoint answers succ=1 even for a
+-- server-side dead session (-2012), handing back a stub-length wr_skey that
+-- every later request rejects. Classification must NOT treat that as
+-- "replaced" — the UI said "cookie renewed" while the session stayed dead.
+describe("B2 renewal false-positive guard (2026-11-10)", function()
+    it("treats succ=1 with NO set-cookie as expired (not replaced)", function()
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = true }, 200, {}
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("expired", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+
+    it("treats succ=1 with a stub-length wr_skey as expired (device-observed 8-char key)", function()
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = true }, 200,
+                    { ["set-cookie"] = "wr_skey=TFib6OyL; Path=/; Domain=.weread.qq.com" }
+            end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("expired", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+    end)
+
+    it("still classifies succ=1 with a full-length wr_skey as replaced", function()
+        local persisted = nil
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = true }, 200,
+                    { ["set-cookie"] = "wr_skey=ZxYwVuTsRqPoNmLkJiHgFeDc; Path=/" }
+            end
+            c.settings.update_auth = function(_s, updates) persisted = updates end
+        end)
+        local result, code = client:renew_cookie()
+        assert.equals(200, code)
+        assert.equals("replaced", result._renewal_outcome.status)
+        assert.is_not_nil(persisted)
+        assert.is_not_nil(persisted.cookies)
+    end)
+
+    it("stale classification accepts a repeated-header (table) set-cookie with a valid skey", function()
+        local stored = nil
+        local client = new_client(function(c)
+            c.post_json = function()
+                return { succ = false, errCode = -2013 }, 200,
+                    { ["set-cookie"] = { "wr_vid=32819470; Path=/",
+                        "wr_skey=BRANDNEWKEY12345678; Path=/" } }
+            end
+            c.settings.update_auth = function(_s, updates) stored = updates end
+        end)
+        local ok, err = pcall(function() client:renew_cookie() end)
+        assert.is_false(ok)
+        assert.equals("stale", tostring(err):match("Cookie renewal rejected %((%a+)%)"))
+        assert.is_not_nil(stored)
+        assert.equals("BRANDNEWKEY12345678", stored.cookies and stored.cookies.wr_skey)
     end)
 end)
