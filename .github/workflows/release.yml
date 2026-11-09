@@ -1,6 +1,7 @@
 # 版本沿革 / 资产指纹（出包收尾维护；注释不影响 workflow 行为）
 # v9.7  2026-11-08  weread_K4.koplugin-v9.7.zip  2c78fa22b0859a426825ab84fb6b35e9d2f903be875aebb185d49668bc791ce9
 # v9.8  2026-11-08  weread_K4.koplugin-v9.8.zip  e35e727d8dfb897e7afa888dde38d5ea3ad6c53893657299a9c4b1e1b39bfd89
+# v9.9  2026-11-10  weread_K4.koplugin-v9.9.zip  bd7ac215f93eb5c55b11c79961e3013baa7b333d1a67614d200477ee5117ddc6
 name: release
 
 # Release assets are produced ONLY here (never by hand on a workstation).
