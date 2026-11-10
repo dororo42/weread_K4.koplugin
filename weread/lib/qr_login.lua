@@ -530,7 +530,7 @@ function QRLogin:_poll(uid, generation, otp)
         end
         self:_close_qr_dialog(true)
         self:cancel()
-            logger.err("login polling failed:", error_text(result))
+        logger.err("login polling failed:", error_text(result))
         self.host:showInfo(T(_("QR login failed:\n%1"), error_text(result)))
         return
     end

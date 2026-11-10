@@ -126,15 +126,19 @@ local function cdef(ffi)
 end
 
 -- 尝试加载 libk4tls.so；成功返回句柄，失败返回 nil + 原因。
--- 搜索路径：模块同目录（KOReader plugin 包内）→ ffi.load 默认路径。
+-- 搜索路径：模块同目录（KOReader plugin 包内）优先 → ffi.load 默认路径。
+-- 2026-11-10（复审 🟢-8）：同目录优先——系统若存在同名旧库，全局名
+-- 优先会静默用到旧 ABI；随包内置库必须先试。dir 为 nil 时（无 source
+-- 元信息的罕见环境）仅剩全局名。
 function M._load(ffi)
     if M._lib then return M._lib end
-    local search = { "k4tls" }
+    local search = {}
     local src = debug and debug.getinfo and debug.getinfo(1, "S").source or ""
     local dir = src:match("^@(.*)/[^/]+$")
     if dir then
         search[#search + 1] = dir .. "/libk4tls.so"
     end
+    search[#search + 1] = "k4tls"
     for _, name in ipairs(search) do
         local ok, handle = pcall(ffi.load, name)
         if ok and handle then

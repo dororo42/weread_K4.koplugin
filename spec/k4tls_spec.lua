@@ -148,8 +148,10 @@ describe("weread.lib.k4tls deterministic adapter", function()
             assert.is_nil(selected)
             assert.truthy(reason:find("not loadable", 1, true))
             assert.equals(2, #state.loads)
-            assert.equals("k4tls", state.loads[1])
-            assert.truthy(state.loads[2]:find("/libk4tls.so", 1, true))
+            -- module-local library first (2026-11-10 🟢-8): a same-named
+            -- system library must never shadow the bundled one
+            assert.truthy(state.loads[1]:find("/libk4tls.so", 1, true))
+            assert.equals("k4tls", state.loads[2])
             assert.equals(0, state.cdefs)
         end)
     end
