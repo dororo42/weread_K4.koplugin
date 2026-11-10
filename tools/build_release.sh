@@ -38,8 +38,8 @@ if [ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/${suffix}^{commit}")
 fi
 
 git archive --format=zip --prefix="weread_K4.koplugin/" -o "$out" HEAD -- \
-    main.lua _meta.lua reader_menu_order.lua README.md LICENSE NOTICE \
-    weread tools/clear_stale_backlog.lua
+    main.lua _meta.lua reader_menu_order.lua README.md ChangeLog.md \
+    LICENSE NOTICE weread tools/clear_stale_backlog.lua
 
 # P0-b (2026-10-26 unified review v2): every release package ships with its
 # sha256 digest next to it. The v8.1 first release was a hand-made flat zip

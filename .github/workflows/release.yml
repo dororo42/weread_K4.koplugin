@@ -31,6 +31,29 @@ jobs:
       - name: Verify checksum
         run: sha256sum -c weread_K4.koplugin-v*.zip.sha256
 
+      # Release notes mirror the matching ChangeLog.md section, so every
+      # release (historical and new) uses the same concise Added/Changed/
+      # Fixed format. A missing section fails the release instead of
+      # publishing an off-style placeholder.
+      - name: Derive release notes from ChangeLog.md
+        run: |
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          ver = sys.argv[1]
+          text = Path("ChangeLog.md").read_text(encoding="utf-8")
+          head = re.search(r"^## \[" + re.escape(ver) + r"\] - (\d{4}-\d{2}(?:-\d{2})?)\s*$", text, re.M)
+          if not head:
+              raise SystemExit("no ChangeLog.md section for " + ver)
+          following = re.search(r"^## \[", text[head.end():], re.M)
+          end = head.end() + following.start() if following else len(text)
+          body = text[head.end():end].strip()
+          Path("release_notes.md").write_text(
+              f"# weread_K4 {ver} · {head.group(1)}\n\n{body}\n", encoding="utf-8")
+          PY
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -39,4 +62,4 @@ jobs:
             weread_K4.koplugin-v*.zip weread_K4.koplugin-v*.zip.sha256 \
             --verify-tag \
             --title "weread_K4 ${GITHUB_REF_NAME}" \
-            --notes "weread_K4 ${GITHUB_REF_NAME} — assets built by the release workflow from the tagged commit."
+            --notes-file release_notes.md

@@ -46,8 +46,8 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 - Bump version in `_meta.lua`, refresh `build_commit` in `main.lua`
   (CI verifies it is an ancestor of HEAD, F-07).
-- Update `README.md` changelog with the batch summary; commit message
-  follows: `<version>批次: <变更摘要>，详见README.md`.
+- Update `ChangeLog.md` with the batch summary (README links to it); commit
+  message follows: `<version>批次: <变更摘要>，详见ChangeLog.md`.
 - Full gate before commit: busted + luacheck + luac -p + module-map + clean tree.
 
 ## Where things live
@@ -63,6 +63,6 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 - Latest: `handoffs/2026-11-10-073303-weread-k4-login-recovery-fix/HANDOFF.md`
 - Branch: main @ ac34e11
-- Status: **v9.10 发版批次已提交**（2026-11-10，`0.6.0-k4-v9.10`，build_commit ac34e11）：扫码提示防遮挡（底部锚定条）+ weread-only 收敛菜单 TouchMenu 化；busted 454/0 绿、四门禁过；K5 已部署（md5 一致，备份 .pre-uifix-20261110）并真机验证 OK，浸泡 env k4tls 完好；待 push + tag v9.10 出 Release 资产。
+- Status: **v9.10 发版批次已提交**（2026-11-10，`0.6.0-k4-v9.10`，build_commit ac34e11）：扫码提示防遮挡（底部锚定条）+ weread-only 收敛菜单 TouchMenu 化；busted 454/0 绿、四门禁过；K5 已部署（md5 一致，备份 .pre-uifix-20261110）并真机验证 OK，浸泡 env k4tls 完好；待 push + tag v9.10 出 Release 资产。文档重构（README changelog 拆分为 ChangeLog.md + 26 个历史 Release 说明统一）已完成，本地待提交。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
