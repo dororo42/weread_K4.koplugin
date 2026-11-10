@@ -6,15 +6,20 @@
 -- ui, so an instance-level guard nests the wraps (double 0.2s post-close
 -- shelf callbacks). Both behaviours are pinned here with a stubbed widget
 -- surface; no KOReader runtime is needed.
+-- v9.10 (2026-11-10 K4 fix): the converged menu renders as a standalone
+-- TouchMenu instead of the list Menu — sub_item_table_func entries (Settings,
+-- report toggles) were un-navigable and checked_func had no checkbox there.
+-- The tests pin the TouchMenu construction and the item ordering.
 
 local recorded
 local function reset()
-    recorded = { closed = {}, events = {}, broadcasts = {} }
+    recorded = { closed = {}, events = {}, broadcasts = {}, touchmenus = {} }
 end
 reset()
 
 local noop = function() end
 local stubs = {
+    ["device"] = { screen = { getWidth = function() return 600 end } },
     ["ui/event"] = { new = function(_, name) return { name = name } end },
     ["ui/uimanager"] = {
         scheduleIn = noop,
@@ -24,6 +29,13 @@ local stubs = {
         end,
         broadcastEvent = function(_, event)
             recorded.broadcasts[#recorded.broadcasts + 1] = event.name
+        end,
+    },
+    ["ui/widget/touchmenu"] = {
+        new = function(_, opts)
+            local widget = { opts = opts }
+            recorded.touchmenus[#recorded.touchmenus + 1] = widget
+            return widget
         end,
     },
     ["weread.lib.plugin_util"] = { tr = function(s) return s end },
@@ -58,24 +70,26 @@ local function fake_plugin()
         }
     end
     function plugin:safeCallback(_label, fn) return fn end
-    function plugin:showList(_title, items)
-        self.last_items = items
-        return { item_table = items }
-    end
+    function plugin:trackDialog(_widget) end
     return plugin
 end
 
 describe("weread.ui.reader_navigation converged menu (v9.7)", function()
     before_each(reset)
 
-    it("puts Reading style second and closes the list before ShowConfigMenu", function()
+    it("builds a TouchMenu with Reading style second, closing it before ShowConfigMenu", function()
         local plugin = fake_plugin()
         assert.is_true(plugin:showWereadOnlyMenu())
-        local items = plugin.last_items
-        assert.equals("Reading style", items[2].text)
-
+        assert.equals(1, #recorded.touchmenus)
         local menu = plugin._weread_only_menu
-        items[2].callback()
+        assert.is_true(recorded.touchmenus[1] == menu)
+        local opts = menu.opts
+        assert.equals(600, opts.width)
+        local tab = opts.tab_item_table[1]
+        assert.equals("appbar.menu", tab.icon)
+        assert.equals("Reading style", tab[2].text)
+
+        tab[2].callback()
         assert.equals(1, #recorded.closed)
         assert.is_true(recorded.closed[1] == menu)
         assert.equals("ShowConfigMenu", recorded.events[1])
@@ -85,10 +99,10 @@ describe("weread.ui.reader_navigation converged menu (v9.7)", function()
     it("appends Exit KOReader broadcasting the native Exit event", function()
         local plugin = fake_plugin()
         plugin:showWereadOnlyMenu()
-        local items = plugin.last_items
-        assert.equals("Exit KOReader", items[#items].text)
         local menu = plugin._weread_only_menu
-        items[#items].callback()
+        local tab = menu.opts.tab_item_table[1]
+        assert.equals("Exit KOReader", tab[#tab].text)
+        tab[#tab].callback()
         assert.equals("Exit", recorded.broadcasts[1])
         assert.equals(1, #recorded.closed)
         assert.is_true(recorded.closed[1] == menu)

@@ -62,7 +62,7 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 ## Current Handoff
 
 - Latest: `handoffs/2026-11-10-073303-weread-k4-login-recovery-fix/HANDOFF.md`
-- Branch: main @ ebe8f0f
-- Status: **v9.9 已发版**（2026-11-10，tag+Release 双资产 Latest，HEAD 7cea04a）：登录恢复链修复正式入库，K5 已升 v9.9 元数据；K4(B00E) 离线待部署；D11 真机验收已部分实证（report success + footer 清除），完整清单待用户按键复核。
+- Branch: main @ ac34e11
+- Status: **v9.10 发版批次已提交**（2026-11-10，`0.6.0-k4-v9.10`，build_commit ac34e11）：扫码提示防遮挡（底部锚定条）+ weread-only 收敛菜单 TouchMenu 化；busted 454/0 绿、四门禁过；K5 已部署（md5 一致，备份 .pre-uifix-20261110）并真机验证 OK，浸泡 env k4tls 完好；待 push + tag v9.10 出 Release 资产。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。

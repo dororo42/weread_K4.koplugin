@@ -8,11 +8,17 @@
 -- fired from onCloseWidget.
 
 local qr_widgets = {}
-local ui_calls = { shown = {}, closed = {}, broadcasts = {}, scheduled = {}, transients = {}, hint_hides = 0 }
+local function fresh_ui_calls()
+    return {
+        shown = {}, closed = {}, broadcasts = {}, scheduled = {},
+        transients = {}, hints = {}, hint_texts = {}, hint_hides = 0,
+    }
+end
+local ui_calls = fresh_ui_calls()
 
 local function reset_ui_calls()
     qr_widgets = {}
-    ui_calls = { shown = {}, closed = {}, broadcasts = {}, scheduled = {}, transients = {}, hint_hides = 0 }
+    ui_calls = fresh_ui_calls()
 end
 
 package.preload["device"] = function()
@@ -72,6 +78,36 @@ package.preload["ui/uimanager"] = function()
 end
 package.preload["ui/event"] = function()
     return { new = function(_, name) return { name = name } end }
+end
+-- 2026-11-10 (K4 fix): the key legend is a bottom-anchored bar now — these
+-- stubs exist so the hint widget chain can be observed in the tests below.
+package.preload["ui/geometry"] = function()
+    return { new = function(_, t) return t end }
+end
+package.preload["ui/font"] = function()
+    return { getFace = function() return { name = "stub" } end }
+end
+package.preload["ffi/blitbuffer"] = function()
+    return { COLOR_WHITE = "white-stub" }
+end
+package.preload["ui/widget/textwidget"] = function()
+    return {
+        new = function(_, opts)
+            ui_calls.hint_texts[#ui_calls.hint_texts + 1] = opts.text
+            return opts
+        end,
+    }
+end
+package.preload["ui/widget/container/framecontainer"] = function()
+    return { new = function(_, opts) return opts end }
+end
+package.preload["ui/widget/container/bottomcontainer"] = function()
+    return {
+        new = function(_, opts)
+            ui_calls.hints[#ui_calls.hints + 1] = opts
+            return opts
+        end,
+    }
 end
 package.preload["datastorage"] = function()
     return {
@@ -176,12 +212,32 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
         assert.equals("function", type(dialog.onExitApp))
     end)
 
-    it("tells the user which keys cancel and exit", function()
+    it("anchors the key legend at the screen bottom, not a centered toast", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
-        local hint = table.concat(ui_calls.transients, " ")
-        assert.is_true(hint:find("Back", 1, true) ~= nil)
-        assert.is_true(hint:find("Menu", 1, true) ~= nil)
+        -- The old centered InfoMessage landed here (it overlaps the QR code).
+        assert.equals(0, #ui_calls.transients)
+        assert.equals(1, #ui_calls.hints)
+        -- Full-screen BottomContainer so the frame hugs the screen bottom,
+        -- clear of the 72%-viewport QR.
+        assert.equals(600, ui_calls.hints[1].dimen.w)
+        assert.equals(800, ui_calls.hints[1].dimen.h)
+        local legend = table.concat(ui_calls.hint_texts, " ")
+        assert.is_true(legend:find("Back", 1, true) ~= nil)
+        assert.is_true(legend:find("Menu", 1, true) ~= nil)
+    end)
+
+    it("hides the legend through the _close_qr_dialog funnel", function()
+        local obj = new_modal_login()
+        obj:_show_qr("UID-1", 1)
+        local dialog = qr_widgets[1]
+
+        dialog:onClose()
+
+        -- The hint is torn down first, then the dialog itself.
+        assert.equals(ui_calls.hints[1], ui_calls.closed[1])
+        assert.equals(dialog, ui_calls.closed[2])
+        assert.is_nil(obj.qr_hint)
     end)
 
     it("Back cancels the session and makes queued polls no-ops", function()
@@ -195,7 +251,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
 
         assert.equals(2, obj.generation)
         assert.is_nil(obj.qr_dialog)
-        assert.equals(dialog, ui_calls.closed[1])
+        assert.equals(dialog, ui_calls.closed[2])
         for _, fn in ipairs(ui_calls.scheduled) do fn() end
         assert.is_false(polled)
     end)

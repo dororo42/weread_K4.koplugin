@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v9.9）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v9.10）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -110,7 +110,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v9.9）          （菜单末尾）
+└── 关于（v0.6.0-k4-v9.10）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -124,6 +124,14 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 ---
 
 ## 版本变更日志
+
+### v9.10（2026-11-10）· 扫码提示防遮挡 + weread-only 收敛菜单 TouchMenu 化
+
+> 用户 K4 真机两处反馈：① 首次扫码时键位提示「Back: cancel login | Menu: exit KOReader」以居中 InfoMessage 呈现 5 秒，与 72% 视口居中的二维码重叠、妨碍扫码；② KUAL 直入 weread-only 后，菜单子项（如【设置】）可见但选不开。随 `v9.10` 发版（`_meta.lua` / `main.lua` 递增，`build_commit = ac34e11`）；发版前已部署 K5 并真机验证（19:05 会话日志零插件报错，浸泡 env `k4tls` 完好）。
+
+- **扫码提示防遮挡**：`qr_login.lua` 新增 `_show_qr_hint`/`_hide_qr_hint`——提示改屏幕底部锚定的非模态条（`BottomContainer` + 白底描边小框），自身无键绑定，Back/Menu 仍直达二维码对话框（UIManager 窗口栈自顶向下遍历，v2026.07 `uimanager.lua` 实证）；隐藏挂 `_close_qr_dialog` 单一漏斗，取消/超时/失败/完成全部关闭路径覆盖。
+- **收敛菜单 TouchMenu 化**：`reader_navigation.lua` 的 `showWereadOnlyMenu` 改用与全菜单同源的独立 `TouchMenu`（单 tab，图标 `appbar.menu` 取自设备已验证的 readermenu）。根因：列表 Menu `onMenuSelect` 只认静态 `sub_item_table`，`sub_item_table_func` 项仅渲染箭头、选中无动作，`checked_func` 亦不渲染——而设置树全是这两类形态；K4 profile `hasDPad=yes`，全菜单本就是 TouchMenu，子菜单导航（item_table_stack + Back）/勾选态/D-pad 按键与全菜单完全一致。
+- **测试**：`spec/qr_login_spec.lua` 改提示条断言（shown/closed + 零 transients）；`spec/reader_navigation_spec.lua` 改 TouchMenu 构造断言（width/tab icon/Reading style 次序/Exit 尾项）；全套 **454** 用例绿，`luacheck` 0 告警，`luac -p`、module-map、version-sync 门禁通过。
 
 ### v9.9（2026-11-10）· 登录恢复链三处断点修复 + 续期假阳性防护
 

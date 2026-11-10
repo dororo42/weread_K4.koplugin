@@ -1,11 +1,17 @@
+local Blitbuffer = require("ffi/blitbuffer")
+local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Cookie = require("weread.lib.cookie")
 local DataStorage = require("datastorage")
 local Device = require("device")
+local Font = require("ui/font")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
 local I18n = require("weread.lib.i18n")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger").scoped("QRLogin")
 local QRMessage = require("ui/widget/qrmessage")
 local T = require("ffi/util").template
+local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
 
@@ -383,12 +389,55 @@ function QRLogin:_complete_protocol(login_result, generation)
     return account
 end
 
+-- v9.10 (K4 fix 2026-11-10): the key legend used to be a centered
+-- InfoMessage toast — both it and the 72%-viewport QR are screen-centered,
+-- so the text sat on top of the code and blocked scanning for its whole
+-- lifetime. Anchor a small non-modal bar to the screen bottom instead: no
+-- key bindings of its own, so UIManager's window-stack walk still delivers
+-- Back / Menu to the QR dialog beneath. Hidden from _close_qr_dialog — the
+-- single funnel every close path (dismiss, cancel, poll failure, completion)
+-- already goes through.
+function QRLogin:_show_qr_hint(text)
+    self:_hide_qr_hint()
+    if not Device:hasKeys() then
+        return
+    end
+    local hint = BottomContainer:new{
+        dimen = Geom:new{
+            w = Device.screen:getWidth(),
+            h = Device.screen:getHeight(),
+        },
+        FrameContainer:new{
+            background = Blitbuffer.COLOR_WHITE,
+            bordersize = 1,
+            padding = 2,
+            TextWidget:new{
+                text = text,
+                face = Font:getFace("smallinfofont"),
+            },
+        },
+    }
+    self.qr_hint = hint
+    UIManager:show(hint)
+end
+
+function QRLogin:_hide_qr_hint()
+    if not self.qr_hint then
+        return
+    end
+    pcall(function()
+        UIManager:close(self.qr_hint)
+    end)
+    self.qr_hint = nil
+end
+
 function QRLogin:_close_qr_dialog(programmatic)
     local dialog = self.qr_dialog
     if not dialog then
         return
     end
     self.qr_dialog = nil
+    self:_hide_qr_hint()
     self.programmatic_close = programmatic == true
     UIManager:close(dialog)
     self.programmatic_close = false
@@ -488,11 +537,8 @@ function QRLogin:_show_qr(uid, generation)
 
     self.qr_dialog = dialog
     UIManager:show(dialog)
+    self:_show_qr_hint(_("Back: cancel login  |  Menu: exit KOReader"))
     self.host:refreshUI()
-    if Device:hasKeys() then
-        self.host:showTransientInfo(
-            _("Back: cancel login  |  Menu: exit KOReader"), 5)
-    end
 
     UIManager:scheduleIn(0.5, function()
         if generation == self.generation and self.qr_dialog == dialog then

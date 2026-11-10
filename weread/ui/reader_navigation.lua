@@ -1,9 +1,13 @@
 -- End-of-book navigation dialog integration.
+local Device = require("device")
 local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
 local Event = require("ui/event")
 local PluginUtil = require("weread.lib.plugin_util")
 -- v9.0 (K4weread): weread-only launch mode session state.
 local OnlyMode = require("weread.lib.only_mode")
+-- v9.10 (K4 non-touch fix): the converged menu renders as a TouchMenu —
+-- see showWereadOnlyMenu.
+local TouchMenu = require("ui/widget/touchmenu")
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
 
@@ -202,7 +206,27 @@ function M:showWereadOnlyMenu()
             UIManager:broadcastEvent(Event:new("Exit"))
         end),
     })
-    local menu = self:showList(_("WeRead"), items, _("No items."))
+    -- v9.10 (K4 non-touch fix 2026-11-10): render with a real TouchMenu —
+    -- the widget the full KOReader menu itself uses on this device (K4
+    -- profile hasDPad=yes → readermenu builds TouchMenu, device v2026.07).
+    -- The plain list Menu used before cannot navigate TouchMenu-shaped
+    -- items: onMenuSelect only follows static item.sub_item_table, so
+    -- sub_item_table_func entries like Settings drew a submenu arrow but
+    -- selecting them did nothing, and checked_func toggles had no visible
+    -- state. TouchMenu natively handles sub_item_table_func navigation
+    -- (item_table_stack + Back), checked/enabled_func rendering, and the
+    -- same D-pad bindings the user already exercises in the full menu.
+    -- Single tab; show_parent defaults to the menu itself, so the default
+    -- close_callback closes it. items itself becomes the tab table — its
+    -- .icon string key is ignored by the item iteration (#item_table and
+    -- ipairs).
+    items.icon = "appbar.menu"
+    local menu = TouchMenu:new{
+        width = Device.screen:getWidth(),
+        tab_item_table = { items },
+    }
+    UIManager:show(menu)
+    self:trackDialog(menu)
     self._weread_only_menu = menu
     return true
 end
