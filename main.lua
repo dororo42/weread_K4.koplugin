@@ -37,7 +37,7 @@ local WeReadPlugin = WidgetContainer:extend{
     -- (updated at every release bump; purely diagnostic). This is NOT the
     -- current source HEAD — engineering commits after a release leave it
     -- pointing at the previous batch (v9.9 -> ebe8f0f baseline) on purpose.
-    build_commit = "9fb68fe",
+    build_commit = "cdba73d",
 }
 
 function WeReadPlugin:onNetworkConnected()

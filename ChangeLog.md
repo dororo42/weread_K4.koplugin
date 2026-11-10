@@ -3,6 +3,13 @@
 本文件记录微信读书 KOReader 插件（K4 分支）各版本的重要变更，条目采用中英双语，聚焦用户可见的功能与 Bug 修复。
 All notable changes are documented here in both Chinese and English, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v9.12] - 2026-11-10
+
+### Fixed / 修复
+
+- 修复扫码登录底部按键提示条始终不显示的问题：`UIManager:show()` 不带刷新类型时 KOReader 会直接丢弃硬件刷新，提示条画进了缓冲区却从未上屏；现改为非闪烁刷新、只覆盖提示条区域。
+  Fixed the bottom key-legend bar never appearing during QR login: `UIManager:show()` without a refresh type drops the e-ink refresh entirely, so the bar was painted into the framebuffer but never reached the panel; the legend strip is now refreshed explicitly with a non-flashing update.
+
 ## [v9.11] - 2026-11-10
 
 ### Fixed / 修复

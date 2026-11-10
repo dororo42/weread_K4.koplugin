@@ -422,7 +422,10 @@ function QRLogin:_show_qr_hint(text)
         },
     }
     self.qr_hint = hint
-    UIManager:show(hint)
+    -- show() without a refreshtype drops the refresh (uimanager.lua:1123,
+    -- v2026.07.1): the bar is painted into the framebuffer but never reaches
+    -- the e-ink panel. Refresh just the legend strip, non-flashing.
+    UIManager:show(hint, "ui", hint:contentRange())
 end
 
 function QRLogin:_hide_qr_hint()

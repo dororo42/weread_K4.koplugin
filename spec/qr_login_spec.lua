@@ -12,6 +12,7 @@ local function fresh_ui_calls()
     return {
         shown = {}, closed = {}, broadcasts = {}, scheduled = {},
         schedules = {}, transients = {}, hints = {}, hint_texts = {},
+        show_args = {},
         hint_hides = 0, infos = {},
     }
 end
@@ -60,8 +61,9 @@ package.preload["weread/ui/login_hint"] = function()
 end
 package.preload["ui/uimanager"] = function()
     return {
-        show = function(_, widget)
+        show = function(_, widget, refreshtype, region)
             ui_calls.shown[#ui_calls.shown + 1] = widget
+            ui_calls.show_args[#ui_calls.show_args + 1] = { refreshtype = refreshtype, region = region }
         end,
         close = function(_, widget)
             ui_calls.closed[#ui_calls.closed + 1] = widget
@@ -103,11 +105,29 @@ package.preload["ui/widget/textwidget"] = function()
     }
 end
 package.preload["ui/widget/container/framecontainer"] = function()
-    return { new = function(_, opts) return opts end }
+    return {
+        new = function(_, opts)
+            function opts.getSize()
+                return { w = 280, h = 36 }
+            end
+            return opts
+        end,
+    }
 end
 package.preload["ui/widget/container/bottomcontainer"] = function()
     return {
         new = function(_, opts)
+            -- Mirrors the real BottomContainer:contentRange math so the
+            -- refresh-region assertions below exercise the same shape.
+            function opts:contentRange()
+                local cs = self[1]:getSize()
+                return {
+                    x = (self.dimen.x or 0) + math.floor((self.dimen.w - cs.w) / 2),
+                    y = (self.dimen.y or 0) + self.dimen.h - cs.h,
+                    w = cs.w,
+                    h = cs.h,
+                }
+            end
             ui_calls.hints[#ui_calls.hints + 1] = opts
             return opts
         end,
@@ -246,6 +266,27 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
         local legend = table.concat(ui_calls.hint_texts, " ")
         assert.is_true(legend:find("Back", 1, true) ~= nil)
         assert.is_true(legend:find("Menu", 1, true) ~= nil)
+    end)
+
+    it("shows the legend with an explicit bottom-strip refresh region", function()
+        local obj = new_modal_login()
+        obj:_show_qr("UID-1", 1)
+        flush_qr_show()
+        -- UIManager:show() without a refreshtype drops the refresh entirely
+        -- (uimanager.lua:1123, v2026.07.1): the bar would be painted into
+        -- the framebuffer but never reach the e-ink panel. Pin the explicit
+        -- non-flashing refresh over just the legend strip.
+        local hint_args
+        for i, widget in ipairs(ui_calls.shown) do
+            if widget == ui_calls.hints[1] then
+                hint_args = ui_calls.show_args[i]
+            end
+        end
+        assert.is_not_nil(hint_args)
+        assert.equals("ui", hint_args.refreshtype)
+        assert.is_not_nil(hint_args.region)
+        assert.equals(800, hint_args.region.y + hint_args.region.h)
+        assert.is_true(hint_args.region.h < 800)
     end)
 
     it("hides the legend through the _close_qr_dialog funnel", function()
