@@ -4,6 +4,7 @@
 # v9.9  2026-11-10  weread_K4.koplugin-v9.9.zip  bd7ac215f93eb5c55b11c79961e3013baa7b333d1a67614d200477ee5117ddc6
 # v9.10 2026-11-10  weread_K4.koplugin-v9.10.zip 8c41ed7c942388b0881ca52fd6a4d6b132921c42d4790f925cc33a2beb74e648
 # v9.11 2026-11-10  weread_K4.koplugin-v9.11.zip d526615c8469fb0b6f09369b9d53c52db814bb59a5f290bd1db314514766f87c
+# v9.12 2026-11-10  weread_K4.koplugin-v9.12.zip 0a44d83fb51ca7199625bacbcf4f0f98678ab116dc32792d72dc43056dd7f820
 name: release
 
 # Release assets are produced ONLY here (never by hand on a workstation).

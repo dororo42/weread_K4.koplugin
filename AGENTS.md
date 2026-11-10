@@ -62,7 +62,7 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 ## Current Handoff
 
 - Latest: `handoffs/2026-11-10-212840-weread-k4-v9-11-upstream-qr-fixes/HANDOFF.md`
-- Branch: main @ 66ca115 (tag `v9.11`)
-- Status: **v9.11 已推送并出包**（2026-11-10，release run `42825530616` success；zip + sha256 双资产，28/28 Release 说明双语统一）。U17-1/U17-2 TDD 落地，462/0 绿、四门禁过。剩余：两项真机验收、K4（B00E）离线未部署、审查报告归档待拍板。
+- Branch: main @ db4da82 (tag `v9.12`)
+- Status: **v9.12 已发版**（2026-11-10，tag+Release 双资产，指纹 0a44d83f…dd7f820）：QR 提示条显示修复；K5 待升 v9.12；K4(B00E) 离线待部署（解包 v9.12 Release zip 覆盖）；R4 bench 待执行。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
