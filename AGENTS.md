@@ -63,6 +63,6 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 - Latest: `handoffs/2026-11-10-073303-weread-k4-login-recovery-fix/HANDOFF.md`
 - Branch: main @ ac34e11
-- Status: **v9.10 发版批次已提交**（2026-11-10，`0.6.0-k4-v9.10`，build_commit ac34e11）：扫码提示防遮挡（底部锚定条）+ weread-only 收敛菜单 TouchMenu 化；busted 454/0 绿、四门禁过；K5 已部署（md5 一致，备份 .pre-uifix-20261110）并真机验证 OK，浸泡 env k4tls 完好；待 push + tag v9.10 出 Release 资产。文档重构（README changelog 拆分为 ChangeLog.md + 26 个历史 Release 说明统一）已完成，本地待提交。
+- Status: **v9.10 已推送并出包**（2026-11-10，tag `v9.10` @ `7b2582f`，release run `42821674362` success；资产 zip + sha256 齐备）。文档重构已入库：README changelog 拆分为中英双语 `ChangeLog.md`（标题链接引用）、`release.yml` 从该文件派生 notes、全部 **27 个 Release 说明双语统一**。busted 454/0、luacheck 0、四门禁全绿。剩余：真机 D10/D11 验收、K4（B00E）离线未部署、审查报告归档待用户拍板。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
