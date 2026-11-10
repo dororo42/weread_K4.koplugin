@@ -3,6 +3,15 @@
 本文件记录微信读书 KOReader 插件（K4 分支）各版本的重要变更，条目采用中英双语，聚焦用户可见的功能与 Bug 修复。
 All notable changes are documented here in both Chinese and English, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v9.11] - 2026-11-10
+
+### Fixed / 修复
+
+- 修复弱网下扫码登录因连接关闭被误判为失败、会话被中断的问题；无 HTTP 状态的请求一律视为传输暂态，继续轮询到会话过期。
+  Fixed QR login being aborted when a weak-network poll hits a closed socket; requests without an HTTP status now stay pending until the session expires.
+- 二维码对话框改为延迟 0.2 秒渲染并加入会话守卫，避免 Kindle 首帧刷新导致二维码显示不完整。
+  Deferred QR dialog rendering by 0.2s with session guards to prevent first-frame clipping on Kindle.
+
 ## [v9.10] - 2026-11-10
 
 ### Fixed / 修复

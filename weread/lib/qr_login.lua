@@ -270,10 +270,14 @@ function QRLogin:_poll_protocol(uid, otp)
         headers = headers,
     }, "getLoginInfo")
     if not data then
-        if is_timeout_error(request_error) or request_error == "request failed" then
-            return { transport_pending = true }
-        end
-        error(request_error)
+        -- U17-1 (2026-11-10, upstream v1.7.0 PR #181): no HTTP status means
+        -- the socket failed. A closed/reset connection used to raise here,
+        -- and _poll() then tore down the whole QR session with "QR login
+        -- failed" — one weak-network blip forced a fresh login. Keep polling
+        -- until LOGIN_SESSION_TIMEOUT_SECONDS expires instead. Both the QR
+        -- poll and the OTP verification path share this helper.
+        logger.dbg("getLoginInfo transport pending:", tostring(request_error))
+        return { transport_pending = true }
     end
     self.login_cookies = merge_response_cookies(self.login_cookies, response_headers)
     return data
@@ -536,9 +540,19 @@ function QRLogin:_show_qr(uid, generation)
     end
 
     self.qr_dialog = dialog
-    UIManager:show(dialog)
-    self:_show_qr_hint(_("Back: cancel login  |  Menu: exit KOReader"))
-    self.host:refreshUI()
+    -- U17-2 (2026-11-10, upstream v1.7.0 PR #201): render AFTER the
+    -- surrounding UI has settled. Showing the modal immediately can leave
+    -- part of the QR code clipped on Kindle's first E-Ink refresh. The
+    -- generation/dialog guard makes the deferred render a no-op after any
+    -- cancel/complete path (v9.9's cancel() bumps the generation).
+    UIManager:scheduleIn(0.2, function()
+        if generation ~= self.generation or self.qr_dialog ~= dialog then
+            return
+        end
+        UIManager:show(dialog)
+        self:_show_qr_hint(_("Back: cancel login  |  Menu: exit KOReader"))
+        self.host:refreshUI()
+    end)
 
     UIManager:scheduleIn(0.5, function()
         if generation == self.generation and self.qr_dialog == dialog then

@@ -11,7 +11,8 @@ local qr_widgets = {}
 local function fresh_ui_calls()
     return {
         shown = {}, closed = {}, broadcasts = {}, scheduled = {},
-        transients = {}, hints = {}, hint_texts = {}, hint_hides = 0,
+        schedules = {}, transients = {}, hints = {}, hint_texts = {},
+        hint_hides = 0, infos = {},
     }
 end
 local ui_calls = fresh_ui_calls()
@@ -69,8 +70,11 @@ package.preload["ui/uimanager"] = function()
         broadcastEvent = function(_, event)
             ui_calls.broadcasts[#ui_calls.broadcasts + 1] = event
         end,
-        scheduleIn = function(_, _seconds, fn)
+        scheduleIn = function(_, seconds, fn)
             ui_calls.scheduled[#ui_calls.scheduled + 1] = fn
+            ui_calls.schedules[#ui_calls.schedules + 1] = {
+                seconds = seconds, fn = fn,
+            }
         end,
         unschedule = function() end,
         setDirty = function() end,
@@ -156,8 +160,23 @@ local function new_modal_login()
             showTransientInfo = function(_, text)
                 ui_calls.transients[#ui_calls.transients + 1] = text
             end,
+            showInfo = function(_, text)
+                ui_calls.infos[#ui_calls.infos + 1] = text
+            end,
         },
     }, { __index = QRLogin })
+end
+
+-- U17-2 (2026-11-10, upstream #201): the QR dialog is rendered by a 0.2s
+-- deferred callback. Flush exactly that callback so the pre-existing modal
+-- tests keep observing a displayed dialog/hint.
+local function flush_qr_show()
+    for _, entry in ipairs(ui_calls.schedules) do
+        if entry.seconds == 0.2 then
+            entry.fn()
+            return
+        end
+    end
 end
 
 describe("QRLogin poll URL serialization (upstream PR #167)", function()
@@ -203,6 +222,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
     it("replaces the catch-all key binding with explicit Back / Menu exits", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
+        flush_qr_show()
         local dialog = qr_widgets[1]
         assert.is_not_nil(dialog)
         assert.is_nil(dialog.key_events.AnyKeyPressed)
@@ -215,6 +235,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
     it("anchors the key legend at the screen bottom, not a centered toast", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
+        flush_qr_show()
         -- The old centered InfoMessage landed here (it overlaps the QR code).
         assert.equals(0, #ui_calls.transients)
         assert.equals(1, #ui_calls.hints)
@@ -230,6 +251,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
     it("hides the legend through the _close_qr_dialog funnel", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
+        flush_qr_show()
         local dialog = qr_widgets[1]
 
         dialog:onClose()
@@ -243,6 +265,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
     it("Back cancels the session and makes queued polls no-ops", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
+        flush_qr_show()
         local dialog = qr_widgets[1]
         local polled = false
         obj._poll = function() polled = true end
@@ -259,6 +282,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
     it("Menu broadcasts the native Exit event after cancelling", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
+        flush_qr_show()
         local dialog = qr_widgets[1]
 
         dialog:onExitApp()
@@ -271,6 +295,7 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
     it("a programmatic close never double-cancels via dismiss_callback", function()
         local obj = new_modal_login()
         obj:_show_qr("UID-1", 1)
+        flush_qr_show()
         local dialog = qr_widgets[1]
 
         obj:cancel()
@@ -329,5 +354,64 @@ describe("QRLogin completion teardown (2026-11-10 footer-stuck fix)", function()
     it("tears down the persisted footer hint unconditionally", function()
         qr:_complete({ succeed = true }, qr.generation)
         assert.equals(1, ui_calls.hint_hides)
+    end)
+end)
+
+-- Upstream v1.7.0 review (2026-11-10): U17-1 / U17-2.
+describe("QRLogin transport failures keep polling (upstream #181)", function()
+    before_each(reset_ui_calls)
+
+    local function new_failing_login(err)
+        local obj = setmetatable({}, { __index = QRLogin })
+        obj.login_cookies = {}
+        obj._request_json = function() return nil, {}, err end
+        return obj
+    end
+
+    for _, err in ipairs({ "closed", "connection reset", "request failed",
+        "timeout", "wantread" }) do
+        it("treats '" .. err .. "' as transport_pending (no raise)", function()
+            local obj = new_failing_login(err)
+            local ok, result = pcall(obj._poll_protocol, obj, "UID-1", "")
+            assert.is_true(ok)
+            assert.is_true(result.transport_pending)
+        end)
+    end
+
+    it("does not cancel the QR session when a poll hits a closed socket", function()
+        local obj = new_modal_login()
+        obj:_show_qr("UID-1", 1)
+        flush_qr_show()
+        obj._request_json = function() return nil, {}, "closed" end
+        local before = #ui_calls.scheduled
+        obj:_poll("UID-1", 1)
+        assert.equals(1, obj.generation)
+        assert.equals(0, #ui_calls.closed)
+        assert.equals(0, #ui_calls.infos)
+        assert.equals(before + 1, #ui_calls.scheduled)
+    end)
+end)
+
+describe("QRLogin defers dialog rendering (upstream #201)", function()
+    before_each(reset_ui_calls)
+
+    it("renders via a 0.2s deferred callback, not immediately", function()
+        local obj = new_modal_login()
+        obj:_show_qr("UID-1", 1)
+        assert.equals(0, #ui_calls.shown)
+        assert.equals(0, #ui_calls.hints)
+        assert.equals(0.2, ui_calls.schedules[1].seconds)
+        flush_qr_show()
+        assert.equals(qr_widgets[1], ui_calls.shown[1])
+        assert.equals(1, #ui_calls.hints)
+    end)
+
+    it("skips the deferred render after the session was cancelled", function()
+        local obj = new_modal_login()
+        obj:_show_qr("UID-1", 1)
+        obj:cancel()
+        flush_qr_show()
+        assert.equals(0, #ui_calls.shown)
+        assert.equals(0, #ui_calls.hints)
     end)
 end)
