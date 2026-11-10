@@ -414,6 +414,15 @@ function Client:request(opts)
     -- their exact semantics (they may stream to disk).
     local max_bytes = tonumber(opts.max_bytes)
     if max_bytes and max_bytes <= 0 then max_bytes = nil end
+    -- 2026-11-10 (audit 🟢-3, user-approved option a): caller-owned sinks
+    -- get NO mid-body retry protection — `sink_to_use = opts.sink` is reused
+    -- as-is across attempts, so a mid-body "closed" (retryable per the
+    -- transient list) would splice the partial first body with the retry's
+    -- full body into the caller's stream. No production caller passes
+    -- opts.sink today (every path uses the rebuilt default sink); anyone
+    -- adding one must either disable retry for that call or make the sink
+    -- restart-safe. Deliberately documented, not guarded: guarding a
+    -- non-existent caller is premature.
     -- k4tls 传输（K4WereadRust P1-A）：超时/限额直传 C ABI；socket.http 路径
     -- 忽略这些字段。默认后端 auto——libk4tls.so 不可加载时逐字回退 LuaSec
     -- （R2 回退开关），真机 bench（R4）通过前不翻默认。
