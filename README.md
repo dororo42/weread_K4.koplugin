@@ -123,6 +123,12 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 ---
 
+## 传输后端（Rust TLS，可选）
+
+插件传输层默认 LuaSec，支持 Rust 后端 libk4tls（rustls/ring，静态 musl 编译，随包 `weread/lib/libk4tls.so`）。设备侧在 KOReader 启动脚本中 `export WEREAD_TLS_BACKEND=k4tls` 即切换；`auto` 在库不可加载时逐字回退 LuaSec，其余值强制 LuaSec，行为对调用方透明（`WEREAD_TLS_BACKEND` 未设置时不受影响）。
+
+2026-11-10 R4 bench（K5 真机，各 10 次全连接对比）：k4tls MEAN **0.837s** vs LuaSec **0.866s**（快 3.4%，MAX 更低，10/10 成功）——评估报告 §九 R4「性能持平即换」满足。复测工具：`luajit dev/bench_tls.lua [N]`（详见报告 `~/reports/2026-11-10-K4weread-R4-bench报告-libk4tls-vs-LuaSec-K5真机.md`）。
+
 ## [版本变更日志](ChangeLog.md)
 
 各版本的功能与修复记录见 [ChangeLog.md](ChangeLog.md)。
