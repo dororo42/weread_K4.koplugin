@@ -56,7 +56,10 @@ git archive --format=zip --prefix="weread_K4.koplugin/" -o "$out" HEAD -- \
 # in-package path when present. Local builds without the file keep
 # the historical LuaSec-only package.
 if [ -f "weread/lib/libk4tls.so" ]; then
+    mkdir -p "weread_K4.koplugin/weread/lib"
+    cp "weread/lib/libk4tls.so" "weread_K4.koplugin/weread/lib/libk4tls.so"
     zip -q "$out" "weread_K4.koplugin/weread/lib/libk4tls.so"
+    rm -rf "weread_K4.koplugin"
 fi
 
 sha256sum "$out" | tee "${out}.sha256"
