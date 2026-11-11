@@ -21,9 +21,13 @@ out="weread_K4.koplugin-${suffix}.zip"
 # 2026-11-08 audit: git archive HEAD silently omits uncommitted fixes, and a
 # version literal lagging behind HEAD ships unreleased code under an old
 # version name. Refuse both — a release must be a clean, tagged commit.
-if [ -n "$(git status --porcelain)" ]; then
+# 2026-11-11: the CI-built libk4tls.so is fetched into the tree by
+# release.yml right before packaging and stays untracked by design --
+# exempt exactly that path from the clean-tree gate (any other dirt,
+# including a modified .so, is still refused).
+if [ -n "$(git status --porcelain | grep -v '^?? weread/lib/libk4tls.so$')" ]; then
     echo "error: working tree is not clean; commit fixes and specs together" >&2
-    git status --porcelain >&2
+    git status --porcelain | grep -v '^?? weread/lib/libk4tls.so$' >&2
     exit 1
 fi
 if ! git rev-parse -q --verify "refs/tags/${suffix}^{commit}" >/dev/null; then
@@ -46,6 +50,15 @@ git archive --format=zip --prefix="weread_K4.koplugin/" -o "$out" HEAD -- \
 # built outside this script (files scattered, plugin vanished) — checksums
 # only make sense together with the rule: ALWAYS build via this script, never
 # by hand. Release notes must quote the digest line below.
+# 2026-11-11: the CI-built TLS backend (libk4tls.so, fetched by
+# release.yml from the K4WereadRust release asset) is untracked, so
+# git archive above cannot include it -- append it at the correct
+# in-package path when present. Local builds without the file keep
+# the historical LuaSec-only package.
+if [ -f "weread/lib/libk4tls.so" ]; then
+    zip -q "$out" "weread_K4.koplugin/weread/lib/libk4tls.so"
+fi
+
 sha256sum "$out" | tee "${out}.sha256"
 
 echo "built ${out} (from $(git rev-parse --short HEAD), _meta version ${version})"
