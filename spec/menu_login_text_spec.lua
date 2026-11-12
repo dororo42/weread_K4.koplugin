@@ -208,8 +208,6 @@ describe("settings TLS backend toggle (2026-11-12)", function()
         local instance = build_instance()
         -- capture this instance's persist/transient channels (build_instance
         -- stores them under the opts table it closed over)
-        persisted = instance.settings
-        local real_set = persisted.set
         local seen = {}
         instance.settings.set = function(_s, key, value) seen[key] = value end
         instance.showTransientInfo = function(_s, text, _secs)
