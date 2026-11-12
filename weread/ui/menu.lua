@@ -223,6 +223,32 @@ end
 
 function M:getSettingsMenuItems()
     local items = {
+        -- 2026-11-12: the Rust TLS backend toggle. checked_func reflects the
+        -- LIVE transport state; the callback flips it, persists the choice
+        -- (explicit selections outrank WEREAD_TLS_BACKEND) and warns when
+        -- libk4tls.so is not loadable (transport falls back to LuaSec).
+        {
+            text = _("Rust TLS backend (k4tls)"),
+            checked_func = function()
+                local transport = require("weread.lib.transport")
+                return transport.backend_explicit and transport.backend == "k4tls"
+            end,
+            callback = function()
+                local transport = require("weread.lib.transport")
+                local want_k4tls = not (transport.backend_explicit and transport.backend == "k4tls")
+                transport.backend = want_k4tls and "k4tls" or "luasec"
+                transport.backend_explicit = true
+                self.settings:set("tls_backend", want_k4tls and "k4tls" or "luasec")
+                self.settings:flush()
+                if want_k4tls then
+                    local resolve_reason = select(2, transport.resolve())
+                    if resolve_reason == "k4tls-unavailable-fallback" then
+                        self:showTransientInfo(
+                            _("libk4tls.so unavailable; falling back to LuaSec."), 3)
+                    end
+                end
+            end,
+        },
         {
             text = _("Cache management"),
             sub_item_table_func = function()

@@ -16,6 +16,20 @@ local __OLD = {}
 for _, name in ipairs(__PRE) do __OLD[name] = package.loaded[name] end
 
 local hint_active = false
+local transport_stub
+transport_stub = {
+    backend = "luasec",
+    backend_explicit = false,
+    last_reason = "luasec",
+    resolve = function()
+        -- mirror the production fallback: explicit k4tls without the
+        -- library (this host has none) -> (nil, k4tls-unavailable-fallback)
+        if transport_stub.backend == "k4tls" then
+            return nil, "k4tls-unavailable-fallback"
+        end
+        return nil, "luasec"
+    end,
+}
 local clear_calls = 0
 
 local function preload_stub(name, factory)
@@ -42,7 +56,14 @@ preload_stub("weread.lib.plugin_util", function()
         safeCallback = nil,
     }
 end)
-preload_stub("weread.ui.footer_indicator", function() return {} end)
+preload_stub("weread.ui.footer_indicator", function()
+    return {
+        read_enabled = function() return false end,
+        resolve_footer = function() return nil end,
+        flush_store = function() end,
+        install = function() return true end,
+    }
+end)
 preload_stub("ui/bidi", function() return { dirpath = function(_s, p) return p end } end)
 preload_stub("ui/widget/confirmbox", function()
     return { new = function(_class, opts) clear_calls = clear_calls + 1; return opts end }
@@ -50,6 +71,7 @@ end)
 preload_stub("ui/widget/infomessage", function() return { new = function() return {} end } end)
 preload_stub("ui/uimanager", function() return { show = function() end, close = function() end } end)
 preload_stub("dispatcher", function() return { registerAction = function() end } end)
+preload_stub("weread.lib.transport", function() return transport_stub end)
 preload_stub("weread/ui/login_hint", function()
     return {
         is_active = function() return hint_active end,
@@ -76,10 +98,19 @@ local function build_instance(opts)
                 if key == "shelf" then return {} end
                 return nil
             end,
+            set = function(_s, key, value)
+                opts.persisted = opts.persisted or {}
+                opts.persisted[key] = value
+            end,
+            flush = function() end,
             is_cookie_configured = function() return true end,
             is_api_configured = function() return true end,
             cache_dir = "/tmp",
         },
+        showTransientInfo = function(_s, text, secs)
+            opts.transients = opts.transients or {}
+            opts.transients[#opts.transients + 1] = { text = text, secs = secs }
+        end,
         read_report = { session_expired = opts.session_expired or false },
         version = "test",
         ui = {},
@@ -106,6 +137,8 @@ describe("login menu item session display (2026-11-12)", function()
                 package.loaded[name] = nil
             end
         end
+        package.loaded["weread.lib.transport"] = nil
+        package.preload["weread.lib.transport"] = nil  -- don't leak our stub into later specs
         for _, name in ipairs(__PRE) do
             if __OLD[name] ~= nil then package.loaded[name] = __OLD[name] end
         end
@@ -141,5 +174,57 @@ describe("login menu item hold-to-clear (2026-11-12)", function()
         assert.is_function(item.hold_callback)
         item.hold_callback()
         assert.equals(1, clear_calls)
+    end)
+end)
+
+describe("settings TLS backend toggle (2026-11-12)", function()
+    local function find_tls_item(items)
+        for _, item in ipairs(items) do
+            if item.text == "Rust TLS backend (k4tls)" then return item end
+        end
+        return nil
+    end
+
+    it("exposes a checked entry that reflects an explicit k4tls selection", function()
+        -- menu.lua resolves weread.lib.transport at CALLBACK time; make sure
+        -- the require hits OUR stub even if an earlier spec cached the real
+        -- module in package.loaded
+        package.loaded["weread.lib.transport"] = transport_stub
+        local instance = build_instance()
+        instance.getSettingsMenuItems = Menu.getSettingsMenuItems
+        local items = instance:getSettingsMenuItems()
+        local item = find_tls_item(items)
+        assert.is_not_nil(item)
+        assert.is_false(item.checked_func())
+        transport_stub.backend = "k4tls"
+        transport_stub.backend_explicit = true
+        assert.is_true(item.checked_func())
+        transport_stub.backend = "luasec"
+        transport_stub.backend_explicit = false
+    end)
+
+    it("toggling on forces k4tls explicitly, persists it and warns when the library is missing", function()
+        local persisted, transients
+        local instance = build_instance()
+        -- capture this instance's persist/transient channels (build_instance
+        -- stores them under the opts table it closed over)
+        persisted = instance.settings
+        local real_set = persisted.set
+        local seen = {}
+        instance.settings.set = function(_s, key, value) seen[key] = value end
+        instance.showTransientInfo = function(_s, text, _secs)
+            transients = transients or {}
+            transients[#transients + 1] = text
+        end
+        instance.getSettingsMenuItems = Menu.getSettingsMenuItems
+        local items = instance:getSettingsMenuItems()
+        local item = find_tls_item(items)
+        item.callback()
+        local transport = require("weread.lib.transport")
+        assert.equals("k4tls", transport.backend)
+        assert.is_true(transport.backend_explicit)
+        assert.equals("k4tls", seen.tls_backend)
+        assert.truthy(transients and #transients > 0)  -- .so missing on host: fallback warned
+        transport.backend, transport.backend_explicit = "luasec", false
     end)
 end)

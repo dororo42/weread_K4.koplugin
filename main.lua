@@ -76,6 +76,13 @@ function WeReadPlugin:init()
     elseif manual_err ~= "not_found" then
         logger.warn("manual login import skipped:", tostring(manual_err))
     end
+    -- 2026-11-12: restore the menu-selected TLS backend (explicit choices
+    -- outrank WEREAD_TLS_BACKEND in transport.resolve).
+    local tls_backend = self.settings:get("tls_backend")
+    if tls_backend == "k4tls" or tls_backend == "luasec" then
+        require("weread.lib.transport").backend = tls_backend
+        require("weread.lib.transport").backend_explicit = true
+    end
     self.client = Client:new(self.settings)
     -- v4.0 (2.5): SQLite-backed offline index (shelf / book detail / catalog).
     -- Gracefully degrades to the existing file caches when lua-ljsqlite3 is

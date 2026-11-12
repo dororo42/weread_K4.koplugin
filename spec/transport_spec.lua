@@ -122,7 +122,30 @@ describe("weread.lib.transport deterministic selection", function()
         end)
     end
     for _, chosen in ipairs({ "auto", "k4tls", "luasec", "typo" }) do
-        it("honors the environment override " .. chosen, function()
+            -- 2026-11-12: the menu's explicit selection must outrank the
+        -- deploy-side env default, otherwise a checked item could never
+        -- override koreader.sh's WEREAD_TLS_BACKEND.
+        it("lets an explicit k4tls choice outrank a luasec environment override", function()
+            options.available = true
+            local transport = require(module_name)
+            transport.backend_explicit = true
+            transport.backend = "k4tls"
+            env = "luasec"
+            local backend, reason = transport.resolve()
+            assert.equals(k4tls, backend)
+            assert.equals("k4tls", reason)
+        end)
+        it("lets an explicit luasec choice outrank a k4tls environment override", function()
+            options.available = true
+            local transport = require(module_name)
+            transport.backend_explicit = true
+            transport.backend = "luasec"
+            env = "k4tls"
+            local backend, reason = transport.resolve()
+            assert.is_nil(backend)
+            assert.equals("luasec", reason)
+        end)
+    it("honors the environment override " .. chosen, function()
             env = chosen
             local transport = require(module_name)
             transport.backend = chosen == "luasec" and "k4tls" or "luasec"
