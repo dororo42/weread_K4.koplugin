@@ -11,13 +11,20 @@ local ShelfTrim = require("weread.lib.shelf_trim")
 -- KOReader widgets and plugin helpers are absent in the spec environment.
 -- Swap them in package.loaded only while library.lua loads, then restore.
 local noop = function() end
+local library_spec_state = { scheduled = nil }
+
 local stubs = {
     ["ui/widget/buttondialog"] = {},
     ["ui/widget/confirmbox"] = {},
     ["ui/widget/infomessage"] = {},
     ["ui/widget/inputdialog"] = {},
     ["ui/widget/progressbardialog"] = {},
-    ["ui/uimanager"] = { scheduleIn = noop, show = noop, close = noop },
+        ["ui/uimanager"] = {
+        scheduleIn = function(_self, _delay, fn)
+            library_spec_state.scheduled = fn
+        end,
+        show = noop, close = noop,
+    },
     ["weread.lib.content"] = {},
     ["weread.lib.global_state"] = {},
     ["weread.lib.logger"] = { warn = noop, info = noop, err = noop },
@@ -76,6 +83,40 @@ local function fake_plugin()
         self.shelf_menu = menu
         return menu
     end
+    -- 2026-11-12: harness for the showBookshelf background-sync path —
+    -- records the exact ORDER of post-sync steps (apply/refresh vs the slow
+    -- SQLite write) so the "paint the fresh books first, persist slowly"
+    -- reordering stays regression-proof.
+    function plugin:requireLogin() return true end
+    function plugin:showBusy() end
+    function plugin:closeBusy() end
+    function plugin:runOnlineTask(_label, fn) fn() end
+    function plugin:refreshShelfCacheIndicators()
+        self.calls[#self.calls + 1] = "refresh"
+        Library.refreshShelfCacheIndicators(self)  -- real in-place repaint
+    end
+    plugin.library_db = {
+        getShelf = function() return plugin.cached_shelf end,
+        cacheShelf = function(_db, books)
+            plugin.calls[#plugin.calls + 1] = "cacheShelf"
+        end,
+    }
+    plugin.client = {
+        get_shelf = function()
+            plugin.calls[#plugin.calls + 1] = "network"
+            return { books = plugin.fresh_books }
+        end,
+    }
+    plugin.scheduler = {
+        scheduleIn = function(_self, _delay, fn)
+            plugin.calls[#plugin.calls + 1] = "schedule"
+            plugin.scheduled_fn = fn
+        end,
+    }
+    plugin.calls = {}
+    plugin.cached_shelf = { { bookId = "old1", title = "Cached", readUpdateTime = 1 } }
+    plugin.fresh_books = { { bookId = "new1", title = "Fresh", readUpdateTime = 9 } }
+    plugin.settings.data.shelf_synced_at = 0  -- stale: the gate must run the sync
     return plugin
 end
 
@@ -93,5 +134,26 @@ describe("weread.ui.library in-place shelf refresh (v9.6)", function()
 
         assert.equals("New book", menu.item_table[1].text)
         assert.equals(15, menu.last_itemnumber)
+    end)
+end)
+
+describe("showBookshelf background sync ordering (2026-11-12, 10k-shelf freeze)", function()
+    it("paints the fresh list BEFORE the slow SQLite write, and marks sync only after it", function()
+        local plugin = fake_plugin()
+        plugin:showBookshelf()
+        -- first paint comes from the SQLite cache
+        assert.equals("Cached", plugin.shelf_menu.item_table[1].text)
+
+        local scheduled = library_spec_state.scheduled
+        assert.is_function(scheduled)
+        scheduled()
+
+        local joined = table.concat(plugin.calls, ",")
+        -- the in-place repaint must land BEFORE the multi-second SQLite write
+        assert.truthy(joined:find("refresh") and joined:find("refresh") < joined:find("cacheShelf"),
+            "expected repaint before cacheShelf, got: " .. joined)
+        -- the sync bookkeeping must only be recorded after the cache write
+        assert.truthy(joined:find("cacheShelf") < (joined:find("markSynced") or math.huge),
+            "expected mark_synced after cacheShelf, got: " .. joined)
     end)
 end)

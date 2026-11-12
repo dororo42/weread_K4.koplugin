@@ -19,7 +19,10 @@ M.CHUNK_PAGES = 3
 
 -- Background /shelf/sync is skipped while the cached shelf is younger than
 -- this (device-measured sync cost: ~8s TLS + ~20s SQLite write).
-M.FRESH_SECONDS = 300
+-- 2026-11-12 (K4 10162-book device feedback): 300s made the background
+-- refresh freeze the UI once per 5 minutes of browsing; 1800s keeps the
+-- same correctness (shelf changes are rare) at 1/6 of the freeze frequency.
+M.FRESH_SECONDS = 1800
 
 -- Settings key for the last successful shelf sync (unix seconds).
 M.SETTINGS_KEY = "shelf_synced_at"

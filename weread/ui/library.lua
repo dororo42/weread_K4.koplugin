@@ -76,16 +76,20 @@ function M:showBookshelf()
             end)
             if ok and type(result) == "table"
                 and type(result.books) == "table" then
+                -- 2026-11-12 (10k-shelf freeze): repaint FIRST (in-memory
+                -- bucket split + in-place rebuild, sub-second) so the user
+                -- sees fresh books immediately; the multi-second SQLite
+                -- write runs afterwards and only book-keeps the freshness
+                -- window on success. Old order made the open shelf wait for
+                -- the whole cacheShelf before repainting (measured: report
+                -- tick delayed 30s behind a 21.5s refresh on a 10162-book
+                -- shelf).
+                self:_applyShelfBooks(result.books)
+                self:refreshShelfCacheIndicators()
                 if self.library_db then
                     pcall(function() self.library_db:cacheShelf(result.books) end)
                 end
                 ShelfTrim.mark_synced(self.settings, os.time())
-                -- v9.6: refresh the OPEN shelf view in place — re-run the
-                -- bucket split on the fresh list and rebuild the item table
-                -- (page-preserving via refresh()). No-op when the shelf
-                -- menu is closed (refreshShelfCacheIndicators guards).
-                self:_applyShelfBooks(result.books)
-                self:refreshShelfCacheIndicators()
                 logger.info("background shelf refresh: cached",
                     "books=", tostring(#result.books))
             elseif not ok then
