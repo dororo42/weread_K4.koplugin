@@ -393,14 +393,17 @@ function QRLogin:_complete_protocol(login_result, generation)
     return account
 end
 
--- v9.10 (K4 fix 2026-11-10): the key legend used to be a centered
--- InfoMessage toast — both it and the 72%-viewport QR are screen-centered,
--- so the text sat on top of the code and blocked scanning for its whole
--- lifetime. Anchor a small non-modal bar to the screen bottom instead: no
--- key bindings of its own, so UIManager's window-stack walk still delivers
--- Back / Menu to the QR dialog beneath. Hidden from _close_qr_dialog — the
--- single funnel every close path (dismiss, cancel, poll failure, completion)
--- already goes through.
+-- v9.10 (2026-11-10): the key legend used to be a centered InfoMessage
+-- toast — both it and the 72%-viewport QR are screen-centered, so the text
+-- sat on top of the code and blocked scanning for its whole lifetime.
+-- Anchor a small non-modal bar to the screen bottom instead. K4 key fix
+-- (2026-11-12): this bar has no key bindings and never consumes key events,
+-- but as the TOPMOST window it still blocks sendEvent's delivery — keys go
+-- to the topmost non-toast window only, unconsumed events are dropped
+-- (device uimanager.lua v2026.07.1), so a window shown after the QR dialog
+-- would silence Back/Menu. Callers must show the QR dialog AFTER this bar.
+-- Hidden from _close_qr_dialog — the single funnel every close path
+-- (dismiss, cancel, poll failure, completion) already goes through.
 function QRLogin:_show_qr_hint(text)
     self:_hide_qr_hint()
     if not Device:hasKeys() then
@@ -552,8 +555,15 @@ function QRLogin:_show_qr(uid, generation)
         if generation ~= self.generation or self.qr_dialog ~= dialog then
             return
         end
-        UIManager:show(dialog)
+        -- K4 key fix (2026-11-12): the legend must be shown BEFORE the
+        -- dialog. UIManager:sendEvent (device v2026.07.1) gives key events
+        -- to the topmost non-toast window and drops them there when
+        -- unconsumed — only is_always_active widgets below ever see them.
+        -- v9.10 showed this bar after the dialog, making it topmost and
+        -- silently blocking the 366b1f9 Back/Menu exits. The QR dialog
+        -- must always be the last window shown here.
         self:_show_qr_hint(_("Back: cancel login  |  Menu: exit KOReader"))
+        UIManager:show(dialog)
         self.host:refreshUI()
     end)
 

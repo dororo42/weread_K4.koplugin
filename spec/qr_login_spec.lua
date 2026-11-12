@@ -6,6 +6,13 @@
 -- any network. The QRMessage stub mimics the device widget's init(): it is an
 -- InputContainer with a catch-all AnyKeyPressed binding and a dismiss_callback
 -- fired from onCloseWidget.
+--
+-- 2026-11-12 (K4 key regression fix): UIManager:sendEvent (device
+-- v2026.07.1) hands keys to the topmost non-toast window and drops them
+-- there when unconsumed — only is_always_active widgets below ever see
+-- them. The v9.10 hint bar was shown AFTER the QR dialog, became topmost,
+-- and silently blocked the 366b1f9 Back/Menu exits. The show order is now
+-- pinned: hint first, QR dialog last.
 
 local qr_widgets = {}
 local function fresh_ui_calls()
@@ -443,8 +450,26 @@ describe("QRLogin defers dialog rendering (upstream #201)", function()
         assert.equals(0, #ui_calls.hints)
         assert.equals(0.2, ui_calls.schedules[1].seconds)
         flush_qr_show()
-        assert.equals(qr_widgets[1], ui_calls.shown[1])
+        assert.equals(ui_calls.hints[1], ui_calls.shown[1])
+        assert.equals(qr_widgets[1], ui_calls.shown[2])
         assert.equals(1, #ui_calls.hints)
+    end)
+
+    it("shows the hint below the dialog so Back/Menu reach the QR dialog (2026-11-12 K4 key fix)", function()
+        local obj = new_modal_login()
+        obj:_show_qr("UID-1", 1)
+        flush_qr_show()
+        -- sendEvent gives keys to the topmost non-toast window and drops
+        -- them when unconsumed; the dialog must therefore be the last
+        -- window shown, with the non-interactive legend beneath it.
+        local dialog_index, hint_index
+        for i, widget in ipairs(ui_calls.shown) do
+            if widget == qr_widgets[1] then dialog_index = i end
+            if widget == ui_calls.hints[1] then hint_index = i end
+        end
+        assert.is_not_nil(dialog_index)
+        assert.is_not_nil(hint_index)
+        assert.is_true(hint_index < dialog_index)
     end)
 
     it("skips the deferred render after the session was cancelled", function()
