@@ -63,6 +63,6 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 - Latest: `handoffs/2026-11-11-073540-weread-k4-audit-closure/HANDOFF.md`
 - Branch: main @ 3176e5d
-- Status: **v9.12 双机收口**（2026-11-11）：复审 21 项全闭环；R4 bench PASS（K5）+ K4 对照；K4/K5 均 v9.12（K4 由并发 agent 部署，md5 验证完整）；K5 会话又过期待重扫；上游 PR #230 OPEN 待审。
+- Status: **HEAD eb78802+（未发版，v9.13 候选攒积中）**：菜单三增强（会话状态化显示/长按清除/TLS 勾选，busted 478/0）+ libk4tls.so 分发链路就绪 + 书架刷新分块待拍板；K5 TLS A/B 实验中（勿勾选）；上游 PR #230 OPEN。发版待用户指令。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
