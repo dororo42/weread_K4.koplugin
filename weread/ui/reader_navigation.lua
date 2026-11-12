@@ -170,25 +170,6 @@ function M:showWereadOnlyMenu()
     if type(items) ~= "table" or #items == 0 then
         return false
     end
-    -- v9.7: reading style is a first-class need in the converged session.
-    -- The bottom config menu (font size/family/spacing/margins) still works
-    -- via the Press key (hotkeys "press" mapping untouched), but it is
-    -- undiscoverable without KOReader's menu — so the standalone menu
-    -- carries an explicit entry firing the same ShowConfigMenu event the
-    -- native menu path uses (readermenu.lua:499-505, device v2026.07).
-    -- The list closes first so the config panel isn't stacked over it;
-    -- UIManager:close on an already-closed widget is pcall-guarded (S-21).
-    local style_item = {
-        text = _("Reading style"),
-        callback = self:safeCallback(_("Reading style"), function()
-            if self._weread_only_menu then
-                pcall(function() UIManager:close(self._weread_only_menu) end)
-                self._weread_only_menu = nil
-            end
-            self.ui:handleEvent(Event:new("ShowConfigMenu"))
-        end),
-    }
-    table.insert(items, 2, style_item)
     -- v9.5: program exit. The converged session has no KOReader menu, so
     -- the standalone menu carries its own exit entry broadcasting the same
     -- Exit event the native menus use (ui/elements/common_exit_menu_table.lua,
@@ -197,8 +178,9 @@ function M:showWereadOnlyMenu()
     table.insert(items, {
         text = _("Exit KOReader"),
         callback = self:safeCallback(_("Exit KOReader"), function()
-            -- Same posture as Reading style: dismiss the standalone list
-            -- before the app-wide event so no orphan widget is left behind.
+            -- Dismiss the standalone list before the app-wide event so no
+            -- orphan widget is left behind; UIManager:close on an
+            -- already-closed widget is pcall-guarded (S-21).
             if self._weread_only_menu then
                 pcall(function() UIManager:close(self._weread_only_menu) end)
                 self._weread_only_menu = nil

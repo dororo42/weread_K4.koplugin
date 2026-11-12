@@ -10,6 +10,9 @@
 -- TouchMenu instead of the list Menu — sub_item_table_func entries (Settings,
 -- report toggles) were un-navigable and checked_func had no checkbox there.
 -- The tests pin the TouchMenu construction and the item ordering.
+-- 2026-11-12: the Reading style entry was removed (user decision) — the
+-- bottom config panel stays reachable through the Press-key hotkey mapping,
+-- so the converged menu keeps only the original WeRead items plus Exit.
 
 local recorded
 local function reset()
@@ -77,7 +80,7 @@ end
 describe("weread.ui.reader_navigation converged menu (v9.7)", function()
     before_each(reset)
 
-    it("builds a TouchMenu with Reading style second, closing it before ShowConfigMenu", function()
+    it("builds a TouchMenu without a Reading style entry (Press-key shortcut suffices)", function()
         local plugin = fake_plugin()
         assert.is_true(plugin:showWereadOnlyMenu())
         assert.equals(1, #recorded.touchmenus)
@@ -87,13 +90,12 @@ describe("weread.ui.reader_navigation converged menu (v9.7)", function()
         assert.equals(600, opts.width)
         local tab = opts.tab_item_table[1]
         assert.equals("appbar.menu", tab.icon)
-        assert.equals("Reading style", tab[2].text)
-
-        tab[2].callback()
-        assert.equals(1, #recorded.closed)
-        assert.is_true(recorded.closed[1] == menu)
-        assert.equals("ShowConfigMenu", recorded.events[1])
-        assert.is_nil(plugin._weread_only_menu)
+        for _, item in ipairs(tab) do
+            assert.not_equals("Reading style", item.text)
+        end
+        assert.equals("Bookshelf", tab[1].text)
+        assert.equals("Search", tab[2].text)
+        assert.equals("Exit KOReader", tab[#tab].text)
     end)
 
     it("appends Exit KOReader broadcasting the native Exit event", function()
