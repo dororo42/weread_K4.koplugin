@@ -82,6 +82,11 @@ jobs:
             exit 1
           }
 
+      - name: TLS backend asset reachable (K4WereadRust release)
+        run: |
+          curl -fsSL -o /tmp/libk4tls.so "https://github.com/dororo42/K4WereadRust/releases/download/libk4tls-v0.1.0/libk4tls.so"
+          echo "edb6dc76849861b464e86c3422390841b9b30cbe8d59822c9dde372619408fde  /tmp/libk4tls.so" | sha256sum -c
+
       - name: Lint (luacheck)
         # Explicit whitelist: never lint vendored rocks or hidden dirs.
         # Findings are surfaced as ::error:: check annotations (readable

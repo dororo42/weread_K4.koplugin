@@ -97,6 +97,20 @@ function M:getMainMenuItems()
                     and tonumber(account.login_time or 0) > 0 then
                     local name = type(account.name) == "string" and account.name or ""
                     if name == "" then name = _("Unknown account") end
+                    -- 2026-11-12: the item must reflect SESSION state, not
+                    -- merely credential presence. The runtime expired latch
+                    -- (set when a report tick hits auth failure) or the
+                    -- persisted footer hint (survives a restart) both mean
+                    -- the session is dead even though the cookie is on disk.
+                    local session_expired = self.read_report ~= nil
+                        and self.read_report.session_expired == true
+                    if not session_expired then
+                        local ok_hint, LoginHint = pcall(require, "weread/ui/login_hint")
+                        session_expired = ok_hint and LoginHint.is_active() == true
+                    end
+                    if session_expired then
+                        return T(_("Session expired · %1"), name)
+                    end
                     return T(_("Logged in · %1"), name)
                 end
                 return _("QR code login")
@@ -111,6 +125,14 @@ function M:getMainMenuItems()
                 else
                     self.qr_login:start()
                 end
+            end),
+            -- 2026-11-12: confirmClearAccount existed with no UI entry at
+            -- all; the item's hold gesture is its natural home (ConfirmBox
+            -- guards the destructive action). TouchMenu registers HoldSelect
+            -- for key navigation, so this also works on the non-touch K4.
+            hold_callback = self:safeCallback(_("Clear account"), function(touchmenu_instance)
+                self._login_menu_instance = touchmenu_instance
+                self:confirmClearAccount()
             end),
         },
         {

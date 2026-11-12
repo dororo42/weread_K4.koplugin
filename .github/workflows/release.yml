@@ -28,11 +28,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fetch libk4tls.so (CI-built by K4WereadRust)
+        run: |
+          curl -fsSL -o /tmp/libk4tls.so \
+            "https://github.com/dororo42/K4WereadRust/releases/download/libk4tls-v0.1.0/libk4tls.so"
+          echo "edb6dc76849861b464e86c3422390841b9b30cbe8d59822c9dde372619408fde  /tmp/libk4tls.so" | sha256sum -c
+          cp /tmp/libk4tls.so weread/lib/libk4tls.so
+
       - name: Build release package (zip + sha256)
         run: bash tools/build_release.sh
 
       - name: Verify checksum
         run: sha256sum -c weread_K4.koplugin-v*.zip.sha256
+      - name: Assert TLS backend in package
+        run: unzip -l weread_K4.koplugin-v*.zip | grep -q "weread_K4.koplugin/weread/lib/libk4tls.so"
 
       # Release notes mirror the matching ChangeLog.md section, so every
       # release (historical and new) uses the same concise Added/Changed/
