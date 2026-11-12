@@ -216,7 +216,9 @@
       ]
     },
     "weread/ui/menu.lua": {
-      "specs": [],
+      "specs": [
+        "spec/menu_login_text_spec.lua"
+      ],
       "reason": "KOReader menu registration glue: declarative item table plus enabled_func wiring over progress_sync:status() (spec-covered); interactive behaviour verified on device."
     },
     "weread/ui/progress_sync_dialog.lua": {
