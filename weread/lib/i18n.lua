@@ -61,6 +61,8 @@ local zh = {
     -- K4 v6.0 post-release fixes (P1-C/P2-F, 2026-09-18): expired-session surfacing.
     ["WeRead session expired: please re-login (scan the QR code)"] = "微信读书登录已过期，请重新扫码登录",
     ["Session expired: please re-login (scan the QR code)"] = "登录已过期：请重新扫码登录",
+    ["Session: expired (re-login required)"] = "会话：已过期（需重新登录）",
+    ["Session: active"] = "会话：正常",
     ["Reporting paused after repeated failures; it resumes on network recovery or re-login."] = "连续失败已暂停上报，网络恢复或重新登录后自动继续（阅读时长不会丢失）。",
     -- P1-C §六·3 (2026-09-18): short footer hint text (static display form).
     ["WeRead login expired"] = "微信读书登录已过期",

@@ -10,12 +10,17 @@
 
 local __PRE = { "ffi/util", "weread.lib.i18n", "weread.lib.protocol",
     "weread.lib.logger", "weread.lib.plugin_util", "weread.ui.footer_indicator", "weread/ui/login_hint",
-    "ui/bidi", "ui/widget/confirmbox", "ui/widget/infomessage",
+    "ui/bidi", "ui/widget/confirmbox", "ui/widget/infomessage", "ui/widget/menu",
+    "weread.lib.global_state",
     "ui/uimanager", "dispatcher", "weread.ui.login_hint" }
 local __OLD = {}
 for _, name in ipairs(__PRE) do __OLD[name] = package.loaded[name] end
 
 local hint_active = false
+local clear_calls = 0
+local qr_calls = 0
+local status_calls = 0
+local info_texts = {}
 local transport_stub
 transport_stub = {
     backend = "luasec",
@@ -30,8 +35,6 @@ transport_stub = {
         return nil, "luasec"
     end,
 }
-local clear_calls = 0
-
 local function preload_stub(name, factory)
     package.preload[name] = factory
     package.loaded[name] = factory()
@@ -52,7 +55,13 @@ end)
 preload_stub("weread.lib.plugin_util", function()
     return {
         tr = function(text) return text end,
-        T = function(t, ...) return (t:gsub("%%1", tostring(select(1, ...) or ""))) end,
+        T = function(t, ...)
+            local n = select("#", ...)
+            for i = 1, n do
+                t = t:gsub("%%" .. i, tostring((select(i, ...))))
+            end
+            return t
+        end,
         safeCallback = nil,
     }
 end)
@@ -71,6 +80,16 @@ end)
 preload_stub("ui/widget/infomessage", function() return { new = function() return {} end } end)
 preload_stub("ui/uimanager", function() return { show = function() end, close = function() end } end)
 preload_stub("dispatcher", function() return { registerAction = function() end } end)
+preload_stub("ui/widget/menu", function()
+    return { new = function() return {} end }
+end)
+preload_stub("weread.lib.global_state", function()
+    return {
+        get = function() return nil end,
+        set = function() end,
+        clear = function() end,
+    }
+end)
 preload_stub("weread.lib.transport", function() return transport_stub end)
 preload_stub("weread/ui/login_hint", function()
     return {
@@ -81,12 +100,17 @@ preload_stub("weread/ui/login_hint", function()
 end)
 
 package.loaded["weread.ui.menu"] = nil
+package.loaded["weread.ui.common"] = nil
 package.loaded["weread.lib.protocol"] = nil
 local Menu = require("weread.ui.menu")
+local Common = require("weread.ui.common")
 
 local function build_instance(opts)
     opts = opts or {}
     clear_calls = 0
+    qr_calls = 0
+    status_calls = 0
+    info_texts = {}
     hint_active = opts.hint_active or false
     local account = opts.account or {
         login_method = "qr", login_time = 1794000000, name = "Ray",
@@ -111,16 +135,20 @@ local function build_instance(opts)
             opts.transients = opts.transients or {}
             opts.transients[#opts.transients + 1] = { text = text, secs = secs }
         end,
+        showInfo = function(_s, text)
+            info_texts[#info_texts + 1] = text
+        end,
         read_report = { session_expired = opts.session_expired or false },
         version = "test",
         ui = {},
-        qr_login = {},
+        qr_login = { start = function() qr_calls = qr_calls + 1 end },
         safeCallback = function(_s, _label, fn) return fn end,
-        showAccountStatus = function() end,
         confirmClearAccount = function(_s) clear_calls = clear_calls + 1 end,
         getSettingsMenuItems = function() return {} end,
     }
-    return setmetatable(instance, { __index = Menu })
+    return setmetatable(instance, {
+        __index = function(_t, key) return Menu[key] or Common[key] end,
+    })
 end
 
 local function find_login_item(items)
@@ -174,6 +202,77 @@ describe("login menu item hold-to-clear (2026-11-12)", function()
         assert.is_function(item.hold_callback)
         item.hold_callback()
         assert.equals(1, clear_calls)
+    end)
+end)
+
+describe("session item submenu (2026-11-12 K4 key-nav fix)", function()
+    -- Device evidence: TouchMenu's hold path is touch-gesture-only
+    -- (TouchMenuItem ges_events.HoldSelect = ges "hold"; the container
+    -- key_events bind Back/Close/PgFwd/PgBack/arrows/Press — no hold), so
+    -- on the non-touch K4 a held key repeats Press and opened the tap
+    -- dialog instead of the clear confirmation. The actions must be
+    -- reachable through a plain submenu.
+    local function find_session_item(items)
+        for _, item in ipairs(items) do
+            if type(item.text_func) == "function" then return item end
+        end
+        return nil
+    end
+
+    it("exposes a key-navigable submenu: status, QR login, clear", function()
+        local item = find_session_item(build_instance():getMainMenuItems())
+        assert.is_table(item.sub_item_table)
+        assert.equals(3, #item.sub_item_table)
+        assert.equals("Account status", item.sub_item_table[1].text)
+        assert.equals("QR code login", item.sub_item_table[2].text)
+        assert.equals("Clear account", item.sub_item_table[3].text)
+    end)
+
+    it("routes the status entry to showAccountStatus", function()
+        local instance = build_instance()
+        instance.showAccountStatus = function() status_calls = status_calls + 1 end
+        find_session_item(instance:getMainMenuItems()).sub_item_table[1].callback()
+        assert.equals(1, status_calls)
+    end)
+
+    it("routes the QR entry to qr_login:start", function()
+        local instance = build_instance()
+        find_session_item(instance:getMainMenuItems()).sub_item_table[2].callback()
+        assert.equals(1, qr_calls)
+    end)
+
+    it("routes the clear entry to confirmClearAccount", function()
+        local instance = build_instance()
+        find_session_item(instance:getMainMenuItems()).sub_item_table[3].callback()
+        assert.equals(1, clear_calls)
+    end)
+end)
+
+describe("account status dialog session line (2026-11-12)", function()
+    it("reports the live session when healthy", function()
+        local instance = build_instance()
+        instance:showAccountStatus()
+        assert.truthy(info_texts[1]:find("Session: active", 1, true))
+        assert.falsy(info_texts[1]:find("expired", 1, true))
+    end)
+
+    it("reports the latched expired state and re-login requirement", function()
+        local instance = build_instance({ session_expired = true })
+        instance:showAccountStatus()
+        assert.truthy(info_texts[1]:find("Session: expired", 1, true))
+        assert.truthy(info_texts[1]:find("re-login required", 1, true))
+    end)
+
+    it("reports the expired state from the persisted footer hint alone", function()
+        local instance = build_instance({ hint_active = true })
+        instance:showAccountStatus()
+        assert.truthy(info_texts[1]:find("Session: expired", 1, true))
+    end)
+
+    it("isSessionExpired mirrors the menu text decision", function()
+        assert.is_false(build_instance():isSessionExpired())
+        assert.is_true(build_instance({ session_expired = true }):isSessionExpired())
+        assert.is_true(build_instance({ hint_active = true }):isSessionExpired())
     end)
 end)
 

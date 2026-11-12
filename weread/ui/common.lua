@@ -268,6 +268,23 @@ function M:renewCookieWithUI()
     end)
 end
 
+-- Single source for the session-state decision shared by the login menu
+-- item text (menu.lua text_func) and the account status dialog. The runtime
+-- expired latch (set when a report tick hits auth failure) or the persisted
+-- footer hint (survives a restart) both mean the session is dead even
+-- though the cookie is still on disk — credential presence must not be
+-- reported as a healthy session (2026-11-12 K4 device report).
+function M:isSessionExpired()
+    if self.read_report ~= nil and self.read_report.session_expired == true then
+        return true
+    end
+    local ok_hint, LoginHint = pcall(require, "weread/ui/login_hint")
+    if ok_hint and LoginHint.is_active() == true then
+        return true
+    end
+    return false
+end
+
 function M:showAccountStatus()
     local account = self.settings:get("account", {})
     local account_name = type(account.name) == "string" and account.name or ""
@@ -285,12 +302,18 @@ function M:showAccountStatus()
     end
     local cookie_status = self.settings:is_cookie_configured() and _("configured") or _("missing")
     local api_status = self.settings:is_api_configured() and _("configured") or _("missing")
+    -- Session line: the dialog used to report only credential presence
+    -- ("Cookie: configured") while the menu item said "Session expired",
+    -- directly contradicting itself.
+    local session_status = self:isSessionExpired()
+        and _("Session: expired (re-login required)") or _("Session: active")
     self:showInfo(T(
-        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\nCache directory:\n%5"),
+        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\n%5\nCache directory:\n%6"),
         account_name,
         login_method,
         cookie_status,
         api_status,
+        session_status,
         BD.dirpath(self.settings.cache_dir)
     ))
 end
