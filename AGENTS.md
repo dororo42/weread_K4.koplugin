@@ -45,10 +45,15 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 ## Release discipline
 
 - Bump version in `_meta.lua`, refresh `build_commit` in `main.lua`
-  (CI verifies it is an ancestor of HEAD, F-07).
+  (CI verifies it is an ancestor of HEAD, F-07), and bump the `README.md`
+  version literals in the same change — `tools/check_version_sync.py` now
+  checks README too (2026-11-12 audit, I-2).
+- Rename the `## [Unreleased]` section of `ChangeLog.md` to
+  `## [<tag>] - YYYY-MM-DD` BEFORE pushing the tag: `release.yml` derives
+  release notes from that exact heading and fails when it is missing (F-8).
 - Update `ChangeLog.md` with the batch summary (README links to it); commit
   message follows: `<version>批次: <变更摘要>，详见ChangeLog.md`.
-- Full gate before commit: busted + luacheck + luac -p + module-map + clean tree.
+- Full gate before commit: busted + luacheck + luac -p + module-map + version-sync + clean tree.
 
 ## Where things live
 
@@ -61,8 +66,8 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 ## Current Handoff
 
-- Latest: `handoffs/2026-11-11-073540-weread-k4-audit-closure/HANDOFF.md`
-- Branch: main @ 3176e5d
-- Status: **HEAD eb78802+（未发版，v9.13 候选攒积中）**：菜单三增强（会话状态化显示/长按清除/TLS 勾选，busted 478/0）+ libk4tls.so 分发链路就绪 + 书架刷新分块待拍板；K5 TLS A/B 实验中（勿勾选）；上游 PR #230 OPEN。发版待用户指令。
+- Latest: `handoffs/2026-11-12-134405-weread-k4-three-repo-audit-fix/HANDOFF.md`
+- Branch: main @ 83917f0
+- Status: **三仓审查复核意见落地（2026-11-12）**：版本门禁扩展到 README、`client.lua` 注释对齐、`ChangeLog.md` 预置 `[Unreleased]`（含 R4/k4tls 顺延条）；本仓为 Lua 生产源，镜像已同步到 Rust 仓。21 项逐条确认见 HANDOFF.md「三仓协同」§4。版本未递增、v9.13 仍暂缓发包；修复**未 commit / push**（待授权），未构建、未连真机。
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。

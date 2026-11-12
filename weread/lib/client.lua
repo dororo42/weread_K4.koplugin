@@ -424,8 +424,10 @@ function Client:request(opts)
     -- restart-safe. Deliberately documented, not guarded: guarding a
     -- non-existent caller is premature.
     -- k4tls 传输（K4WereadRust P1-A）：超时/限额直传 C ABI；socket.http 路径
-    -- 忽略这些字段。默认后端 auto——libk4tls.so 不可加载时逐字回退 LuaSec
-    -- （R2 回退开关），真机 bench（R4）通过前不翻默认。
+    -- 忽略这些字段。后端由 weread/lib/transport.lua 决定：默认 luasec，
+    -- 只有显式 auto/k4tls 才探测 libk4tls.so；库不可加载时回退 LuaSec。
+    -- 2026-11-12 起菜单可勾选后端，显式选择优先于部署侧 WEREAD_TLS_BACKEND
+    -- （backend_explicit）；R4 bench 已 PASS，翻闸/回退由设备 env 或菜单控制。
     req_opts.block_timeout = block_timeout
     req_opts.total_timeout = total_timeout
     req_opts.transport_max_bytes = max_bytes

@@ -3,6 +3,27 @@
 本文件记录微信读书 KOReader 插件（K4 分支）各版本的重要变更，条目采用中英双语，聚焦用户可见的功能与 Bug 修复。
 All notable changes are documented here in both Chinese and English, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] - 2026-11-12（未发版；打 tag 前重命名为 `## [v9.13] - YYYY-MM-DD`）
+
+> 汇总 2026-11-12 已合入 main、但按用户指示 **v9.13 暂缓发包** 的运行时改动。
+> `release.yml` 的 notes 抽取只认 `## [vX] - YYYY-MM-DD` 标题：打 `v9.13` tag 前必须重命名本节，否则出包流程会显式失败（不会发布占位正文）。
+
+### Added / 新增
+
+- 登录菜单项会话状态化显示：Cookie 过期显示「会话已过期 · 用户名」，重启后由持久 footer hint 快照兜底。
+  The login item now reflects session state rather than credential presence alone, with a persisted footer-hint snapshot across restarts.
+- 登录项长按清除账户：`hold_callback → confirmClearAccount`（ConfirmBox 二次确认）。
+  A hold gesture on the login item routes to the existing confirmClearAccount dialog.
+- 设置可勾选 Rust TLS 后端：菜单显式选择优先于部署侧 `WEREAD_TLS_BACKEND`，选择持久化到 `settings.tls_backend`，`libk4tls.so` 不可加载时显式提示回退 LuaSec。
+  A settings toggle for the Rust TLS backend: an explicit choice outranks the deployment env var, is persisted, and surfaces an unavailable-library fallback.
+
+### Changed / 变更
+
+- 2026-11-12 三仓审查后，`tools/check_version_sync.py` 同时校验 `README.md` 的版本字面量；`client.lua` 的 k4tls 注释与默认后端（`luasec`）对齐；`README.md` 三处版本更新为 v9.12。
+  After the 2026-11-12 three-repo audit, the version gate also checks README.md, the k4tls comment matches the actual luasec default, and README quotes v9.12.
+- 传输后端补充（闭环 11-11 交接顺延项）：R4 bench（K5 真机）k4tls **0.837s** vs LuaSec **0.866s**，建议在设备侧经 `WEREAD_TLS_BACKEND=k4tls` 或菜单勾选启用，LuaSec 保留为显式回退（`WEREAD_TLS_BACKEND=luasec`）；详见 `README.md` 传输后端节与 K4WereadRust 仓 `docs/INTEGRATION.md`。
+  Transport backend: the R4 bench passed (K5, k4tls 0.837s vs LuaSec 0.866s). Enable via the env var or the settings toggle; LuaSec remains the explicit fallback.
+
 ## [v9.12] - 2026-11-10
 
 ### Fixed / 修复

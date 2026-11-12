@@ -1,4 +1,4 @@
-# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v9.11）
+# WeRead KOReader Plugin · K4 分支（v0.6.0-k4-v9.12）
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担。请遵守微信读书的用户协议和相关法律法规。
 
@@ -110,7 +110,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 │   ├── 立即同步进度
 │   └── 书籍详情
 ├── 已登录 · 账号名 / 微信扫码登录   （菜单末尾）
-└── 关于（v0.6.0-k4-v9.11）          （菜单末尾）
+└── 关于（v0.6.0-k4-v9.12）          （菜单末尾）
 ```
 
 ## 阅读时长上报
@@ -125,7 +125,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 ## 传输后端（Rust TLS，可选）
 
-插件传输层默认 LuaSec，支持 Rust 后端 libk4tls（rustls/ring，静态 musl 编译，随包 `weread/lib/libk4tls.so`）。设备侧在 KOReader 启动脚本中 `export WEREAD_TLS_BACKEND=k4tls` 即切换；`auto` 在库不可加载时逐字回退 LuaSec，其余值强制 LuaSec，行为对调用方透明（`WEREAD_TLS_BACKEND` 未设置时不受影响）。
+插件传输层默认 LuaSec（`weread/lib/transport.lua` 的 `M.backend = "luasec"`），支持 Rust 后端 libk4tls（rustls/ring，随包 `weread/lib/libk4tls.so`）。只有显式 `auto` / `k4tls` 才探测该库；`auto` 在库不可加载时回退 LuaSec，其余值强制 LuaSec。设备侧可在 KOReader 启动脚本 `export WEREAD_TLS_BACKEND=k4tls`，也可在「设置 → Rust TLS 后端 (k4tls)」勾选（v9.13 候选，未发版）：**菜单显式选择优先于部署侧 env**（`transport.backend_explicit`），选择持久化到 `settings.tls_backend`，`.so` 不可加载时显式提示回退而不静默。未设置 env 且未勾选时不受影响。
 
 2026-11-10 R4 bench（K5 真机，各 10 次全连接对比）：k4tls MEAN **0.837s** vs LuaSec **0.866s**（快 3.4%，MAX 更低，10/10 成功）——评估报告 §九 R4「性能持平即换」满足。复测工具：`luajit dev/bench_tls.lua [N]`（详见报告 `~/reports/2026-11-10-K4weread-R4-bench报告-libk4tls-vs-LuaSec-K5真机.md`）。
 
@@ -143,7 +143,7 @@ Kindle 4（K4）实体键只有：5 向 D-pad、左右翻页键、Home/Back/Menu
 
 | 项目 | 主线 v1.0.0 | 本分支（K4） |
 |------|-------------|--------------|
-| 版本号 | 1.0.0 | 0.6.0-k4-v9.11 |
+| 版本号 | 1.0.0 | 0.6.0-k4-v9.12 |
 | 手动登录（备用） | 无 | **有**（USB 模板导入，扫码不可用时备用） |
 | 离线阅读时长上报 + 挂起检测 | 无 | **有**（离线时长持久化 + 挂起检测只丢弃睡眠时长） |
 | 上报状态细粒度显示 | 无 | **有** |

@@ -28,6 +28,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 2026-11-12 three-repo audit (I-4): the URL and sha256 below are the
+      # consumer side of the asset owned by K4WereadRust; its full fingerprint
+      # and provenance live in K4WereadRust/docs/RELEASE_ASSETS.md. Keep the
+      # two in sync when a new libk4tls.so is published.
       - name: Fetch libk4tls.so (CI-built by K4WereadRust)
         run: |
           curl -fsSL -o /tmp/libk4tls.so \

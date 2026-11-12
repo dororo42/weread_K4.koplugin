@@ -82,6 +82,10 @@ jobs:
             exit 1
           }
 
+      # 2026-11-12 three-repo audit (I-4): this pinned sha256 belongs to the
+      # K4WereadRust release asset, recorded in that repo's
+      # docs/RELEASE_ASSETS.md. Update BOTH places when the asset is rebuilt.
+      # A local k4tls/target/*.so is NOT necessarily that asset.
       - name: TLS backend asset reachable (K4WereadRust release)
         run: |
           curl -fsSL -o /tmp/libk4tls.so "https://github.com/dororo42/K4WereadRust/releases/download/libk4tls-v0.1.0/libk4tls.so"
