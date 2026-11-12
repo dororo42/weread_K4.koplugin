@@ -204,7 +204,7 @@ describe("settings TLS backend toggle (2026-11-12)", function()
     end)
 
     it("toggling on forces k4tls explicitly, persists it and warns when the library is missing", function()
-        local persisted, transients
+        local transients
         local instance = build_instance()
         -- capture this instance's persist/transient channels (build_instance
         -- stores them under the opts table it closed over)
