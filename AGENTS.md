@@ -66,8 +66,8 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 ## Current Handoff
 
-- Latest: `handoffs/2026-11-12-134405-weread-k4-three-repo-audit-fix/HANDOFF.md`
-- Branch: main @ 83917f0
-- Status: **三仓审查复核意见落地（2026-11-12）**：版本门禁扩展到 README、`client.lua` 注释对齐、`ChangeLog.md` 预置 `[Unreleased]`（含 R4/k4tls 顺延条）；本仓为 Lua 生产源，镜像已同步到 Rust 仓。21 项逐条确认见 HANDOFF.md「三仓协同」§4。版本未递增、v9.13 仍暂缓发包；修复**未 commit / push**（待授权），未构建、未连真机。
+- Latest: `handoffs/2026-11-14-140603-weread-k4-qrfix-k4tls-window/HANDOFF.md`
+- Branch: main @ 9874cc4
+- Status: 等待决策（k4tls 双缺陷处置三选项 + push/发版授权；QR 冒烟已过，并行分工速览见 HANDOFF「待办工作」）
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。

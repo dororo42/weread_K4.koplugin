@@ -57,6 +57,11 @@
         "spec/prefetch_guard_spec.lua"
       ]
     },
+    "weread/lib/standby_guard.lua": {
+      "specs": [
+        "spec/standby_guard_spec.lua"
+      ]
+    },
     "weread/lib/footnotes.lua": {
       "specs": [
         "spec/footnotes_spec.lua"

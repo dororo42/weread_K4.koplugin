@@ -83,6 +83,10 @@ function WeReadPlugin:init()
         require("weread.lib.transport").backend = tls_backend
         require("weread.lib.transport").backend_explicit = true
     end
+    -- 2026-11-12: clear preventScreenSaver residue left by a crashed
+    -- previous session (downloader sets it during downloads; a crash skips
+    -- the cleanup, arming the KOReader AutoSuspend freeze koreader#16194).
+    pcall(require("weread.lib.standby_guard").clearPreventScreenSaverResidue)
     self.client = Client:new(self.settings)
     -- v4.0 (2.5): SQLite-backed offline index (shelf / book detail / catalog).
     -- Gracefully degrades to the existing file caches when lua-ljsqlite3 is

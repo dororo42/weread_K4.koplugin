@@ -53,7 +53,6 @@ end
 -- a constant string (no injection surface) and Device:isKindle()-gated, but
 -- the os.execute fork itself costs ~50-150ms on the UI loop; flip this off
 -- to trade the standby guarantee for that cost, or on non-Kindle ports.
-local LIPC_STANDBY_GUARD_ENABLED = true
 
 -- B13 (2026-09-16, reMarkable official-client borrow): the official client
 -- stops its auto-cache after repeated batch failures ("Auto cache stopped
@@ -97,19 +96,19 @@ local PREFETCH_NON_FAILURE_REASONS = {
     prefetch_cooling_down = true,
 }
 
+local StandbyGuard = require("weread.lib.standby_guard")
+
 local function preventOsStandby()
-    if LIPC_STANDBY_GUARD_ENABLED and Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 1")
-    end
+    -- 2026-11-12: lipc handling centralised in standby_guard (residue
+    -- clearing lives there too -- see main.lua init).
+    StandbyGuard.setPreventScreenSaver()
     if Device:isCervantes() or Device:isKobo() then
         PluginShare.pause_auto_suspend = true
     end
 end
 
 local function allowOsStandby()
-    if LIPC_STANDBY_GUARD_ENABLED and Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 0")
-    end
+    StandbyGuard.clearPreventScreenSaver()
     if Device:isCervantes() or Device:isKobo() then
         PluginShare.pause_auto_suspend = false
     end
@@ -117,6 +116,15 @@ end
 
 local Downloader = {}
 Downloader.__index = Downloader
+
+-- 2026-11-12 (K4 11-14): a crash or forced kill mid-download leaves powerd's
+-- preventScreenSaver at 1 with no one to clear it -- which arms the KOReader
+-- AutoSuspend freeze mode (koreader#16194: residue + fresh Lua state ->
+-- ~160 isCharging polls/second until the battery dies). At plugin init no
+-- download is running, so any preventScreenSaver=1 seen there is stale
+-- residue; clear it unconditionally. lipc failures are non-fatal (devices
+-- without lipc just no-op).
+
 
 -- o = {
 --   client, settings,                       -- injected dependencies
