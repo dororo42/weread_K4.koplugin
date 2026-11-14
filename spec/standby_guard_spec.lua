@@ -18,7 +18,7 @@ describe("standby_guard residue clearing (2026-11-12)", function()
     before_each(function()
         executed = {}
         _G.__is_kindle = true
-        os.execute = function(cmd)
+        os.execute = function(cmd)  -- luacheck: ignore
             executed[#executed + 1] = cmd
             return 0
         end
@@ -31,7 +31,7 @@ describe("standby_guard residue clearing (2026-11-12)", function()
     end)
 
     it("survives a lipc failure without raising", function()
-        os.execute = function() error("lipc not available") end
+        os.execute = function() error("lipc not available") end  -- luacheck: ignore
         local ok = pcall(Guard.clearPreventScreenSaverResidue)
         assert.is_true(ok)
     end)
