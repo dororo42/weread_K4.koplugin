@@ -567,7 +567,7 @@ function QRLogin:_show_qr(uid, generation)
         -- v9.10 showed this bar after the dialog, making it topmost and
         -- silently blocking the 366b1f9 Back/Menu exits. The QR dialog
         -- must always be the last window shown here.
-        self:_show_qr_hint(_("Back: cancel login  |  Menu: exit KOReader"))
+        self:_show_qr_hint(_("Scan within 5 min; auto-close on expiry. Back: cancel (may lag)  |  Menu: exit"))
         UIManager:show(dialog)
         self.host:refreshUI()
     end)
@@ -589,9 +589,12 @@ end
 
 function QRLogin:_poll(uid, generation, otp)
     if os.time() - (self.started_at or os.time()) > LOGIN_SESSION_TIMEOUT_SECONDS then
+        -- 2026-11-15 (user decision): expire silently. The hint bar already
+        -- states the 5-minute limit up front, so no popup here; key handling
+        -- on K4 can lag several seconds behind polling, making "press Back
+        -- to cancel" unreliable — auto-close is the primary exit path.
         self:_close_qr_dialog(true)
         self:cancel()
-        self.host:showInfo(_("The QR code has expired. Please try again."))
         return
     end
 
