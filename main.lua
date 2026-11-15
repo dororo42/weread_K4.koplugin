@@ -86,7 +86,12 @@ function WeReadPlugin:init()
     -- 2026-11-12: clear preventScreenSaver residue left by a crashed
     -- previous session (downloader sets it during downloads; a crash skips
     -- the cleanup, arming the KOReader AutoSuspend freeze koreader#16194).
-    pcall(require("weread.lib.standby_guard").clearPreventScreenSaverResidue)
+    -- pcall must wrap the require itself: `pcall(require("x").y)` evaluates
+    -- require("x") BEFORE pcall runs, so a missing module still throws out of
+    -- init and the whole plugin fails to load (K4 2026-11-15 incident).
+    pcall(function()
+        require("weread.lib.standby_guard").clearPreventScreenSaverResidue()
+    end)
     self.client = Client:new(self.settings)
     -- v4.0 (2.5): SQLite-backed offline index (shelf / book detail / catalog).
     -- Gracefully degrades to the existing file caches when lua-ljsqlite3 is
