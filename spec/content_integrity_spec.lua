@@ -78,8 +78,6 @@ preload_stub("weread.ui.download_dialog", function() return {} end)
 -- Other spec files (e.g. downloader_resume_spec) stub "bit" as an empty
 -- table in the shared busted Lua state. Force-load the real bit library
 -- before content.lua requires it, clearing any earlier stub.
-package.loaded["bit"] = nil
-package.preload["bit"] = nil
 local bit = require("bit")
 Content = require("weread.lib.content")
 
