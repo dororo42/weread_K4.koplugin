@@ -66,8 +66,8 @@ and `luajson` rocks and spawns `python3 dev/mock_gateway.py` locally.
 
 ## Current Handoff
 
-- Latest: `handoffs/2026-11-14-140603-weread-k4-qrfix-k4tls-window/HANDOFF.md`
-- Branch: main @ 9874cc4
-- Status: 等待决策（k4tls 双缺陷处置三选项 + push/发版授权；QR 冒烟已过，并行分工速览见 HANDOFF「待办工作」）
+- Latest: `handoffs/2026-11-15-150516-weread-k4-k4tls-purge-d02-streaming/HANDOFF.md`
+- Branch: main @ 73e9fcd
+- Status: k4tls主线剔除+D-01..D-07全落地+QR改造+LuaSec稳定运行; isword_k4暂停为设计参考库
 
 任何 agent 开始工作前，先读上面的 HANDOFF.md。这份指针由 orbital_handoff 维护，手工交接时请同步更新。
