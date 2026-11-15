@@ -135,6 +135,44 @@ function M:getMainMenuItems()
                         self.qr_login:start()
                     end),
                 },
+                -- 2026-11-15 (user request): absorb Settings > Account management
+                -- items into the main menu account submenu — single access point,
+                -- no duplicate navigation path through Settings.
+                {
+                    text = _("Manual login"),
+                    sub_item_table_func = function()
+                        return {
+                            {
+                                text = _("Configuration guide"),
+                                keep_menu_open = true,
+                                callback = self:safeCallback(_("Configuration guide"), function()
+                                    self:showManualLoginGuide()
+                                end),
+                            },
+                            {
+                                text = _("Generate template"),
+                                keep_menu_open = true,
+                                callback = self:safeCallback(_("Generate template"), function()
+                                    self:generateManualLoginTemplate()
+                                end),
+                            },
+                            {
+                                text = _("Import now"),
+                                keep_menu_open = true,
+                                callback = self:safeCallback(_("Import now"), function()
+                                    self:importManualLogin()
+                                end),
+                            },
+                        }
+                    end,
+                },
+                {
+                    text = _("Renew cookie now"),
+                    keep_menu_open = true,
+                    callback = self:safeCallback(_("Renew cookie now"), function()
+                        self:renewCookieWithUI()
+                    end),
+                },
                 {
                     text = _("Clear account"),
                     keep_menu_open = true,
@@ -501,61 +539,9 @@ function M:getSettingsMenuItems()
         },
     }
 
-    table.insert(items, {
-        text = _("Account management"),
-        sub_item_table_func = function()
-            return {
-                {
-                    text = _("Account status"),
-                    callback = self:safeCallback(_("Account status"), function()
-                        self:showAccountStatus()
-                    end),
-                },
-                {
-                    text = _("Manual login"),
-                    sub_item_table_func = function()
-                        return {
-                            {
-                                text = _("Configuration guide"),
-                                keep_menu_open = true,
-                                callback = self:safeCallback(_("Configuration guide"), function()
-                                    self:showManualLoginGuide()
-                                end),
-                            },
-                            {
-                                text = _("Generate template"),
-                                keep_menu_open = true,
-                                callback = self:safeCallback(_("Generate template"), function()
-                                    self:generateManualLoginTemplate()
-                                end),
-                            },
-                            {
-                                text = _("Import now"),
-                                keep_menu_open = true,
-                                callback = self:safeCallback(_("Import now"), function()
-                                    self:importManualLogin()
-                                end),
-                            },
-                        }
-                    end,
-                },
-                {
-                    text = _("Renew cookie now"),
-                    keep_menu_open = true,
-                    callback = self:safeCallback(_("Renew cookie now"), function()
-                        self:renewCookieWithUI()
-                    end),
-                },
-                {
-                    text = _("Clear account data"),
-                    keep_menu_open = true,
-                    callback = self:safeCallback(_("Clear account data"), function()
-                        self:confirmClearAccount()
-                    end),
-                },
-            }
-        end,
-    })
+    -- 2026-11-15 (user request): Account management items moved to the main
+    -- menu account submenu (under Logged in · username) — no duplicate
+    -- navigation path through Settings. Wi-Fi footer toggle follows.
 
     -- K4 v6.0 (user preference): the wifi footer toggle sits at rank 5 —
     -- after Account management — so the settings list leads with the
