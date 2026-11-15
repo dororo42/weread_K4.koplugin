@@ -1365,6 +1365,11 @@ function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint,
     local text, code = client:request({
         url = "https://weread.qq.com" .. endpoint,
         method = "POST",
+        -- D-06 (2026-11-15 user audit): chapter body shards previously had no
+        -- hard response-size cap (the Lua binding defaults kick in only on the
+        -- k4tls path). 8 MiB matches the per-image cap; a real shard is well
+        -- below 1 MiB, so anything larger is garbage worth failing on.
+        max_bytes = 8 * 1024 * 1024,
         headers = {
             ["Content-Type"] = "application/json;charset=UTF-8",
             ["Origin"] = "https://weread.qq.com",

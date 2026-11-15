@@ -566,7 +566,18 @@ function Downloader:_saveProgress(dl)
         chapters = {},
         done = {},
         selected = {},
-        failed = dl.failed or {},
+        -- D-01 (2026-11-15 user audit): the failed snapshot is de-duplicated
+        -- on save so any stale duplicate can never accumulate across resumes.
+        failed = (function()
+            local seen, unique = {}, {}
+            for _, fuid in ipairs(dl.failed or {}) do
+                if not seen[fuid] then
+                    seen[fuid] = true
+                    unique[#unique + 1] = fuid
+                end
+            end
+            return unique
+        end)(),
         index = dl.index,
         footnotes_done = dl.footnotes_done == true,
         updated_at = os.time(),
@@ -1157,6 +1168,17 @@ function Downloader:_finishChapter(dl)
     dl.assets_by_uid = dl.assets_by_uid or {}
     dl.assets_by_uid[uid] = assets_meta or {}
     table.insert(dl.selected, chapter)
+    -- D-01 (2026-11-15 user audit): a chapter that failed in a previous
+    -- session and succeeded on this resume must leave dl.failed, otherwise
+    -- the completion check (#dl.failed > 0) aborts a fully recovered book
+    -- forever — the stale failure record also survives every later save.
+    if dl.failed then
+        for i = #dl.failed, 1, -1 do
+            if dl.failed[i] == uid then
+                table.remove(dl.failed, i)
+            end
+        end
+    end
     -- Persist per-chapter asset metadata so a resume can rebuild the EPUB
     -- without re-downloading assets.
     local meta_ok, meta_err = pcall(function()
@@ -1165,8 +1187,14 @@ function Downloader:_finishChapter(dl)
         Content.write_file(meta_path, encoded)
     end)
     if not meta_ok then
-        logger.warn("asset metadata persist failed:", "chapter_uid=", uid,
+        -- D-04 (2026-11-15 user audit): asset metadata is part of chapter
+        -- integrity — a chapter recorded as complete without its asset meta
+        -- JSON resumes into a missing-images EPUB. Fail the chapter instead
+        -- of marking it complete; the spooled body stays for the next resume.
+        logger.warn("asset metadata persist failed, failing chapter:", "chapter_uid=", uid,
             "error=", log_error(meta_err))
+        self:_failChapter(dl, "asset metadata persist failed: " .. log_error(meta_err))
+        return
     end
     -- v4.0: persist download progress for breakpoint resume.
     self:_saveProgress(dl)

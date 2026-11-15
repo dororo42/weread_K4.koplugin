@@ -150,6 +150,7 @@ local Downloader = require("weread.lib.downloader")
 local memfs = {}
 local fetch_calls = 0
 local cancel_after_uid = nil
+local fail_uids = nil
 local dl_ref = nil -- current Downloader instance (cancel hook target)
 
 local function spool_body_path(uid)
@@ -198,6 +199,11 @@ local function patch_content_for_memfs()
     end
     Content.fetch_single_chapter_source = function(_c, _s, _b, chapter)
         fetch_calls = fetch_calls + 1
+        -- D-07 injection: a uid in fail_uids raises so the real pcall in
+        -- _step routes it into _failChapter (retry once, then record).
+        if fail_uids and fail_uids[tostring(chapter.chapterUid)] then
+            error("transient network error (D-07 stub)")
+        end
         return "<body>" .. tostring(chapter.chapterUid) .. "</body>"
     end
     Content.save_book_epub_streamed = function()
@@ -426,6 +432,49 @@ end)
 -- existing catalog with the downloaded subset — with a skipped chapter the
 -- subset is smaller, and percent math + next-chapter prefetch use the full
 -- catalog. Only a MISSING catalog gets filled (the v4.5 rebuild case).
+describe("Downloader resume clears stale failures (D-01, 2026-11-15 user audit)", function()
+    before_each(function()
+        for key in pairs(memfs) do memfs[key] = nil end
+        progress_store = {}
+        progress_seq = 0
+        fetch_calls = 0
+        cancel_after_uid = nil
+        fail_uids = nil
+        dl_ref = nil
+        _G.__SPEC_DIALOGS = nil
+        patch_content_for_memfs()
+    end)
+
+    it("publishes the book after a previously failed chapter succeeds on resume", function()
+        -- Arrange: first run fails u2 (its single retry also fails), so the
+        -- persisted snapshot carries failed={u2} and the job ends as
+        -- incomplete_full_book.
+        fail_uids = { u2 = true }
+        dl_ref = new_downloader()
+        local completed1 = {}
+        dl_ref:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed1 = { ok, value } end,
+        })
+        assert.is_false(completed1[1], "first run must abort as incomplete")
+        assert.is_true(tostring(completed1[2]):find("incomplete", 1, true) ~= nil)
+
+        -- Act: resume with the network healthy — u2 now succeeds.
+        fail_uids = nil
+        local completed2 = {}
+        dl_ref = new_downloader()
+        dl_ref:start(BOOK, CHAPTERS, "book", {
+            on_complete = function(ok, value) completed2 = { ok, value } end,
+        })
+        local dialogs = _G.__SPEC_DIALOGS or {}
+        dialogs[#dialogs].ok_callback()
+
+        -- Assert: the recovered chapter must leave dl.failed so the
+        -- completion check (#dl.failed > 0) publishes the book.
+        assert.is_true(completed2[1], "recovered book must publish, not abort")
+        assert.equals("/mem/WeRead - book.epub", completed2[2])
+    end)
+end)
+
 describe("Downloader catalog preservation (F-18)", function()
     teardown(__CLEAR)
 
