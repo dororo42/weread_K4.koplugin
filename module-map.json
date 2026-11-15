@@ -29,6 +29,7 @@
       "specs": [
         "spec/catalog_gateway_spec.lua",
         "spec/content_css_sanitize_spec.lua",
+        "spec/content_integrity_spec.lua",
         "spec/downloader_resume_spec.lua",
         "spec/epub_publish_verify_spec.lua",
         "spec/inline_image_allowlist_spec.lua",

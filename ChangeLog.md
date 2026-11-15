@@ -3,12 +3,32 @@
 本文件记录微信读书 KOReader 插件（K4 分支）各版本的重要变更，条目采用中英双语，聚焦用户可见的功能与 Bug 修复。
 All notable changes are documented here in both Chinese and English, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] - 2026-11-12（未发版；打 tag 前重命名为 `## [v9.13] - YYYY-MM-DD`）
-
-> 汇总 2026-11-12 已合入 main、但按用户指示 **v9.13 暂缓发包** 的运行时改动。
-> `release.yml` 的 notes 抽取只认 `## [vX] - YYYY-MM-DD` 标题：打 `v9.13` tag 前必须重命名本节，否则出包流程会显式失败（不会发布占位正文）。
+## [v9.13] - 2026-11-15
 
 ### Added / 新增
+
+- 扫码登录限时自动关闭：提示条如实显示「请在 5 分钟内扫码，超时将自动关闭」，到期静默关闭不弹窗；轮询超时 8s→3s（K4 菜单式交互下 UI 不冻结）。
+  The QR login dialog auto-closes silently after 5 minutes; polling timeout reduced from 8s to 3s to eliminate UI freezes on K4.
+- 下载器图片逐项写盘：每张图片下载成功后立即写入暂存目录，单章累计上限 64 MiB / 200 张（不再全量驻留内存）。
+  Chapter images are written to the spool directory immediately after download; per-chapter cumulative limits (64 MiB / 200 images) prevent OOM.
+- 下载前自动清理页缓存（Kindle 限定）：扩大下载前可用内存余量；download_perf 每行附 memfree_kb 供崩溃取证。
+  Page cache is dropped at download start on Kindle devices; download_perf now records MemFree for post-crash forensics.
+
+### Fixed / 修复
+
+- 断点恢复后成功补下的章节不再被旧失败记录阻止发布整本 EPUB（D-01）。
+  A chapter that failed in a previous session and succeeded on resume is properly cleared from the failed list, allowing the book to publish.
+- 资产元数据写入失败时章节不再被标记为完成（D-04），避免恢复后生成缺图 EPUB。
+  Asset metadata write failures now fail the chapter instead of marking it complete.
+- 章节正文响应补硬性 8 MiB 大小限制（D-06）。
+  Chapter shard responses now have a hard 8 MiB size cap.
+- k4tls 从主线剔除：菜单 Rust TLS 条目删除、settings 恢复删除；LuaSec 为主线唯一传输后端。k4tls-archived 分支保留完整功能。
+  k4tls removed from the mainline: menu entry and settings restore removed; LuaSec is the sole transport backend. Full k4tls code preserved in the k4tls-archived branch.
+- main.lua init 的 pcall 防御修正（require 求值在 pcall 之前），standby_guard 缺失不再导致插件加载失败。
+  Fixed init pcall defense: require evaluation now properly wrapped, preventing plugin load failure on missing standby_guard.
+- 账号管理从设置移入主菜单账号子菜单（菜单简化，单一入口）。
+  Account management items consolidated into the main menu account submenu, removed from Settings.
+
 
 - 登录菜单项会话状态化显示：Cookie 过期显示「会话已过期 · 用户名」，重启后由持久 footer hint 快照兜底。
   The login item now reflects session state rather than credential presence alone, with a persisted footer-hint snapshot across restarts.
