@@ -460,7 +460,6 @@ local ok_ffi, ffi = pcall(require, "ffi")
 
 local function b64_decode_ffi(data, len, out_len)
     local buf = ffi.new("uint8_t[?]", out_len)
-    local bit = require("bit")
     local out = 0
     local i = 1
     local t = b64_decode_table
@@ -468,15 +467,15 @@ local function b64_decode_ffi(data, len, out_len)
         local a, b, c, d = data:byte(i, i + 3)
         local av, bv = t[a], t[b]
         if av and bv then
-            buf[out] = bit.bor(bit.lshift(av, 2), bit.rshift(bv, 4))
+            buf[out] = av * 4 + math.floor(bv / 16)
             out = out + 1
             local cv = c and t[c]
             if cv and not b64_pad_table[c] then
-                buf[out] = bit.bor(bit.lshift(bit.band(bv, 0x0f), 4), bit.rshift(cv, 2))
+                buf[out] = (bv % 16) * 16 + math.floor(cv / 4)
                 out = out + 1
                 local dv = d and t[d]
                 if dv and not b64_pad_table[d] then
-                    buf[out] = bit.bor(bit.lshift(bit.band(cv, 0x03), 6), dv)
+                    buf[out] = (cv % 4) * 64 + dv
                     out = out + 1
                 end
             end
@@ -491,22 +490,21 @@ local function b64_decode_chunked(data, len)
     local chunk = {}
     local chunk_len = 0
     local out_total = 0
-    local bit = require("bit")
     local i = 1
     local t = b64_decode_table
     while i <= len - 3 do
         local a, b, c, d = data:byte(i, i + 3)
         local av, bv = t[a], t[b]
         if av and bv then
-            chunk[chunk_len + 1] = string.char(bit.bor(bit.lshift(av, 2), bit.rshift(bv, 4)))
+            chunk[chunk_len + 1] = string.char(av * 4 + math.floor(bv / 16))
             chunk_len = chunk_len + 1
             local cv = c and t[c]
             if cv and not b64_pad_table[c] then
-                chunk[chunk_len + 1] = string.char(bit.bor(bit.lshift(bit.band(bv, 0x0f), 4), bit.rshift(cv, 2)))
+                chunk[chunk_len + 1] = string.char((bv % 16) * 16 + math.floor(cv / 4))
                 chunk_len = chunk_len + 1
                 local dv = d and t[d]
                 if dv and not b64_pad_table[d] then
-                    chunk[chunk_len + 1] = string.char(bit.bor(bit.lshift(bit.band(cv, 0x03), 6), dv))
+                    chunk[chunk_len + 1] = string.char((cv % 4) * 64 + dv)
                     chunk_len = chunk_len + 1
                 end
             end

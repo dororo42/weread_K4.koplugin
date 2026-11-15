@@ -83,29 +83,29 @@ Content = require("weread.lib.content")
 
 describe("base64_decode (D-03 rewrite)", function()
     -- (acc >> 16) replaced with math.floor(acc/65536) for Lua 5.1
-    local bit = require("bit")
     local function b64_encode(data)
+        -- Pure arithmetic b64 encoder (no bit library dependency in tests)
         local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         local out = {}
         local len = #data
         for i = 1, len - len % 3, 3 do
             local a, b, c = data:byte(i, i + 2)
-            out[#out + 1] = chars:sub(bit.rshift(a, 2) + 1, bit.rshift(a, 2) + 1)
-            out[#out + 1] = chars:sub(bit.band(a, 3) * 16 + bit.rshift(b, 4) + 1, bit.band(a, 3) * 16 + bit.rshift(b, 4) + 1)
-            out[#out + 1] = chars:sub(bit.band(b, 15) * 4 + bit.rshift(c, 6) + 1, bit.band(b, 15) * 4 + bit.rshift(c, 6) + 1)
-            out[#out + 1] = chars:sub(bit.band(c, 63) + 1, bit.band(c, 63) + 1)
+            out[#out + 1] = chars:sub(math.floor(a / 4) + 1, math.floor(a / 4) + 1)
+            out[#out + 1] = chars:sub((a % 4) * 16 + math.floor(b / 16) + 1, (a % 4) * 16 + math.floor(b / 16) + 1)
+            out[#out + 1] = chars:sub((b % 16) * 4 + math.floor(c / 64) + 1, (b % 16) * 4 + math.floor(c / 64) + 1)
+            out[#out + 1] = chars:sub(c % 64 + 1, c % 64 + 1)
         end
         local rem = len % 3
         if rem == 1 then
             local a = data:byte(len)
-            out[#out + 1] = chars:sub(bit.rshift(a, 2) + 1, bit.rshift(a, 2) + 1)
-            out[#out + 1] = chars:sub(bit.band(a, 3) * 16 + 1, bit.band(a, 3) * 16 + 1)
+            out[#out + 1] = chars:sub(math.floor(a / 4) + 1, math.floor(a / 4) + 1)
+            out[#out + 1] = chars:sub((a % 4) * 16 + 1, (a % 4) * 16 + 1)
             out[#out + 1] = "=="
         elseif rem == 2 then
             local a, b = data:byte(len - 1, len)
-            out[#out + 1] = chars:sub(bit.rshift(a, 2) + 1, bit.rshift(a, 2) + 1)
-            out[#out + 1] = chars:sub(bit.band(a, 3) * 16 + bit.rshift(b, 4) + 1, bit.band(a, 3) * 16 + bit.rshift(b, 4) + 1)
-            out[#out + 1] = chars:sub(bit.band(b, 15) * 4 + 1, bit.band(b, 15) * 4 + 1)
+            out[#out + 1] = chars:sub(math.floor(a / 4) + 1, math.floor(a / 4) + 1)
+            out[#out + 1] = chars:sub((a % 4) * 16 + math.floor(b / 16) + 1, (a % 4) * 16 + math.floor(b / 16) + 1)
+            out[#out + 1] = chars:sub((b % 16) * 4 + 1, (b % 16) * 4 + 1)
             out[#out + 1] = "="
         end
         return table.concat(out)
