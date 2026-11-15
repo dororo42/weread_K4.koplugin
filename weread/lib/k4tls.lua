@@ -113,6 +113,7 @@ local function cdef(ffi)
     typedef struct {
         int status;
         char *headers_blob;
+        size_t header_blob_len;
         size_t header_count;
         unsigned char *body;
         size_t body_len;
