@@ -437,14 +437,92 @@ local function checked_body(response_text)
     return body
 end
 
-local b64_decode_table
+-- D-03 (2026-11-15 user audit): the old decoder pushed one 1-byte Lua string
+-- per output byte into a table then table.concat — for a 1MB chapter that is
+-- ~750k transient strings/slots plus the final concat, an avoidable RSS spike
+-- on 256MB devices. Rewritten as: byte-index table + 4-byte batch reads, with
+-- a LuaJIT FFI preallocated buffer as the primary path and a chunked-concat
+-- fallback when ffi is unavailable. Output is byte-identical to the old one.
+local b64_decode_table          -- char code -> 0..63
+local b64_pad_table             -- char code -> true for '='
 local function init_b64_decode_table()
     if b64_decode_table then return end
     b64_decode_table = {}
+    b64_pad_table = {}
     for i = 0, 63 do
-        local char = b64chars:sub(i + 1, i + 1)
-        b64_decode_table[char] = i
+        local code = b64chars:byte(i + 1)
+        b64_decode_table[code] = i
     end
+    b64_pad_table[string.byte("=")] = true
+end
+
+local ok_ffi, ffi = pcall(require, "ffi")
+
+local function b64_decode_ffi(data, len, out_len)
+    local buf = ffi.new("uint8_t[?]", out_len)
+    local bit = require("bit")
+    local out = 0
+    local i = 1
+    local t = b64_decode_table
+    while i <= len - 3 do
+        local a, b, c, d = data:byte(i, i + 3)
+        local av, bv = t[a], t[b]
+        if av and bv then
+            buf[out] = bit.bor(bit.lshift(av, 2), bit.rshift(bv, 4))
+            out = out + 1
+            local cv = c and t[c]
+            if cv and not b64_pad_table[c] then
+                buf[out] = bit.bor(bit.lshift(bit.band(bv, 0x0f), 4), bit.rshift(cv, 2))
+                out = out + 1
+                local dv = d and t[d]
+                if dv and not b64_pad_table[d] then
+                    buf[out] = bit.bor(bit.lshift(bit.band(cv, 0x03), 6), dv)
+                    out = out + 1
+                end
+            end
+        end
+        i = i + 4
+    end
+    return ffi.string(buf, out)
+end
+
+local function b64_decode_chunked(data, len)
+    local result = {}
+    local chunk = {}
+    local chunk_len = 0
+    local out_total = 0
+    local bit = require("bit")
+    local i = 1
+    local t = b64_decode_table
+    while i <= len - 3 do
+        local a, b, c, d = data:byte(i, i + 3)
+        local av, bv = t[a], t[b]
+        if av and bv then
+            chunk[chunk_len + 1] = string.char(bit.bor(bit.lshift(av, 2), bit.rshift(bv, 4)))
+            chunk_len = chunk_len + 1
+            local cv = c and t[c]
+            if cv and not b64_pad_table[c] then
+                chunk[chunk_len + 1] = string.char(bit.bor(bit.lshift(bit.band(bv, 0x0f), 4), bit.rshift(cv, 2)))
+                chunk_len = chunk_len + 1
+                local dv = d and t[d]
+                if dv and not b64_pad_table[d] then
+                    chunk[chunk_len + 1] = string.char(bit.bor(bit.lshift(bit.band(cv, 0x03), 6), dv))
+                    chunk_len = chunk_len + 1
+                end
+            end
+        end
+        i = i + 4
+        if chunk_len >= 65536 then
+            result[#result + 1] = table.concat(chunk)
+            chunk = {}
+            chunk_len = 0
+            out_total = out_total + 1
+        end
+    end
+    if chunk_len > 0 then
+        result[#result + 1] = table.concat(chunk)
+    end
+    return table.concat(result)
 end
 
 local function base64_decode(data)
@@ -455,35 +533,12 @@ local function base64_decode(data)
     end
     data = data:gsub("[^" .. b64chars .. "=]", "")
     init_b64_decode_table()
-    local result = {}
-    local i = 1
     local len = #data
-    while i <= len - 3 do
-        local a = b64_decode_table[data:sub(i, i)]
-        local b = b64_decode_table[data:sub(i + 1, i + 1)]
-        local c = data:sub(i + 2, i + 2)
-        local d = data:sub(i + 3, i + 3)
-        if a and b then
-            local n = bit.bor(bit.lshift(a, 2), bit.rshift(b, 4))
-            result[#result + 1] = string.char(n)
-            if c ~= "=" then
-                c = b64_decode_table[c]
-                if c then
-                    n = bit.bor(bit.lshift(bit.band(b, 0x0f), 4), bit.rshift(c, 2))
-                    result[#result + 1] = string.char(n)
-                    if d ~= "=" then
-                        d = b64_decode_table[d]
-                        if d then
-                            n = bit.bor(bit.lshift(bit.band(c, 0x03), 6), d)
-                            result[#result + 1] = string.char(n)
-                        end
-                    end
-                end
-            end
-        end
-        i = i + 4
+    local out_len = math.floor(len / 4) * 3
+    if ok_ffi and ffi then
+        return b64_decode_ffi(data, len, out_len)
     end
-    return table.concat(result)
+    return b64_decode_chunked(data, len)
 end
 
 local function swap_positions(encoded)
@@ -797,6 +852,8 @@ end
 -- rendered/ keeps footnote-transformed copies so the pristine spool body is
 -- never overwritten in place (re-render after a footnotes_mode switch needs
 -- the original).
+Content.base64_decode = base64_decode
+
 function Content.spool_body_meta_path(settings, book, uid)
     return Content.spool_dir(settings, book) .. "/chapters/" .. basename_safe(uid) .. ".meta"
 end
@@ -812,7 +869,14 @@ function Content.spool_body_complete(settings, book, uid, body)
     if not meta then return true end
     local length = tonumber(meta:match("^length=(%d+)"))
     if not length then return true end
-    return length == #body
+    if length ~= #body then return false end
+    -- D-05 (2026-11-15 user audit): length alone cannot detect content
+    -- corruption — a matching length with changed bytes resumed into a
+    -- silently broken chapter. Newer spools carry md5; legacy spools
+    -- (length-only) stay lenient.
+    local expected_md5 = meta:match("md5=([0-9A-Fa-f]+)")
+    if not expected_md5 then return true end
+    return Crypto.md5_hex(body):upper() == expected_md5:upper()
 end
 
 -- Progress file is per download mode so a paused whole-book download and a
@@ -830,8 +894,9 @@ function Content.spool_chapter(settings, book, uid, xhtml, assets)
     local safe_uid = basename_safe(uid)
     local body_path = spool .. "/chapters/" .. safe_uid .. ".xhtml"
     Content.write_file(body_path, xhtml)
+    -- D-05: carry md5 alongside length so resume can reject corrupted bodies.
     Content.write_file(Content.spool_body_meta_path(settings, book, uid),
-        "length=" .. tostring(#xhtml))
+        "length=" .. tostring(#xhtml) .. "\nmd5=" .. Crypto.md5_hex(xhtml):upper())
     local assets_meta = {}
     if assets and #assets > 0 then
         local assets_dir = spool .. "/assets/" .. safe_uid
