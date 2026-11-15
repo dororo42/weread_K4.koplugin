@@ -271,8 +271,10 @@ describe("QRLogin QR modal physical-key exits (K4, 2026-11-08)", function()
         assert.equals(600, ui_calls.hints[1].dimen.w)
         assert.equals(800, ui_calls.hints[1].dimen.h)
         local legend = table.concat(ui_calls.hint_texts, " ")
-        assert.is_true(legend:find("Back", 1, true) ~= nil)
-        assert.is_true(legend:find("Menu", 1, true) ~= nil)
+        -- 2026-11-15 (user decision): the legend is the time-limit sentence
+        -- only; key hints were dropped because keys can be unresponsive on
+        -- K4 and the wording mislead users.
+        assert.is_true(legend:find("scan within 5 minutes", 1, true) ~= nil)
     end)
 
     it("shows the legend with an explicit bottom-strip refresh region", function()

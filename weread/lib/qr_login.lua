@@ -567,7 +567,7 @@ function QRLogin:_show_qr(uid, generation)
         -- v9.10 showed this bar after the dialog, making it topmost and
         -- silently blocking the 366b1f9 Back/Menu exits. The QR dialog
         -- must always be the last window shown here.
-        self:_show_qr_hint(_("Scan within 5 min; auto-close on expiry. Back: cancel (may lag)  |  Menu: exit"))
+        self:_show_qr_hint(_("Please scan within 5 minutes. The dialog will close automatically on timeout."))
         UIManager:show(dialog)
         self.host:refreshUI()
     end)

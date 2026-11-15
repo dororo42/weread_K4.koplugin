@@ -57,7 +57,7 @@ local zh = {
     ["QR login cancelled."] = "扫码登录已取消。",
     ["QR login failed:\n%1"] = "扫码登录失败：\n%1",
     ["The QR code has expired. Please try again."] = "二维码已失效，请重新扫码。",
-    ["Scan within 5 min; auto-close on expiry. Back: cancel (may lag)  |  Menu: exit"] = "请在 5 分钟内扫码，超时将自动关闭。Back 取消（可能延迟数秒）| Menu 退出 KOReader",
+    ["Please scan within 5 minutes. The dialog will close automatically on timeout."] = "请在 5 分钟内扫码，超时将自动关闭。",
     ["The verification code has expired. Please try again."] = "验证码已失效，请重新扫码。",
     -- K4 v6.0 post-release fixes (P1-C/P2-F, 2026-09-18): expired-session surfacing.
     ["WeRead session expired: please re-login (scan the QR code)"] = "微信读书登录已过期，请重新扫码登录",
