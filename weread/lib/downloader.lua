@@ -701,6 +701,20 @@ function Downloader:_startDownload(book, chapters, suffix, options, resume)
     local function notifyStart()
         if dl.start_notified or type(dl.on_start) ~= "function" then return end
         dl.start_notified = true
+        -- K4 (2026-11-15): the device idles at ~6MB MemFree and page-cache
+        -- pressure around chapter downloads has preceded every recorded
+        -- segfault (7x in crash.log, each right after a network step).
+        -- Drop the reclaimable page cache once per download start, best
+        -- effort, to widen the headroom before the burst begins.
+        if Device:isKindle() then
+            pcall(function()
+                local f = io.open("/proc/sys/vm/drop_caches", "w")
+                if f then
+                    f:write("3")
+                    f:close()
+                end
+            end)
+        end
         local called, start_err = pcall(dl.on_start)
         if not called then
             logger.warn("download start callback failed:", log_error(start_err))
@@ -877,9 +891,22 @@ function Downloader:_perf(dl, stage, started, ...)
     -- F-08 (2026-10-05 audit): dl.index has already advanced past the last
     -- chapter at completion time — clamp so the log never shows N+1/N.
     local chapter_now = math.min(dl.index or 1, dl.total or 1)
+    -- K4 (2026-11-15): record MemFree with every perf line so the next
+    -- segfault leaves a memory trace in the last log entry (all 7 recorded
+    -- crashes died right after a network step with no memory data).
+    local memfree
+    pcall(function()
+        local f = io.open("/proc/meminfo", "r")
+        if f then
+            local line = f:read("*l")
+            f:close()
+            memfree = line and line:match("MemFree:%s+(%d+)")
+        end
+    end)
     logger.info("download_perf", "stage=", stage,
         "ms=", string.format("%.1f", elapsed),
-        "chapter=", tostring(chapter_now) .. "/" .. tostring(dl.total), ...)
+        "chapter=", tostring(chapter_now) .. "/" .. tostring(dl.total),
+        "memfree_kb=", memfree or "unknown", ...)
 end
 
 -- F-05 (2026-10-05 audit): session/authorization-shaped errors. The 09/22

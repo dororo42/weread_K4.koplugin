@@ -26,8 +26,13 @@ local LOGIN_INFO_URL = BASE_URL .. "/api/auth/getLoginInfo"
 local USER_INFO_URL = BASE_URL .. "/api/userInfo"
 local API_KEY_URL = BASE_URL .. "/api/skills/apikeyGet?only_show=1"
 local LOGIN_SESSION_TIMEOUT_SECONDS = 300
-local POLL_BLOCK_TIMEOUT_SECONDS = 5
-local POLL_TOTAL_TIMEOUT_SECONDS = 8
+-- K4 (2026-11-15): polling runs on the UI thread and every poll is a
+-- synchronous request that freezes input handling (Back/exit) until it
+-- finishes. Keep the poll budget small: a missed poll just retries on the
+-- next 0.5s schedule tick, so failing fast costs one extra tick instead of
+-- a multi-second UI freeze under slow network.
+local POLL_BLOCK_TIMEOUT_SECONDS = 2
+local POLL_TOTAL_TIMEOUT_SECONDS = 3
 
 local QRLogin = {}
 QRLogin.__index = QRLogin
