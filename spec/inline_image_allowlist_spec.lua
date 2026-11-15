@@ -111,7 +111,7 @@ describe("Content.download_remote_images allowlist enforcement", function()
             end,
         }
         local body = '<p><img src="https://res.weread.qq.com/wrepub/a.png"/></p>'
-        local out, assets = Content.download_remote_images(client, body, {}, nil)
+        local out, assets = Content.download_remote_images(client, nil, nil, body, {}, nil)
         assert.equals(1, #fetched)
         assert.equals(1, #assets)
         assert.equals("images/a.png", assets[1].href)
@@ -127,7 +127,7 @@ describe("Content.download_remote_images allowlist enforcement", function()
             end,
         }
         local body = '<p><img src="https://example.com/pic.png"/></p>'
-        local out, assets = Content.download_remote_images(client, body, {}, nil)
+        local out, assets = Content.download_remote_images(client, nil, nil, body, {}, nil)
         assert.equals(0, fetches)
         assert.equals(0, #assets)
         assert.is_not_nil(out:find('src="https://example%.com/pic%.png"'))
@@ -140,7 +140,7 @@ describe("Content.download_remote_images allowlist enforcement", function()
         local body = '<p><img src="https://example.com/a.png"/>'
             .. '<img src="https://weread.qq.com/b.png"/></p>'
         local seen_total
-        Content.download_remote_images(client, body, {}, function(_i, total)
+        Content.download_remote_images(client, nil, nil, body, {}, function(_i, total)
             seen_total = total
         end)
         assert.equals(1, seen_total)
@@ -154,7 +154,7 @@ describe("Content.download_remote_images allowlist enforcement", function()
         }
         local body = '<p><img src="https://weread.qq.com/good.png"/>'
             .. '<img src="https://tracker.example/pixel.png"/></p>'
-        local out, assets = Content.download_remote_images(client, body, {}, nil)
+        local out, assets = Content.download_remote_images(client, nil, nil, body, {}, nil)
         assert.equals(1, #assets)
         assert.is_not_nil(out:find('src="../images/good%.png"'))
         assert.is_not_nil(out:find('src="https://tracker%.example/pixel%.png"'))

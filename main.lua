@@ -78,11 +78,8 @@ function WeReadPlugin:init()
     end
     -- 2026-11-12: restore the menu-selected TLS backend (explicit choices
     -- outrank WEREAD_TLS_BACKEND in transport.resolve).
-    local tls_backend = self.settings:get("tls_backend")
-    if tls_backend == "k4tls" or tls_backend == "luasec" then
-        require("weread.lib.transport").backend = tls_backend
-        require("weread.lib.transport").backend_explicit = true
-    end
+    -- k4tls 归档支线（2026-11-15 用户拍板）：主线不恢复 tls_backend 设置，
+    -- transport.lua 默认 LuaSec。k4tls 功能完整保留在 k4tls-archived 分支。
     -- 2026-11-12: clear preventScreenSaver residue left by a crashed
     -- previous session (downloader sets it during downloads; a crash skips
     -- the cleanup, arming the KOReader AutoSuspend freeze koreader#16194).

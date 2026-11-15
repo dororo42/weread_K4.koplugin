@@ -903,12 +903,27 @@ function Content.spool_chapter(settings, book, uid, xhtml, assets)
         PluginUtil.mkdirs(assets_dir)
         for asset_index, asset in ipairs(assets) do
             local asset_file = tostring(asset_index)
-            Content.write_file(assets_dir .. "/" .. asset_file, asset.data)
-            table.insert(assets_meta, {
-                href = asset.href,
-                media_type = asset.media_type,
-                file = "assets/" .. safe_uid .. "/" .. asset_file,
-            })
+            if asset.data then
+                -- legacy in-memory asset: write to spool
+                Content.write_file(assets_dir .. "/" .. asset_file, asset.data)
+                table.insert(assets_meta, {
+                    href = asset.href,
+                    media_type = asset.media_type,
+                    file = "assets/" .. safe_uid .. "/" .. asset_file,
+                })
+            elseif asset.file then
+                -- D-02: already written by download layer — reference directly.
+                -- file may be absolute or relative to the spool dir.
+                local rel = asset.file
+                if rel:match("^/") then
+                    rel = "assets/" .. safe_uid .. "/" .. basename_safe(rel)
+                end
+                table.insert(assets_meta, {
+                    href = asset.href,
+                    media_type = asset.media_type,
+                    file = rel,
+                })
+            end
         end
     end
     return body_path, assets_meta
@@ -1168,6 +1183,12 @@ end
 -- host so a legitimately new CDN domain surfaces in crash.log immediately.
 -- Scheme note: http is accepted like the MP allowlist below — cookie safety
 -- is enforced independently (client.lua attaches cookies over HTTPS only).
+-- D-02 (2026-11-15 user audit): per-chapter cumulative asset limits.
+-- Without these, images accumulate in the assets array unbounded —
+-- a chapter with many illustrations can OOM a 256MB device.
+local MAX_CHAPTER_ASSET_BYTES = 64 * 1024 * 1024  -- 64 MiB per chapter
+local MAX_CHAPTER_ASSET_COUNT = 200
+
 local TRUSTED_IMAGE_HOST_SUFFIXES = {
     "weread.qq.com",     -- includes the res/cdn/p* subdomains
     "mmbiz.qpic.cn",
@@ -1193,8 +1214,16 @@ local function is_trusted_image_url(src)
 end
 Content.is_trusted_image_url = is_trusted_image_url
 
-function Content.download_remote_images(client, xhtml, used_names, progress, opts)
+function Content.download_remote_images(client, settings, book, xhtml, used_names, progress, opts)
     local assets = {}
+    local total_bytes = 0
+    -- D-02: per-item disk write setup
+    local spool_assets_dir
+    if settings and book then
+        local safe_uid = basename_safe(book.current_chapter_uid or "inline")
+        spool_assets_dir = Content.spool_dir(settings, book) .. "/assets/" .. safe_uid
+        PluginUtil.mkdirs(spool_assets_dir)
+    end
     used_names = used_names or {}
     used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
     local remote_image_hrefs = used_names.__remote_image_hrefs
@@ -1262,11 +1291,21 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
         local fname = unique_asset_name(used_names, seed ~= "" and seed or ("img" .. tostring(index)), ext)
         local href = "images/" .. fname
         remote_image_hrefs[url] = href
-        table.insert(assets, {
-            href = href,
-            media_type = mt,
-            data = data,
-        })
+        if total_bytes + #data > MAX_CHAPTER_ASSET_BYTES or #assets >= MAX_CHAPTER_ASSET_COUNT then
+            logger.warn("remote image limit reached, skipping:", "bytes=", tostring(total_bytes))
+            return "src=" .. quote .. src .. quote
+        end
+        local asset_entry = { href = href, media_type = mt }
+        if spool_assets_dir then
+            local fname = tostring(#assets + 1) .. "." .. ext
+            local fpath = spool_assets_dir .. "/" .. fname
+            Content.write_file(fpath, data)
+            asset_entry.file = fpath
+            total_bytes = total_bytes + #data
+        else
+            asset_entry.data = data
+        end
+        table.insert(assets, asset_entry)
         return "src=" .. quote .. "../" .. href .. quote
     end)
     return body, assets
@@ -1278,7 +1317,7 @@ end
 -- archives, inline images). Control-plane requests (reader state, css,
 -- catalog) keep the client default on purpose: they must fail fast in the
 -- foreground, and prefetch restarts them cheaply on the next attempt.
-function Content.download_chapter_assets(client, book, chapter, used_names, opts)
+function Content.download_chapter_assets(client, settings, book, chapter, used_names, opts)
     if not chapter or not chapter.tar or chapter.tar == "" then
         return {}, {}
     end
@@ -1291,29 +1330,50 @@ function Content.download_chapter_assets(client, book, chapter, used_names, opts
     elseif tar_url:match("^/") then
         tar_url = "https://weread.qq.com" .. tar_url
     end
-    -- N-1: chapter image archives are the largest binary payloads the
-    -- plugin fetches (several full-page illustrations per chapter), so they
-    -- get an explicit, generous ceiling instead of the 8MB image default —
-    -- still bounded, because an unbounded archive on 256MB is an OOM.
     local raw = client:get_binary(tar_url, {
         referer = referer,
         timeout = opts and opts.timeout,
         max_bytes = 32 * 1024 * 1024,
     })
+    -- D-02 (2026-11-15 user audit): per-item disk write instead of memory
+    -- accumulation. Each TAR entry is written to the spool assets directory
+    -- immediately after extraction, keeping only the file reference in the
+    -- assets list. Cumulative byte/count limits guard against OOM.
+    local spool_assets_dir
+    if settings then
+        local safe_uid = basename_safe(chapter.chapterUid or "tar")
+        spool_assets_dir = Content.spool_dir(settings, book) .. "/assets/" .. safe_uid
+        PluginUtil.mkdirs(spool_assets_dir)
+    end
     local assets = {}
     local src_map = {}
+    local total_bytes = 0
     for entry_index, entry in ipairs(tar_entries(raw)) do
         local ext, media_type = media_type_for(entry.data)
         if media_type:match("^image/") then
+            if total_bytes + #entry.data > MAX_CHAPTER_ASSET_BYTES or #assets >= MAX_CHAPTER_ASSET_COUNT then
+                logger.warn("chapter asset limit reached, skipping remaining:",
+                    "bytes=", tostring(total_bytes), "count=", tostring(#assets))
+                break
+            end
             local stem = basename(entry.name)
             local filename = unique_asset_name(used_names, stem, ext)
             local href = "images/" .. filename
             local epub_relative = "../" .. href
-            table.insert(assets, {
+            local asset_entry = {
                 href = href,
                 media_type = media_type,
-                data = entry.data,
-            })
+            }
+            if spool_assets_dir then
+                local fname = tostring(#assets + 1) .. "." .. ext
+                local fpath = spool_assets_dir .. "/" .. fname
+                Content.write_file(fpath, entry.data)
+                asset_entry.file = "assets/" .. basename_safe(chapter.chapterUid or "tar") .. "/" .. fname
+                total_bytes = total_bytes + #entry.data
+            else
+                asset_entry.data = entry.data
+            end
+            table.insert(assets, asset_entry)
             src_map[stem] = epub_relative
             src_map[filename] = epub_relative
         end
@@ -1636,13 +1696,13 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
     if cache.download_book_images then
         state.used_asset_names = state.used_asset_names or {}
         local tar_assets, src_map = Content.download_chapter_assets(
-            client, book, chapter, state.used_asset_names, opts)
+            client, settings, book, chapter, state.used_asset_names, opts)
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)
         end
         xhtml = Content.rewrite_image_sources(xhtml, src_map)
         local inline_xhtml, inline_assets = Content.download_remote_images(
-            client, xhtml, state.used_asset_names, nil, opts)
+            client, settings, book, xhtml, state.used_asset_names, nil, opts)
         xhtml = inline_xhtml
         for _, asset in ipairs(inline_assets) do
             table.insert(chapter_assets, asset)
